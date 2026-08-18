@@ -204,7 +204,10 @@ Create one workspace per client. Create actors for the people and agents who may
 
 Use the onboard command instead of the demo names:
 
+```powershell
+$env:PYTHONPATH="$PWD\src"
 python -m auremgrid.cli onboard --agency "Northwind Studio" --workspace ws_northwind --admin "Northwind Admin"
+```
 
 A good first week looks like this:
 
@@ -287,6 +290,31 @@ A networked extra can replace a local projection later only if it beats this bas
 - No third-party Python packages for the first slice
 - No Docker, network access, or API keys
 
+### Minimum hardware and onboarding notes
+
+The seeded demo is designed to run lightly on a modern dual-core CPU with **4 GB RAM** and **1 GB of free SSD space**. No GPU is needed. For larger SQLite indexes or several concurrent operators, use 4 CPU cores and 8 GB RAM. Keep `auremgrid-demo.sqlite` on an SSD and back it up like any other working data.
+
+Onboarding is intentionally incremental: create one workspace per client, create the admin/operator actors, write the client brain, ingest only approved source files, capture the next real request with a needed-by date and Definition of Done, then run it through `captured → assigned → in_progress → review → client_review → shipped`. Open the dashboard at `http://127.0.0.1:8791/` each day to review the derived health score, attention queue, touchpoint silence, evidence freshness, and work board. Expand to the next client only after one account has a clean operating rhythm.
+
+The health score is a transparent local heuristic based on touchpoint freshness, workflow pressure, evidence availability, and client-brain completeness. Revenue, campaign, and agent-queue metrics are shown as **Not connected** until a future connector supplies them; the dashboard does not invent business data.
+
+For a clean local setup:
+
+```powershell
+$env:PYTHONPATH="$PWD\src"
+python -m auremgrid.cli serve --host 127.0.0.1 --port 8791 --db auremgrid-demo.sqlite --seed
+```
+
+The dashboard is served by the same Python process as the REST endpoints, so there is no frontend build step or external runtime dependency. To onboard your own agency instead of using synthetic demo workspaces:
+
+```powershell
+```powershell
+$env:PYTHONPATH="$PWD\src"
+python -m auremgrid.cli onboard --agency "Northwind Studio" --workspace ws_northwind --admin "Northwind Admin"
+```
+```
+
 Apache-2.0. See [LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md), and [docs/operating-model.md](docs/operating-model.md).
+
 
 
