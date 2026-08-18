@@ -63,10 +63,11 @@ Auremgrid owns the canonical contracts. Graphiti, Cognee, Mem0, Onyx, RAGFlow, L
 
 ```text
 Sources
-  local markdown, later Slack / Drive / ClickUp / Figma
+  local markdown
+  simulated chat / files / tasks / design
         |
         v
-Ingestion
+Ingestion bus
   hash, permissions, idempotent ingest
         |
         v
@@ -74,7 +75,15 @@ Evidence layer
   documents, temporal facts, relations, citations, audit
         |
         v
-operating layer
+Local engine projections
+  Graphiti, Cognee, Mem0, Onyx, RAGFlow, LightRAG, GraphRAG, Letta
+        |
+        v
+Hybrid retrieval
+  keyword + lexical vectors + graph
+        |
+        v
+Operating layer
   client brain, playbooks, work items, Definition of Done,
   review, status posts, last touchpoint
         |
@@ -146,7 +155,7 @@ Agent access is read-only by default. Writing memory or ingesting sources requir
 
 ## How a new person should use it
 
-Start with the demo. Do not begin by wiring production Slack.
+Start by proving the suite, then onboard your own workspace. The demo clients are optional.
 
 ### 1. Run the tests
 
@@ -195,7 +204,7 @@ Create one workspace per client. Create actors for the people and agents who may
 
 Use the onboard command instead of the demo names:
 
-python -m auremgrid.cli onboard --agency Northwind Studio --workspace ws_northwind --admin Northwind Admin
+python -m auremgrid.cli onboard --agency "Northwind Studio" --workspace ws_northwind --admin "Northwind Admin"
 
 A good first week looks like this:
 
@@ -216,6 +225,7 @@ src/auremgrid/
   domain/           contracts for evidence and agency work
   storage/          SQLite + FTS5
   extract/          deterministic fact and relation extraction
+  connectors/       ingestion bus and simulated sources
   services/         CompanyOS, the product surface
   api/              dashboard, HTTP, MCP-style tools
   adapters/         Graphiti, Cognee, Mem0, Onyx, RAGFlow, LightRAG, GraphRAG, Letta
