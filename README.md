@@ -308,13 +308,12 @@ python -m auremgrid.cli serve --host 127.0.0.1 --port 8791 --db auremgrid-demo.s
 The dashboard is served by the same Python process as the REST endpoints, so there is no frontend build step or external runtime dependency. To onboard your own agency instead of using synthetic demo workspaces:
 
 ```powershell
-```powershell
 $env:PYTHONPATH="$PWD\src"
 python -m auremgrid.cli onboard --agency "Northwind Studio" --workspace ws_northwind --admin "Northwind Admin"
 ```
-```
 
 Apache-2.0. See [LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md), and [docs/operating-model.md](docs/operating-model.md).
+
 
 
 
