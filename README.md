@@ -246,9 +246,9 @@ These are not style preferences. They are the product.
 - If evidence is insufficient, the system returns unknown.
 - Private agency vault data does not belong in this repository. Fixtures stay synthetic.
 
-## What is intentionally not here yet
+## What is already wired in
 
-All eight engines are already used in the local path as projections, not as a second source of truth:
+All eight engines are used in the local path as projections, not as a second source of truth:
 
 | Engine | Role |
 |---|---|
@@ -263,7 +263,7 @@ All eight engines are already used in the local path as projections, not as a se
 
 A networked extra can replace a local projection later only if it beats this baseline.
 
-Also not in this version:
+## What is still not here
 
 - Live Slack, Drive, task-tracker, or design-tool credentials
 - Multi-user login, SSO, or hosted multi-tenant SaaS
