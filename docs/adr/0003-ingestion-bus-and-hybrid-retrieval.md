@@ -4,7 +4,7 @@ Status: accepted
 
 ## Context
 
-The first slice proved tenant isolation, citations, temporal facts, and Cosmo work rules. The next gap is not more scaffolding. It is an ingestion bus and hybrid retrieval that can later host Slack, Drive, ClickUp, Figma, Graphiti, and vector search.
+The first slice proved tenant isolation, citations, temporal facts, and agency work rules. The next gap is not more scaffolding. It is an ingestion bus and hybrid retrieval that can later host Slack, Drive, ClickUp, Figma, Graphiti, and vector search.
 
 ## Decision
 
@@ -17,3 +17,4 @@ A networked Graphiti, RAGFlow, LightRAG, Onyx, Cognee, or Mem0 adapter may repla
 - Live credentials are not required to prove the architecture.
 - Search results can show which channel contributed: keyword, vector, or graph.
 - Future live connectors do not invent a second workflow or truth store.
+

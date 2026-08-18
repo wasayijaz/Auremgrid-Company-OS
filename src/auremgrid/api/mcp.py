@@ -22,7 +22,8 @@ class McpToolRouter:
             {"name": "sources", "description": "List sources visible to the actor."},
             {"name": "recent", "description": "List recently ingested documents visible to the actor."},
             {"name": "remember", "description": "Store an actor-scoped preference or interaction note."},
-            {"name": "brief", "description": "Assemble the Cosmo client brief: brain, playbooks, open work, and last touchpoint."},
+            {"name": "brief", "description": "Assemble the client brief: brain, playbooks, open work, and last touchpoint."},
+            {"name": "engines", "description": "Show what each open-source engine contributed for a query."},
             {"name": "work", "description": "List open or all work items in a workspace."},
         ]
 
@@ -85,6 +86,12 @@ class McpToolRouter:
                     open_only=bool(arguments.get("open_only", True)),
                 )
                 return {"work": [item.to_dict() for item in items]}
+            if name == "engines":
+                return self.os.engine_status(
+                    workspace_id,
+                    actor_id,
+                    _required(arguments, "query"),
+                )
             raise AuremgridError(f"unknown tool: {name}")
         except AuremgridError as exc:
             return {"error": exc.__class__.__name__, "message": str(exc)}

@@ -22,7 +22,7 @@ from auremgrid.domain.models import (
     SourceArtifact,
     Workspace,
 )
-from auremgrid.domain.cosmo import (
+from auremgrid.domain.ops import (
     ALLOWED_TRANSITIONS,
     DEFINITION_OF_DONE,
     AccountBrief,
@@ -38,6 +38,7 @@ from auremgrid.extract.deterministic import extract_claims
 from auremgrid.storage.sqlite import SqliteStore
 from auremgrid.adapters.graphiti_local import LocalTemporalGraph
 from auremgrid.adapters.hybrid import HybridRanker, RankedHit, cosine, hashed_embedding
+from auremgrid.adapters.stack import OpenSourceStack
 
 
 def utcnow() -> datetime:
@@ -62,6 +63,7 @@ class CompanyOS:
         self.graph = LocalTemporalGraph()
         self.ranker = HybridRanker()
         self._embeddings: dict[str, tuple[float, ...]] = {}
+        self.stack = OpenSourceStack()
 
     def close(self) -> None:
         self.store.close()
@@ -160,6 +162,7 @@ class CompanyOS:
             observed.isoformat(),
         )
         self._embeddings[document.id] = hashed_embedding(content)
+        self.stack.ingest_document(document, content, observed)
         fact_ids: list[str] = []
         relation_ids: list[str] = []
         for extracted in extraction.facts:
@@ -193,6 +196,7 @@ class CompanyOS:
             self._supersede_matching(actor, fact)
             self.store.create_fact(fact)
             fact_ids.append(fact.id)
+            self.stack.ingest_fact(fact)
         for extracted in extraction.relations:
             relation = Relation(
                 id=new_id("rel"),
@@ -461,6 +465,7 @@ class CompanyOS:
             recorded_at=utcnow(),
         )
         self.store.create_memory(memory)
+        self.stack.remember(workspace_id, actor.id, content, kind)
         self._audit(workspace_id, actor_id, "remember", kind, "created", content[:120])
         return memory
 
@@ -732,6 +737,53 @@ class CompanyOS:
     def list_work(self, workspace_id: str, actor_id: str, open_only: bool = False) -> list[WorkItem]:
         self._require_actor(workspace_id, actor_id)
         return self.store.list_work_items(workspace_id, open_only=open_only)
+
+    def onboard_agency(
+        self,
+        agency_name: str,
+        workspace_id: str,
+        admin_name: str,
+        operator_name: str | None = None,
+        source_dir: str | Path | None = None,
+    ) -> dict[str, Any]:
+        workspace = self.create_workspace(agency_name, workspace_id=workspace_id)
+        admin = self.create_actor(workspace.id, admin_name, "admin", f"act_{workspace.id}_admin")
+        operator = self.create_actor(
+            workspace.id,
+            operator_name or f"{agency_name} Operator",
+            "operator",
+            f"act_{workspace.id}_operator",
+        )
+        agent = self.create_actor(workspace.id, f"{agency_name} Agent", "agent", f"act_{workspace.id}_agent")
+        self.stack.bind_agent(workspace.id, agent.id)
+        ingested = 0
+        if source_dir:
+            root = Path(source_dir)
+            for path in sorted(root.glob("*.md")):
+                self.ingest_path(workspace.id, admin.id, path)
+                ingested += 1
+        self.upsert_client_brain(
+            workspace.id,
+            admin.id,
+            snapshot=f"{agency_name} workspace. Fill this brain before starting client work.",
+            brand_rules="Add approved visual and voice rules here.",
+            dos=["Cite current approved facts", "Capture work before producing"],
+            donts=["Do not invent prices or brand rules"],
+            open_loops=["Complete the first client brain"],
+        )
+        return {
+            "workspace": workspace.to_dict(),
+            "admin": admin.to_dict(),
+            "operator": operator.to_dict(),
+            "agent": agent.to_dict(),
+            "ingested_sources": ingested,
+            "engines": [item["name"] for item in self.stack.contributions(workspace.id, agency_name, agent.id)],
+        }
+
+    def engine_status(self, workspace_id: str, actor_id: str, query: str) -> dict[str, Any]:
+        self._require_actor(workspace_id, actor_id)
+        self.stack.bind_agent(workspace_id, actor_id)
+        return {"workspace_id": workspace_id, "query": query, "engines": self.stack.contributions(workspace_id, query, actor_id)}
 
     def sync_connectors(self, actor_id: str, include_simulated: bool = False) -> list[IngestResult]:
         from auremgrid.connectors.bus import ConnectorBus

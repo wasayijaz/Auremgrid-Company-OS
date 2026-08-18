@@ -2,7 +2,7 @@
 
 A local-first operating brain for a retainer agency.
 
-Most company-AI products search documents and hope the model remembers the rest. Auremgrid is built for the actual failure modes of a studio like Cosmo: work that never gets captured, reviews that stall, prices that change, brand rules that live in someone's head, and clients who go quiet before they churn.
+Most company-AI products search documents and hope the model remembers the rest. Auremgrid is built for the actual failure modes of a retainer studio: work that never gets captured, reviews that stall, prices that change, brand rules that live in someone's head, and clients who go quiet before they churn.
 
 It does two jobs at once:
 
@@ -36,7 +36,7 @@ Auremgrid is useful on day one because it makes those things first-class:
 | How do we start work for this client? | Each workspace has a client brain plus reusable playbooks. |
 | Is this account drifting? | The account brief always returns days since last touchpoint. |
 
-That is the difference between a knowledge base and an operating system. Retrieval answers questions. The Cosmo layer makes work move.
+That is the difference between a knowledge base and an operating system. Retrieval answers questions. The operating layer makes work move.
 
 ## Who it is for
 
@@ -74,7 +74,7 @@ Evidence layer
   documents, temporal facts, relations, citations, audit
         |
         v
-Cosmo layer
+operating layer
   client brain, playbooks, work items, Definition of Done,
   review, status posts, last touchpoint
         |
@@ -97,7 +97,7 @@ This is the client brain underneath everything else.
 
 Facts are never silently overwritten. If the consultation price moves from 149 to 199, both versions remain. If a weaker source later claims 189, that conflict is preserved instead of erasing the current approved price.
 
-### Cosmo layer
+### operating layer
 
 This is the operating system that sits on the brain.
 
@@ -111,7 +111,7 @@ The product refuses the shortcuts that usually wreck delivery:
 - incomplete Definition of Done, no review
 - review not closed, no ship
 
-Definition of Done is the Cosmo finish line:
+Definition of Done is the agency finish line:
 
 1. mobile responsive
 2. assets exported
@@ -156,7 +156,7 @@ From the repo root, on Windows:
 .\tools\test.ps1
 ```
 
-That suite is the product contract. It checks isolation, permissions, idempotent ingest, temporal history, conflicting evidence, citations, prompt-injection handling, the Cosmo work loop, and the account brief.
+That suite is the product contract. It checks isolation, permissions, idempotent ingest, temporal history, conflicting evidence, citations, prompt-injection handling, the agency work loop, and the account brief.
 
 ### 2. See a client brief
 
@@ -209,7 +209,7 @@ If a fact is not in the brain or the evidence layer, the honest answer is unknow
 
 ```text
 src/auremgrid/
-  domain/           contracts for evidence and Cosmo work
+  domain/           contracts for evidence and agency work
   storage/          SQLite + FTS5
   extract/          deterministic fact and relation extraction
   services/         CompanyOS, the product surface
@@ -219,14 +219,14 @@ src/auremgrid/
 
 docs/
   architecture.md
-  cosmo-operating-model.md
+  operating-model.md
   data-lifecycle.md
   threat-model.md
   oss-evaluation.md
-  adr/              why Auremgrid owns truth and Cosmo owns the loop
+  adr/              why Auremgrid owns truth and the operating layer owns the loop
 
 fixtures/           synthetic Client Alpha / Client Beta only
-tests/              isolation, temporal truth, Cosmo work loop
+tests/              isolation, temporal truth, agency work loop
 tools/test.ps1      local test runner
 ```
 
@@ -240,7 +240,7 @@ These are not style preferences. They are the product.
 - Source documents are untrusted data. Prompt-injection text is stored and cited, never obeyed.
 - Contradictions are preserved. History is append-only.
 - If evidence is insufficient, the system returns unknown.
-- Private Cosmo vault data does not belong in this repository. Fixtures stay synthetic.
+- Private agency vault data does not belong in this repository. Fixtures stay synthetic.
 
 ## What is intentionally not here yet
 
@@ -271,4 +271,6 @@ Also not in v0.1:
 - No third-party Python packages for the first slice
 - No Docker, network access, or API keys
 
-Apache-2.0. See [LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md), and [docs/cosmo-operating-model.md](docs/cosmo-operating-model.md).
+Apache-2.0. See [LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md), and [docs/operating-model.md](docs/operating-model.md).
+
+

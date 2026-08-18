@@ -1,7 +1,7 @@
 [project]
 name = "auremgrid-company-os"
 version = "0.1.0"
-description = "Local-first Cosmo operating brain with tenant isolation, temporal evidence, client brains, and work-loop contracts."
+description = "Local-first agency operating brain with tenant isolation, temporal evidence, client brains, and work-loop contracts."
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 readme = "README.md"
@@ -19,3 +19,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+

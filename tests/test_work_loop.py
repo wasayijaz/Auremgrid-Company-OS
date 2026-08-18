@@ -11,7 +11,7 @@ from auremgrid.services.brain import CompanyOS
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 
-class CosmoOpsTests(unittest.TestCase):
+class WorkLoopTests(unittest.TestCase):
     def setUp(self) -> None:
         self.os = CompanyOS(":memory:")
         self.os.seed_demo(FIXTURES)

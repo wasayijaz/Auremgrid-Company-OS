@@ -1,14 +1,14 @@
 # Third Party Position
 
-This repository currently has no runtime third-party Python dependencies.
+The default path has no required third-party Python packages. The eight engines below are used as in-process projections behind Auremgrid contracts.
 
-Planned adapter posture:
+- Graphiti: temporal client-brain projection.
+- Cognee: memory control plane for current workspace beliefs.
+- Mem0: subjective preference and interaction memory only.
+- Onyx FOSS: connector catalog and knowledge-shell patterns. Not a required service.
+- RAGFlow: messy-document cleaning before Auremgrid extraction.
+- LightRAG: static corpus graph and lexical retrieval.
+- Microsoft GraphRAG: community and theme summaries over a workspace corpus.
+- Letta: stateful agent identity. Never client truth.
 
-- Graphiti: optional temporal graph adapter.
-- Onyx FOSS: connector and UI reference patterns.
-- RAGFlow: optional complex document parsing adapter.
-- LightRAG: optional graph-RAG backend.
-- Cognee: later comparative memory/control-plane adapter.
-- Mem0: subjective preference memory only, not canonical company facts.
-
-Auremgrid remains the authoritative layer for tenant boundaries, permissions, provenance, temporal records, and audits.
+Auremgrid remains the authoritative layer for tenant boundaries, permissions, provenance, temporal records, work state, and audits. A networked extra may replace a local projection only if it beats that baseline.

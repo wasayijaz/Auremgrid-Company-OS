@@ -1,4 +1,4 @@
-# Cosmo Operating Model
+# Agency Operating Model
 
 Auremgrid Company OS is shaped around how a retainer studio actually runs, not around a generic chat-over-docs product.
 
@@ -42,7 +42,7 @@ Each workspace has a client brain:
 - dos / don'ts
 - open loops
 
-The brain is how Cosmo starts work. The evidence layer underneath it is how Cosmo proves a claim.
+The brain is how an agency starts work. The evidence layer underneath it is how the agency proves a claim.
 
 ## Trust signal
 
@@ -58,3 +58,4 @@ The first adapters are ports, not forks:
 - Mem0 for subjective preferences only
 
 Auremgrid remains the authority for tenants, ACL, provenance, work state, and audit.
+

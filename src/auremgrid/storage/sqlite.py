@@ -20,7 +20,7 @@ from auremgrid.domain.models import (
     SourceArtifact,
     Workspace,
 )
-from auremgrid.domain.cosmo import (
+from auremgrid.domain.ops import (
     ClientBrainPack,
     Playbook,
     StatusPost,

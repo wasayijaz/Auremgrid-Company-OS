@@ -1,10 +1,10 @@
 # OSS Evaluation
 
-The first milestone intentionally ships without Graphiti, Onyx, RAGFlow, LightRAG, Cognee, or Mem0 dependencies.
+The default product uses local, deterministic stand-ins for Graphiti, Cognee, Mem0, Onyx, RAGFlow, LightRAG, GraphRAG, and Letta. None of those libraries is a required runtime dependency.
 
-Evaluation order:
+Evaluation order if a networked extra is added:
 
-1. Establish the deterministic baseline.
-2. Add one adapter behind a feature flag.
-3. Compare temporal accuracy, provenance preservation, permission behavior, latency, and operational complexity.
-4. Keep the adapter only if it improves the baseline without weakening Auremgrid-owned contracts.
+1. Keep the local baseline green.
+2. Enable one extra behind a flag.
+3. Compare temporal accuracy, provenance, ACL safety, latency, and operational cost.
+4. Keep the extra only if it improves the baseline without becoming a second source of truth.

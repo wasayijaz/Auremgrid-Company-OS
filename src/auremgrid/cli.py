@@ -16,7 +16,7 @@ def main(argv: list[str] | None = None) -> int:
     demo = sub.add_parser("demo", help="seed synthetic fixtures and run a sample search")
     demo.add_argument("--db", default=":memory:")
 
-    brief = sub.add_parser("brief", help="print a Cosmo client brief from the seeded demo")
+    brief = sub.add_parser("brief", help="print a client brief from the seeded demo")
     brief.add_argument("--db", default=":memory:")
     brief.add_argument("--workspace", default="ws_alpha")
     brief.add_argument("--actor", default="act_alpha_operator")
@@ -32,6 +32,14 @@ def main(argv: list[str] | None = None) -> int:
     sync.add_argument("--db", default=":memory:")
     sync.add_argument("--actor", default="act_alpha_admin")
     sync.add_argument("--simulated", action="store_true")
+
+    onboard = sub.add_parser("onboard", help="create an isolated workspace for any agency")
+    onboard.add_argument("--agency", required=True)
+    onboard.add_argument("--workspace", required=True)
+    onboard.add_argument("--admin", required=True)
+    onboard.add_argument("--operator")
+    onboard.add_argument("--source-dir")
+    onboard.add_argument("--db", default="auremgrid.sqlite")
 
     args = parser.parse_args(argv)
     if args.command == "demo":
@@ -77,6 +85,18 @@ def main(argv: list[str] | None = None) -> int:
             os.seed_demo()
         results = os.sync_connectors(args.actor, include_simulated=args.simulated)
         print(json.dumps([result.to_dict() for result in results], indent=2))
+        os.close()
+        return 0
+    if args.command == "onboard":
+        os = CompanyOS(args.db)
+        result = os.onboard_agency(
+            agency_name=args.agency,
+            workspace_id=args.workspace,
+            admin_name=args.admin,
+            operator_name=args.operator,
+            source_dir=args.source_dir,
+        )
+        print(json.dumps(result, indent=2))
         os.close()
         return 0
     return 1
