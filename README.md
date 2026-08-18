@@ -9,7 +9,7 @@ It does two jobs at once:
 1. Keep a cited, time-aware brain for each client.
 2. Make work move through a real operating loop: ask, assign, produce, review, ship, stay in touch.
 
-The first version runs on your machine with Python and SQLite. No Docker. No API keys. No cloud account. The demo uses synthetic Client Alpha and Client Beta so the repo never needs private client data.
+The first version runs on your machine with Python and SQLite. No Docker. No API keys. No cloud account. Demo fixtures stay synthetic, so the repo never needs private client data. Any agency can onboard their own isolated workspace.
 
 ## Why this is useful
 
@@ -59,7 +59,7 @@ A new agency can clone this, run it locally, learn the model, and start putting 
 
 ## How it is built
 
-Auremgrid owns the canonical contracts. Other open-source systems can be plugged in later as adapters. They do not get to become a second source of truth.
+Auremgrid owns the canonical contracts. Graphiti, Cognee, Mem0, Onyx, RAGFlow, LightRAG, GraphRAG, and Letta are used in-process as projections. They do not get to become a second source of truth.
 
 ```text
 Sources
@@ -193,6 +193,10 @@ The last one should come back unknown. That is the point. Client Beta cannot see
 
 Create one workspace per client. Create actors for the people and agents who may touch that client. Ingest only the files that belong there. Write the client brain before anyone starts a page, ad, or deck.
 
+Use the onboard command instead of the demo names:
+
+python -m auremgrid.cli onboard --agency Northwind Studio --workspace ws_northwind --admin Northwind Admin
+
 A good first week looks like this:
 
 1. Pick one live account, not the whole roster.
@@ -214,8 +218,8 @@ src/auremgrid/
   extract/          deterministic fact and relation extraction
   services/         CompanyOS, the product surface
   api/              dashboard, HTTP, MCP-style tools
-  adapters/         ports for Graphiti, retrieval, and memory
-  cli.py            demo, brief, serve
+  adapters/         Graphiti, Cognee, Mem0, Onyx, RAGFlow, LightRAG, GraphRAG, Letta
+  cli.py            onboard, demo, brief, serve, sync
 
 docs/
   architecture.md
@@ -244,25 +248,27 @@ These are not style preferences. They are the product.
 
 ## What is intentionally not here yet
 
-The architecture leaves room for the best open-source engines without letting them take over:
+All eight engines are already used in the local path as projections, not as a second source of truth:
 
-| Later adapter | Role |
+| Engine | Role |
 |---|---|
-| Graphiti | temporal graph search behind Auremgrid permission and citation contracts |
-| Onyx FOSS | connector and UI patterns for Slack, Drive, Notion, and similar sources |
-| RAGFlow | messy PDF / deck parsing |
-| LightRAG | optional graph-RAG retrieval |
-| Cognee | later memory / control-plane comparison |
-| Mem0 | subjective preferences only, never canonical client facts |
+| Graphiti | temporal client-brain projection |
+| Cognee | current-belief control plane |
+| Mem0 | preference and interaction memory |
+| Onyx | connector catalog and knowledge-shell contract |
+| RAGFlow | messy-text cleaner before extraction |
+| LightRAG | static-corpus retrieval |
+| Microsoft GraphRAG | community and theme summaries |
+| Letta | stateful agent identity, never client facts |
 
-Those systems are not required to run the first version. They should only be added when they beat the local baseline on accuracy, provenance, permissions, or operational cost.
+A networked extra can replace a local projection later only if it beats this baseline.
 
-Also not in v0.1:
+Also not in this version:
 
-- GitHub publication. The local repo exists; the public remote is not connected yet.
-- Live Slack, ClickUp, Drive, or Figma sync.
-- Multi-user login, SSO, or hosted multi-tenant SaaS.
-- Automatic LLM extraction. The first extractor is deterministic so the contracts can be tested without a model.
+- Live Slack, Drive, task-tracker, or design-tool credentials
+- Multi-user login, SSO, or hosted multi-tenant SaaS
+- Automatic LLM extraction
+- Required installs of the networked Graphiti / Cognee / Mem0 / RAGFlow / LightRAG / GraphRAG / Letta servers
 
 ## Requirements
 
