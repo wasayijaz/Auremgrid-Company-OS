@@ -36,6 +36,8 @@ from auremgrid.domain.cosmo import (
 )
 from auremgrid.extract.deterministic import extract_claims
 from auremgrid.storage.sqlite import SqliteStore
+from auremgrid.adapters.graphiti_local import LocalTemporalGraph
+from auremgrid.adapters.hybrid import HybridRanker, RankedHit, cosine, hashed_embedding
 
 
 def utcnow() -> datetime:
@@ -57,6 +59,9 @@ def normalize_text(value: str) -> str:
 class CompanyOS:
     def __init__(self, db_path: str | Path = ":memory:") -> None:
         self.store = SqliteStore(db_path)
+        self.graph = LocalTemporalGraph()
+        self.ranker = HybridRanker()
+        self._embeddings: dict[str, tuple[float, ...]] = {}
 
     def close(self) -> None:
         self.store.close()
@@ -148,6 +153,13 @@ class CompanyOS:
         )
         self.store.create_document(document)
         extraction = extract_claims(content, observed)
+        self.graph.upsert_episode(
+            workspace_id,
+            source.id,
+            content,
+            observed.isoformat(),
+        )
+        self._embeddings[document.id] = hashed_embedding(content)
         fact_ids: list[str] = []
         relation_ids: list[str] = []
         for extracted in extraction.facts:
@@ -261,41 +273,67 @@ class CompanyOS:
         source_ids = [source.id for source in sources]
         if not query.strip():
             raise ValidationError("query is required")
-        items: list[EvidenceItem] = []
         query_norm = normalize_text(query)
+        query_embedding = hashed_embedding(query)
+        fused_hits: list[RankedHit] = []
+        documents_by_id: dict[str, tuple[Document, SourceArtifact]] = {}
+        facts_by_id: dict[str, Fact] = {}
         for document, source, score in self.store.search_documents(workspace_id, source_ids, query, limit):
-            span = _best_span(document.content, query)
-            items.append(
-                EvidenceItem(
-                    kind="document",
-                    score=round(score, 4),
-                    payload={"document_id": document.id, "source_key": source.source_key},
-                    citation=Citation(
-                        source_id=source.id,
-                        source_key=source.source_key,
-                        locator=source.locator,
-                        content_hash=source.content_hash,
-                        evidence_span=span,
-                        observed_at=document.observed_at,
-                    ),
-                )
-            )
+            documents_by_id[document.id] = (document, source)
+            fused_hits.append(RankedHit("document", document.id, score, ("keyword",)))
+            embedding = self._embeddings.get(document.id) or hashed_embedding(document.content)
+            vector_score = cosine(query_embedding, embedding)
+            if vector_score > 0:
+                fused_hits.append(RankedHit("document", document.id, vector_score, ("vector",)))
         for fact in self.store.list_facts(workspace_id, source_ids, as_of=as_of, include_superseded=True):
             haystack = normalize_text(f"{fact.subject} {fact.predicate} {fact.object}")
-            if not _token_overlap(query_norm, haystack):
+            keyword_hit = _token_overlap(query_norm, haystack)
+            graph_boost = self.graph.related_fact_boost(fact, query)
+            if not keyword_hit and graph_boost <= 0:
                 continue
-            score = 0.7 + (0.3 * fact.confidence)
+            facts_by_id[fact.id] = fact
+            score = (0.7 + (0.3 * fact.confidence)) if keyword_hit else 0.0
             if fact.superseded_by:
                 score -= 0.4
-            items.append(
-                EvidenceItem(
-                    kind="fact",
-                    score=round(score, 4),
-                    payload=fact.to_dict(),
-                    citation=fact.citation,
+            if keyword_hit:
+                fused_hits.append(RankedHit("fact", fact.id, score, ("keyword",)))
+            if graph_boost:
+                fused_hits.append(RankedHit("fact", fact.id, graph_boost, ("graph",)))
+        items: list[EvidenceItem] = []
+        for hit in self.ranker.fuse(fused_hits, limit=limit):
+            if hit.kind == "document":
+                document, source = documents_by_id[hit.key]
+                items.append(
+                    EvidenceItem(
+                        kind="document",
+                        score=round(hit.score, 4),
+                        payload={
+                            "document_id": document.id,
+                            "source_key": source.source_key,
+                            "channels": list(hit.channels),
+                        },
+                        citation=Citation(
+                            source_id=source.id,
+                            source_key=source.source_key,
+                            locator=source.locator,
+                            content_hash=source.content_hash,
+                            evidence_span=_best_span(document.content, query),
+                            observed_at=document.observed_at,
+                        ),
+                    )
                 )
-            )
-        items.sort(key=lambda item: item.score, reverse=True)
+            else:
+                fact = facts_by_id[hit.key]
+                payload = fact.to_dict()
+                payload["channels"] = list(hit.channels)
+                items.append(
+                    EvidenceItem(
+                        kind="fact",
+                        score=round(hit.score, 4),
+                        payload=payload,
+                        citation=fact.citation,
+                    )
+                )
         bounded = tuple(items[:limit])
         unknown = len(bounded) == 0
         message = "insufficient evidence" if unknown else "evidence retrieved"
@@ -694,6 +732,23 @@ class CompanyOS:
     def list_work(self, workspace_id: str, actor_id: str, open_only: bool = False) -> list[WorkItem]:
         self._require_actor(workspace_id, actor_id)
         return self.store.list_work_items(workspace_id, open_only=open_only)
+
+    def sync_connectors(self, actor_id: str, include_simulated: bool = False) -> list[IngestResult]:
+        from auremgrid.connectors.bus import ConnectorBus
+        from auremgrid.connectors.local import LocalMarkdownConnector
+        from auremgrid.connectors.simulated import SimulatedWorkspaceConnector
+
+        bus = ConnectorBus(self, actor_id)
+        root = Path(__file__).resolve().parents[3] / "fixtures"
+        if (root / "client_alpha").exists():
+            bus.register(LocalMarkdownConnector("ws_alpha", root / "client_alpha"))
+        if include_simulated:
+            self._require_actor("ws_alpha", actor_id)
+            bus.register(SimulatedWorkspaceConnector.slack("ws_alpha"))
+            bus.register(SimulatedWorkspaceConnector.drive("ws_alpha"))
+            bus.register(SimulatedWorkspaceConnector.clickup("ws_alpha"))
+            bus.register(SimulatedWorkspaceConnector.figma("ws_alpha"))
+        return bus.sync()
 
     def _require_writable(self, workspace_id: str, actor_id: str, action: str) -> Actor:
         actor = self._require_actor(workspace_id, actor_id)

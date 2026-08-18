@@ -28,6 +28,11 @@ def main(argv: list[str] | None = None) -> int:
     serve_cmd.add_argument("--port", type=int, default=8787)
     serve_cmd.add_argument("--seed", action="store_true")
 
+    sync = sub.add_parser("sync", help="pull connector events into the evidence layer")
+    sync.add_argument("--db", default=":memory:")
+    sync.add_argument("--actor", default="act_alpha_admin")
+    sync.add_argument("--simulated", action="store_true")
+
     args = parser.parse_args(argv)
     if args.command == "demo":
         os = CompanyOS(args.db)
@@ -65,6 +70,14 @@ def main(argv: list[str] | None = None) -> int:
             server.shutdown()
         finally:
             os.close()
+        return 0
+    if args.command == "sync":
+        os = CompanyOS(args.db)
+        if args.db == ":memory:":
+            os.seed_demo()
+        results = os.sync_connectors(args.actor, include_simulated=args.simulated)
+        print(json.dumps([result.to_dict() for result in results], indent=2))
+        os.close()
         return 0
     return 1
 
