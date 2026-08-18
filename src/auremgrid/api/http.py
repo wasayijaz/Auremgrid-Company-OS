@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 from auremgrid.api.mcp import McpToolRouter
 from auremgrid.domain.errors import AuremgridError, AuthorizationError, NotFoundError, ValidationError
 from auremgrid.services.brain import CompanyOS
+from pathlib import Path
 
 
 class CompanyOSRequestHandler(BaseHTTPRequestHandler):
@@ -23,6 +24,9 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/health":
                 self._json(200, {"ok": True})
+                return
+            if parsed.path in {"/", "/dashboard"}:
+                self._html(200, _dashboard_html())
                 return
             if parsed.path == "/search":
                 bundle = self.os.search(
@@ -128,6 +132,14 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _html(self, status: int, body: str) -> None:
+        payload = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def _handle_error(self, exc: Exception) -> None:
         if isinstance(exc, ValidationError):
             self._json(400, {"error": "validation_error", "message": str(exc)})
@@ -158,3 +170,8 @@ def serve(os: CompanyOS, host: str = "127.0.0.1", port: int = 8787) -> Threading
         {"os": os, "router": McpToolRouter(os)},
     )
     return ThreadingHTTPServer((host, port), handler)
+
+
+def _dashboard_html() -> str:
+    path = Path(__file__).with_name("dashboard.html")
+    return path.read_text(encoding="utf-8")

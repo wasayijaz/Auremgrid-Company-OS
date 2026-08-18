@@ -62,6 +62,10 @@ class CompanyOS:
         self.store.close()
 
     def create_workspace(self, name: str, workspace_id: str | None = None) -> Workspace:
+        if workspace_id:
+            existing = self.store.get_workspace(workspace_id)
+            if existing:
+                return existing
         workspace = Workspace(id=workspace_id or new_id("ws"), name=name, created_at=utcnow())
         return self.store.create_workspace(workspace)
 
@@ -75,6 +79,10 @@ class CompanyOS:
         self._require_workspace(workspace_id)
         if role not in {"admin", "operator", "agent"}:
             raise ValidationError(f"unsupported role: {role}")
+        if actor_id:
+            existing = self.store.get_actor(workspace_id, actor_id)
+            if existing:
+                return existing
         actor = Actor(
             id=actor_id or new_id("act"),
             workspace_id=workspace_id,

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Auremgrid Company OS</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0f1412; --card:#18201c; --line:#2a3a32; --ink:#e8efe9; --mute:#9bb0a4; --ok:#7dcea0; --warn:#e0b15a; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: Georgia, "Times New Roman", serif; background: var(--bg); color: var(--ink); }
+    header { padding: 28px 32px 16px; border-bottom: 1px solid var(--line); }
+    h1 { margin:0 0 6px; font-size: 32px; letter-spacing: -0.03em; }
+    p { margin:0; color: var(--mute); }
+    main { display:grid; grid-template-columns: 280px 1fr; gap: 20px; padding: 24px 32px 48px; }
+    aside, section { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    .stat { display:flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    pre { white-space: pre-wrap; word-break: break-word; font-family: Consolas, monospace; font-size: 13px; line-height: 1.45; }
+    nav a { display:block; color: var(--ink); text-decoration:none; padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .pill { display:inline-block; margin-top: 10px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Auremgrid Company OS</h1>
+    <p>Local Cosmo operating brain. Isolation, citations, work loop, and last-touchpoint trust.</p>
+  </header>
+  <main>
+    <aside>
+      <h2>Live checks</h2>
+      <div class="stat"><span>Health</span><strong id="health">checking</strong></div>
+      <div class="stat"><span>Workspace</span><strong>Client Alpha</strong></div>
+      <div class="stat"><span>Open work</span><strong id="open-work">-</strong></div>
+      <div class="stat"><span>Days silent</span><strong id="silence">-</strong></div>
+      <nav>
+        <a href="/health">/health</a>
+        <a href="/brief?workspace_id=ws_alpha&amp;actor_id=act_alpha_operator&amp;query=consultation%20price">/brief</a>
+        <a href="/work?workspace_id=ws_alpha&amp;actor_id=act_alpha_operator">/work</a>
+        <a href="/search?workspace_id=ws_alpha&amp;actor_id=act_alpha_operator&amp;query=consultation%20price">/search</a>
+        <a href="/search?workspace_id=ws_beta&amp;actor_id=act_beta_admin&amp;query=consultation%20price">cross-workspace search</a>
+      </nav>
+    </aside>
+    <section>
+      <h2>Client brief</h2>
+      <p id="snapshot"></p>
+      <p id="status" class="pill"></p>
+      <pre id="brief">Loading...</pre>
+    </section>
+  </main>
+  <script>
+    async function load() {
+      const health = await fetch("/health").then(r => r.json());
+      document.getElementById("health").textContent = health.ok ? "ok" : "down";
+      document.getElementById("health").className = health.ok ? "ok" : "warn";
+      const brief = await fetch("/brief?workspace_id=ws_alpha&actor_id=act_alpha_operator&query=consultation%20price").then(r => r.json());
+      document.getElementById("snapshot").textContent = brief.brain ? brief.brain.snapshot : "No brain";
+      document.getElementById("open-work").textContent = (brief.open_work || []).length;
+      document.getElementById("silence").textContent = brief.days_since_touchpoint;
+      document.getElementById("status").textContent = (brief.open_work && brief.open_work[0]) ? brief.open_work[0].title + " / " + brief.open_work[0].status : "no open work";
+      document.getElementById("brief").textContent = JSON.stringify(brief, null, 2);
+    }
+    load().catch(err => {
+      document.getElementById("brief").textContent = String(err);
+    });
+  </script>
+</body>
+</html>
+
