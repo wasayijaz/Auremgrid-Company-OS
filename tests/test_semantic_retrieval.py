@@ -122,7 +122,7 @@ class SemanticRetrievalTests(unittest.TestCase):
             self.assertEqual(len(row["vector"]), 64 * 4)
             first.close()
             second = CompanyOS(path)
-            self.assertEqual(second.store.schema_version, 17)
+            self.assertEqual(second.store.schema_version, 18)
             bundle = second.search(ws.id, actor.id, "launch")
             self.assertIn(result.document_id, {item.payload.get("document_id") for item in bundle.items})
             second.close()

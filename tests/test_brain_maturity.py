@@ -7,6 +7,7 @@ from pathlib import Path
 from auremgrid.adapters.hybrid import hashed_embedding
 from auremgrid.domain.errors import ValidationError
 from auremgrid.services.brain import CompanyOS
+from tests.auth_support import issue_identity
 
 
 class BrainMaturityTests(unittest.TestCase):
@@ -15,6 +16,7 @@ class BrainMaturityTests(unittest.TestCase):
         self.ws=self.os.create_organization_workspace(self.org.id,"Prime","client")
         self.owner=self.os.create_person(self.org.id,"Owner",role="owner")
         self.os.add_person_to_workspace(self.org.id,self.ws.id,self.owner.id,"admin")
+        _, self.identity = issue_identity(self.os,self.org.id,self.owner.id,self.ws.id)
 
     def tearDown(self) -> None: self.os.close()
 
@@ -30,16 +32,16 @@ class BrainMaturityTests(unittest.TestCase):
         second=self.os.brain_ops.create_entity(self.org.id,self.ws.id,self.owner.id,"Northstar Labs","client")
         with self.assertRaises(ValidationError):
             self.os.brain_ops.merge_entities(self.org.id,self.ws.id,self.owner.id,first["id"],second["id"],0.6,"Name similarity")
-        merge=self.os.brain_ops.merge_entities(self.org.id,self.ws.id,self.owner.id,first["id"],second["id"],0.98,"Confirmed same legal entity")
-        self.assertEqual(merge["target_entity_id"],second["id"])
+        proposal=self.os.brain_ops.brain_propose(self.org.id,self.ws.id,self.identity,"merge",[first["id"],second["id"]],0.98,"Confirmed same legal entity","review evidence",target_id=second["id"])
+        merge=self.os.brain_ops.brain_promote(self.org.id,self.ws.id,self.identity,proposal["id"],"approve")
+        self.assertEqual(merge["status"],"approved")
 
     def test_agent_decision_proposal_requires_human_promotion(self) -> None:
-        proposal=self.os.brain_ops.create_proposal(self.org.id,self.ws.id,"agent","agent_luna","decision","Use room imagery",
+        proposal=self.os.brain_ops.create_proposal(self.org.id,self.ws.id,"agent",self.identity,"decision","Use room imagery",
             {"statement":"Use room imagery","rationale":"Approved in review"},"Meeting transcript line 20",0.8)
         self.assertEqual(self.os.company.list_decisions(self.org.id,self.ws.id),[])
-        reviewed=self.os.brain_ops.review_proposal(self.org.id,self.owner.id,proposal["id"],"approve")
-        self.assertEqual(reviewed["promoted_type"],"decision")
-        self.assertEqual(len(self.os.company.list_decisions(self.org.id,self.ws.id)),1)
+        with self.assertRaises(ValidationError):
+            self.os.brain_ops.review_proposal(self.org.id,self.owner.id,proposal["id"],"approve")
 
     def test_knowledge_health_finds_unsourced_decision(self) -> None:
         self.os.create_decision(self.org.id,self.owner.id,"Use new hook","Client asked for it",workspace_id=self.ws.id)

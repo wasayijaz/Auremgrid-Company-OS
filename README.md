@@ -137,6 +137,10 @@ For a local open-source model, pass a local SentenceTransformers model directory
 
 Graph projection uses the same boundary: the default local temporal graph is rebuildable and schema 17 records building/active/failed generations. An optional injected Graphiti-compatible adapter may enrich the projection, but it never becomes canonical truth or receives an unrestricted query. Search passes the authorized source IDs and `as_of` moment to the graph, then rehydrates only canonical documents that still pass ACL and temporal checks. A failed or incomplete graph rebuild leaves the prior active generation in place and marks only the graph channel degraded.
 
+### Entity resolution and knowledge states (schema 18)
+
+Entity matching is a proposal workflow, not an automatic merge. Candidate aliases and merges are scoped to one organization/workspace and remain pending until an identity with `brain_promote` records an immutable decision. A merge creates a one-way redirect while preserving the original entity, alias owner, evidence, and decision history; alias lifecycle changes are append-only state events. Extracted facts begin as `inferred` knowledge-state events. Incompatible observations remain together with both citations in a conflict group, and a later human resolution appends `verified`/`stale` events without deleting history. Current search and health use the latest effective state; historical `as_of` queries can still inspect prior states. A scoped service/agent identity may propose but cannot promote, and cross-workspace candidates are rejected without disclosure.
+
 ### Authentication, jobs, connectors, and recovery
 
 ```mermaid

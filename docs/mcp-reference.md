@@ -6,6 +6,7 @@ and legacy actor arguments are checked against that identity before any service
 lookup. It exposes:
 
 - brain.search, brain.entity, brain.history, brain.neighbors, brain.sources, brain.recent
+- brain.propose (requires `brain_propose`) and brain.promote (requires `brain_promote`)
 - clients.list, clients.brief, clients.health
 - projects.list, projects.get
 - work.list, work.create, work.assign, work.update, work.review
@@ -24,7 +25,7 @@ lookup. It exposes:
 - integrations.list, integrations.configure, integrations.credentials.bind
 - integrations.verify, integrations.sync
 
-The original short tool names remain internal aliases for the same handlers. Permissions are enforced by the service layer, not by tool naming.
+The original short tool names remain internal aliases for the same handlers. Brain mutation tools use explicit proposal/promotion capabilities; they never fall back to `brain_read`. Proposer, reviewer, organization, person, workspace, and actor identity are derived or checked from the authenticated identity. Permissions are enforced by the service layer, not by tool naming.
 Connector sync enqueues a durable job. Credential binding accepts only an
 external `env:` reference; resolved credential material never enters MCP
 arguments, results, jobs, or the ledger.

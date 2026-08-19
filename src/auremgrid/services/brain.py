@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -586,10 +587,21 @@ class CompanyOS:
                         confidence=extracted.confidence,
                     ),
                 )
+                group = self._conflict_group_for(actor, fact)
+                if group and fact.conflict_group is None:
+                    fact = replace(fact, conflict_group=group)
                 # The old source remains current until every downstream row exists,
                 # so supersession still sees and updates the prior current facts.
                 self._supersede_matching(actor, fact)
                 self.store.create_fact(fact)
+                scope = self.company.workspace_scope(source.workspace_id)
+                if scope is not None:
+                    self.brain_ops._state_event(
+                        scope["organization_id"], source.workspace_id, "fact", fact.id,
+                        "conflicted" if fact.conflict_group else "inferred",
+                        "incompatible current observation" if fact.conflict_group else "deterministic extraction",
+                        source.id, actor.id, fact.valid_from, fact.valid_until,
+                    )
                 facts.append(fact)
             for extracted in extraction.relations:
                 relation = Relation(
@@ -649,7 +661,10 @@ class CompanyOS:
     ) -> EvidenceBundle:
         actor = self._require_actor(workspace_id, actor_id)
         requested_as_of = as_of
-        as_of = requested_as_of or utcnow()
+        # Knowledge-state events retain sub-second ordering.  Do not round the
+        # live read watermark or a just-recorded transition can disappear until
+        # the next wall-clock second.
+        as_of = requested_as_of or datetime.now(timezone.utc)
         sources = self.store.allowed_sources(workspace_id, actor, as_of=requested_as_of)
         source_ids = [source.id for source in sources]
         if not query.strip():
@@ -733,6 +748,9 @@ class CompanyOS:
             semantic_status = "degraded"
             semantic_detail = str(exc)
         for fact in self.store.list_facts(workspace_id, source_ids, as_of=as_of, include_superseded=True):
+            latest_state = self.brain_ops._knowledge_state_row(workspace_id, "fact", fact.id, as_of)
+            if latest_state is not None and latest_state["state"] == "stale":
+                continue
             haystack = normalize_text(f"{fact.subject} {fact.predicate} {fact.object}")
             keyword_hit = _token_overlap(query_norm, haystack)
             graph_boost = self.graph.related_fact_boost(fact, query) if hasattr(self.graph, "related_fact_boost") else 0.0
@@ -1475,10 +1493,21 @@ class CompanyOS:
                 continue
             if normalize_text(existing.object) == normalize_text(incoming.object):
                 continue
-            if incoming.conflict_group:
-                continue
-            if incoming.valid_from >= existing.valid_from:
-                self.store.mark_fact_superseded(incoming.workspace_id, existing.id, incoming.id)
+            # Incompatible current observations remain append-only and are
+            # grouped as a conflict; human resolution is a separate event.
+            group = incoming.conflict_group or existing.conflict_group or f"{normalize_text(incoming.subject)}::{normalize_text(incoming.predicate)}"
+            if existing.conflict_group is None:
+                self.store.conn.execute("UPDATE facts SET conflict_group=? WHERE id=?", (group, existing.id))
+            scope = self.company.workspace_scope(incoming.workspace_id)
+            if scope is not None:
+                self.brain_ops._state_event(scope["organization_id"], incoming.workspace_id, "fact", existing.id, "conflicted", "incompatible current observation", existing.source_id, actor.id)
+
+    def _conflict_group_for(self, actor: Actor, incoming: Fact) -> str | None:
+        source_ids = [source.id for source in self.store.allowed_sources(incoming.workspace_id, actor)]
+        for existing in self.store.list_facts(incoming.workspace_id, source_ids, include_superseded=False):
+            if normalize_text(existing.subject) == normalize_text(incoming.subject) and normalize_text(existing.predicate) == normalize_text(incoming.predicate) and normalize_text(existing.object) != normalize_text(incoming.object):
+                return existing.conflict_group or f"{normalize_text(incoming.subject)}::{normalize_text(incoming.predicate)}"
+        return None
 
     def _require_workspace(self, workspace_id: str) -> Workspace:
         workspace = self.store.get_workspace(workspace_id)

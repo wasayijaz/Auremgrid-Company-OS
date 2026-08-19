@@ -23,9 +23,9 @@ This matrix maps the product definition of complete to authoritative implementat
 | 17. MCP/API cover major domains | ExpandedApiTests and namespaced MCP discovery test |
 | 18. Dashboard surfaces major operations | 18 destinations including workflows, 8 metrics, Client HQ operational tabs, bearer-authenticated data fetches, and dashboard/API behavior tests |
 | 19. Projections rebuild after restart | ProjectionRestartTests, durable schema-16 embedding projection, and live rebuild report |
-| 20. Tests prove isolation, persistence, permissions, and workflows | 276 offline behavior tests |
+| 20. Tests prove isolation, persistence, permissions, and workflows | 289 offline behavior tests |
 | 21. README accurately describes reality | implemented/local fallback/optional/experimental/planned status sections |
-| 22. Existing data migrates forward | legacy-v1 migration test and schema 17 migration chain, including durable provider task identity, embedding projection, and graph generations |
+| 22. Existing data migrates forward | legacy-v1 migration test and schema 18 migration chain, including durable provider task identity, embedding projection, graph generations, entity resolution, and knowledge states |
 | 23. Wings coordinate through executable operating contracts | eight neutral templates, immutable definition versions/run snapshots, dependency and rework behavior, evidence/approval/handoff gates, REST/MCP parity, dashboard status, and workflow isolation tests |
 | 24. Repository changes are continuously verified | read-only GitHub Actions workflow compiles source/tests and runs the complete unittest suite on pushes and pull requests |
 | 25. Public callers cannot impersonate people or actors | bearer-derived principals, actor bindings, 401/403 separation, REST forgery tests, and MCP identity-parity tests |

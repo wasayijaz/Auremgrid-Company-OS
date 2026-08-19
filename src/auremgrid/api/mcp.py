@@ -24,6 +24,8 @@ class McpToolRouter:
             {"name": "sources", "description": "List sources visible to the actor."},
             {"name": "recent", "description": "List recently ingested documents visible to the actor."},
             {"name": "remember", "description": "Store an actor-scoped preference or interaction note."},
+            {"name": "brain.propose", "description": "Create a human-gated brain proposal in the authenticated workspace."},
+            {"name": "brain.promote", "description": "Approve or reject a brain proposal in the authenticated workspace."},
             {"name": "brief", "description": "Assemble the client brief: brain, playbooks, open work, and last touchpoint."},
             {"name": "engines", "description": "Show what each open-source engine contributed for a query."},
             {"name": "work", "description": "List open or all work items in a workspace."},
@@ -95,8 +97,9 @@ class McpToolRouter:
             if name in company_tools:
                 return self._call_company_tool(name, arguments)
             workspace_id = _required(arguments, "workspace_id")
-            actor_id = _required(arguments, "actor_id")
+            actor_id = _optional_str(arguments.get("actor_id"))
             if name == "search":
+                actor_id = _required(arguments, "actor_id")
                 as_of = _optional_dt(arguments.get("as_of"))
                 return self.os.search(
                     workspace_id,
@@ -106,6 +109,7 @@ class McpToolRouter:
                     limit=int(arguments.get("limit", 8)),
                 ).to_dict()
             if name == "entity":
+                actor_id = _required(arguments, "actor_id")
                 return self.os.entity(
                     workspace_id,
                     actor_id,
@@ -113,6 +117,7 @@ class McpToolRouter:
                     as_of=_optional_dt(arguments.get("as_of")),
                 )
             if name == "history":
+                actor_id = _required(arguments, "actor_id")
                 return self.os.history(
                     workspace_id,
                     actor_id,
@@ -120,6 +125,7 @@ class McpToolRouter:
                     predicate=arguments.get("predicate"),
                 )
             if name == "neighbors":
+                actor_id = _required(arguments, "actor_id")
                 return self.os.neighbors(
                     workspace_id,
                     actor_id,
@@ -127,10 +133,13 @@ class McpToolRouter:
                     as_of=_optional_dt(arguments.get("as_of")),
                 )
             if name == "sources":
+                actor_id = _required(arguments, "actor_id")
                 return self.os.sources(workspace_id, actor_id)
             if name == "recent":
+                actor_id = _required(arguments, "actor_id")
                 return self.os.recent(workspace_id, actor_id, limit=int(arguments.get("limit", 5)))
             if name == "remember":
+                actor_id = _required(arguments, "actor_id")
                 memory = self.os.remember(
                     workspace_id,
                     actor_id,
@@ -138,13 +147,39 @@ class McpToolRouter:
                     kind=str(arguments.get("kind", "preference")),
                 )
                 return memory.to_dict()
+            if name == "brain.propose":
+                kind = _required(arguments, "kind")
+                if kind in {"memory", "fact", "decision"}:
+                    return self.os.brain_ops.create_proposal(
+                        self.identity.organization_id, workspace_id, "person", self.identity,
+                        kind, _required(arguments, "content"), arguments.get("payload") or {},
+                        _required(arguments, "evidence"), float(arguments.get("confidence", 0.5)),
+                        _optional_str(arguments.get("source_id")),
+                    )
+                return self.os.brain_ops.brain_propose(
+                    self.identity.organization_id, workspace_id, self.identity,
+                    kind, [str(item) for item in arguments.get("candidate_entity_ids", [])],
+                    float(arguments.get("score", 0.0)), _required(arguments, "rationale"),
+                    _required(arguments, "evidence"), _optional_str(arguments.get("alias")),
+                    _optional_str(arguments.get("source_id")), _optional_str(arguments.get("target_id")),
+                    arguments.get("evidence_refs") or {},
+                )
+            if name == "brain.promote":
+                proposal_id, action = _required(arguments, "proposal_id"), _required(arguments, "action")
+                row = self.os.store.conn.execute("SELECT kind FROM memory_proposals WHERE organization_id=? AND id=?",
+                    (self.identity.organization_id, proposal_id)).fetchone()
+                if row is not None:
+                    return self.os.brain_ops.brain_promote_fact(self.identity, proposal_id, action)
+                return self.os.brain_ops.brain_promote(self.identity.organization_id, workspace_id, self.identity, proposal_id, action)
             if name == "brief":
+                actor_id = _required(arguments, "actor_id")
                 return self.os.account_brief(
                     workspace_id,
                     actor_id,
                     query=arguments.get("query"),
                 ).to_dict()
             if name == "work":
+                actor_id = _required(arguments, "actor_id")
                 items = self.os.list_work(
                     workspace_id,
                     actor_id,
@@ -388,6 +423,8 @@ def _optional_int(value: Any) -> int | None:
 
 
 def _mcp_capability(name: str) -> str:
+    if name in {"brain.propose"}: return "brain_propose"
+    if name in {"brain.promote"}: return "brain_promote"
     if name in {"search","entity","history","neighbors","sources","recent","brief","engines"} or name.startswith("brain."):
         return "brain_read"
     if name == "remember": return "brain_propose"

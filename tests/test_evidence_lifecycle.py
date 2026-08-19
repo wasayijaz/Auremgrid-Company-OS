@@ -33,7 +33,7 @@ class EvidenceLifecycleTests(unittest.TestCase):
         ).source
 
     def test_schema_13_has_durable_lifecycle_route_and_queue_tables(self) -> None:
-        self.assertEqual(self.os.store.schema_version, 17)
+        self.assertEqual(self.os.store.schema_version, 18)
         names = {row["name"] for row in self.os.store.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({
             "source_lifecycle_intervals", "provider_object_routes", "provider_object_route_events",
@@ -279,7 +279,9 @@ class EvidenceLifecycleTests(unittest.TestCase):
             observed_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
         )
         old_fact = self.os.store.conn.execute("SELECT * FROM facts WHERE source_id=?", (old.id,)).fetchone()
-        self.assertIn(old_fact["superseded_by"], successful.fact_ids)
+        self.assertIsNone(old_fact["superseded_by"])
+        new_fact = self.os.store.conn.execute("SELECT * FROM facts WHERE id=?", (successful.fact_ids[0],)).fetchone()
+        self.assertEqual(new_fact["conflict_group"], old_fact["conflict_group"])
 
     def test_closed_lifecycle_history_cannot_be_rewritten_by_direct_sql(self) -> None:
         source = self._ingest("immutable-close", "Immutable lifecycle evidence")

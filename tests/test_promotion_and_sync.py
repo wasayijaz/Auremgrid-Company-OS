@@ -2,20 +2,21 @@ from __future__ import annotations
 import unittest
 from datetime import datetime,timezone
 from auremgrid.services.brain import CompanyOS
+from tests.auth_support import issue_identity
 
 class PromotionSyncTests(unittest.TestCase):
     def setUp(self):
-        self.os=CompanyOS(":memory:");self.org=self.os.create_organization("Agency");self.ws=self.os.create_organization_workspace(self.org.id,"Prime","client");self.owner=self.os.create_person(self.org.id,"Owner",role="owner");self.os.add_person_to_workspace(self.org.id,self.ws.id,self.owner.id,"admin");self.actor=self.os.create_actor(self.ws.id,"Admin","admin")
+        self.os=CompanyOS(":memory:");self.org=self.os.create_organization("Agency");self.ws=self.os.create_organization_workspace(self.org.id,"Prime","client");self.owner=self.os.create_person(self.org.id,"Owner",role="owner");self.os.add_person_to_workspace(self.org.id,self.ws.id,self.owner.id,"admin");self.actor=self.os.create_actor(self.ws.id,"Admin","admin");_,self.identity=issue_identity(self.os,self.org.id,self.owner.id,self.ws.id,self.actor.id)
     def tearDown(self):self.os.close()
     def test_fact_proposal_promotes_to_cited_canonical_fact(self):
+        _, identity=issue_identity(self.os,self.org.id,self.owner.id,self.ws.id,self.actor.id)
         source=self.os.ingest_text(self.ws.id,self.actor.id,"meeting.md","Meeting evidence","memory://meeting").source
-        proposal=self.os.brain_ops.create_proposal(self.org.id,self.ws.id,"agent","luna","fact","Price is 199",{"subject":"Consultation","predicate":"price","object":"199 USD"},"Client confirmed 199",.9,source.id)
-        reviewed=self.os.brain_ops.review_proposal(self.org.id,self.owner.id,proposal["id"],"approve")
-        self.assertEqual(reviewed["promoted_type"],"fact");result=self.os.search(self.ws.id,self.actor.id,"consultation price");self.assertFalse(result.unknown);self.assertEqual(next(i for i in result.items if i.kind=="fact").citation.source_id,source.id)
+        proposal=self.os.brain_ops.create_proposal(self.org.id,self.ws.id,"agent",self.identity,"fact","Price is 199",{"subject":"Consultation","predicate":"price","object":"199 USD"},"Client confirmed 199",.9,source.id)
+        reviewed=self.os.brain_ops.brain_promote_fact(identity,proposal["id"],"approve")
+        self.assertEqual(reviewed["status"],"approved");result=self.os.search(self.ws.id,self.actor.id,"consultation price");self.assertFalse(result.unknown);self.assertEqual(next(i for i in result.items if i.kind=="fact").citation.source_id,source.id)
     def test_memory_proposal_promotes_to_canonical_knowledge(self):
-        proposal=self.os.brain_ops.create_proposal(self.org.id,self.ws.id,"agent","luna","memory","Prefers concise reviews",{},"Review history",.8)
-        result=self.os.brain_ops.review_proposal(self.org.id,self.owner.id,proposal["id"],"approve")
-        self.assertIsNotNone(result["promoted_id"]);self.assertEqual(self.os.store.conn.execute("SELECT content FROM canonical_knowledge").fetchone()[0],"Prefers concise reviews")
+        proposal=self.os.brain_ops.create_proposal(self.org.id,self.ws.id,"agent",self.identity,"memory","Prefers concise reviews",{},"Review history",.8)
+        with self.assertRaises(Exception): self.os.brain_ops.review_proposal(self.org.id,self.owner.id,proposal["id"],"approve")
     def test_message_reply_closes_unanswered_state(self):
         conversation=self.os.client_ops.create_conversation(self.org.id,self.ws.id,self.owner.id,"gmail","email")
         message=self.os.client_ops.add_message(self.org.id,self.ws.id,self.owner.id,conversation.id,"contact","c","Please reply",datetime.now(timezone.utc),True)

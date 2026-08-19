@@ -87,7 +87,8 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/entity":
                 self._json(
                     200,
-                    self.os.entity(_need(params, "workspace_id"), _need(params, "actor_id"), _need(params, "name")),
+                    self.os.entity(_need(params, "workspace_id"), _need(params, "actor_id"), _need(params, "name"),
+                                   as_of=_optional_dt(params.get("as_of"))),
                 )
                 return
             if parsed.path == "/history":
@@ -216,10 +217,14 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 assert identity is not None
                 self._json(200,{"integrations":self.os.integrations.list(identity)}); return
             if parsed.path == "/memory-proposals":
-                organization_id,person_id=_need(params,"organization_id"),_need(params,"person_id"); workspace_id=params.get("workspace_id")
-                if workspace_id:self.os._require_person_access(organization_id,workspace_id,person_id)
-                rows=self.os.store.conn.execute("SELECT * FROM memory_proposals WHERE organization_id=? AND (? IS NULL OR workspace_id=?) ORDER BY created_at DESC",(organization_id,workspace_id,workspace_id)).fetchall()
-                self._json(200,{"proposals":[dict(r) for r in rows]}); return
+                assert identity is not None
+                workspace_id = params.get("workspace_id")
+                if not workspace_id: raise NotFoundError("proposal scope not found")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self.os._require_person_access(scoped.organization_id, workspace_id, scoped.person_id)
+                self._json(200,{"proposals":self.os.brain_ops.list_memory_proposals(
+                    scoped.organization_id, workspace_id, scoped.person_id, _optional_dt(params.get("as_of"))
+                )}); return
             if parsed.path == "/knowledge-health":
                 self._json(200,self.os.brain_ops.knowledge_health(_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id"))); return
             if parsed.path == "/work/detail":
@@ -444,9 +449,15 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/automations/activate":
                 self._json(200,self.os.agent_ops.activate_automation(_need(payload,"organization_id"),_need(payload,"person_id"),_need(payload,"automation_id")));return
             if parsed.path == "/memory-proposals":
-                self._json(201,self.os.brain_ops.create_proposal(_need(payload,"organization_id"),_optional_str(payload.get("workspace_id")),_need(payload,"proposer_type"),_need(payload,"proposer_id"),_need(payload,"kind"),_need(payload,"content"),payload.get("payload") or {},_need(payload,"evidence"),float(payload.get("confidence",0.5)),_optional_str(payload.get("source_id")))); return
+                assert identity is not None
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(201,self.os.brain_ops.create_proposal(scoped.organization_id,workspace_id,"person",scoped,_need(payload,"kind"),_need(payload,"content"),payload.get("payload") or {},_need(payload,"evidence"),float(payload.get("confidence",0.5)),_optional_str(payload.get("source_id")))); return
             if parsed.path == "/memory-proposals/review":
-                self._json(200,self.os.brain_ops.review_proposal(_need(payload,"organization_id"),_need(payload,"person_id"),_need(payload,"proposal_id"),_need(payload,"action"),payload.get("edited_payload"))); return
+                # The legacy review endpoint is intentionally retired. Use the
+                # authenticated brain promotion route, which enforces workspace
+                # scope and append-only proposal decisions.
+                raise NotFoundError("legacy proposal review route retired; use brain.promote")
             if parsed.path == "/initiatives":
                 self._json(201,self.os.create_initiative(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"project_id"),_need(payload,"name"),str(payload.get("description","")))); return
             if parsed.path == "/deliverables/version":

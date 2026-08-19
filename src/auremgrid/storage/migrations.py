@@ -1598,6 +1598,127 @@ MIGRATIONS = (
             ON graph_projection_generations(workspace_id) WHERE status='active';
         """,
     ),
+    Migration(
+        18,
+        "entity_resolution_and_knowledge_state_events",
+        """
+        ALTER TABLE entities ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+        ALTER TABLE entities ADD COLUMN merged_into TEXT;
+        ALTER TABLE entities ADD COLUMN updated_at TEXT;
+        UPDATE entities SET updated_at=created_at WHERE updated_at IS NULL;
+        ALTER TABLE entity_aliases ADD COLUMN reviewed_by_person_id TEXT;
+        ALTER TABLE entity_aliases ADD COLUMN reviewed_at TEXT;
+        ALTER TABLE entity_aliases ADD COLUMN evidence TEXT;
+        ALTER TABLE entity_aliases ADD COLUMN retired_at TEXT;
+        CREATE TABLE IF NOT EXISTS entity_resolution_proposals (
+            id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, workspace_id TEXT,
+            kind TEXT NOT NULL CHECK(kind IN ('alias','merge')),
+            alias TEXT, source_entity_id TEXT, target_entity_id TEXT,
+            candidate_entity_ids TEXT NOT NULL, score REAL NOT NULL,
+            rationale TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
+            proposed_by_person_id TEXT NOT NULL, reviewed_by_person_id TEXT,
+            evidence_source_id TEXT, evidence TEXT NOT NULL,
+            evidence_refs TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL, reviewed_at TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_entity_resolution_scope
+            ON entity_resolution_proposals(organization_id,workspace_id,status,created_at);
+        CREATE TABLE IF NOT EXISTS entity_alias_state_events (
+            id TEXT PRIMARY KEY, alias_id TEXT NOT NULL, organization_id TEXT NOT NULL,
+            workspace_id TEXT, state TEXT NOT NULL CHECK(state IN ('active','retired')),
+            reason TEXT NOT NULL, actor_id TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(alias_id) REFERENCES entity_aliases(id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_entity_alias_state_lookup
+            ON entity_alias_state_events(alias_id,created_at,id);
+        CREATE TABLE IF NOT EXISTS entity_resolution_decisions (
+            id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, organization_id TEXT NOT NULL,
+            workspace_id TEXT, action TEXT NOT NULL CHECK(action IN ('approve','reject')),
+            reviewer_person_id TEXT NOT NULL, rationale TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(proposal_id) REFERENCES entity_resolution_proposals(id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_resolution_one_decision ON entity_resolution_decisions(proposal_id);
+        CREATE TABLE IF NOT EXISTS knowledge_proposal_decisions (
+            id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, organization_id TEXT NOT NULL,
+            workspace_id TEXT, action TEXT NOT NULL CHECK(action IN ('approve','reject')),
+            reviewer_person_id TEXT NOT NULL, created_at TEXT NOT NULL,
+            UNIQUE(proposal_id), FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_proposal_decision_scope
+            ON knowledge_proposal_decisions(organization_id,workspace_id,created_at);
+        INSERT OR IGNORE INTO knowledge_proposal_decisions(id,proposal_id,organization_id,workspace_id,action,reviewer_person_id,created_at)
+            SELECT 'legacy_decision_'||id,id,organization_id,workspace_id,
+                   CASE WHEN status='approved' THEN 'approve' ELSE 'reject' END,
+                   COALESCE(reviewed_by_person_id,'system'),COALESCE(reviewed_at,created_at)
+            FROM memory_proposals WHERE status IN ('approved','rejected');
+        CREATE TRIGGER IF NOT EXISTS knowledge_proposal_decision_no_update BEFORE UPDATE ON knowledge_proposal_decisions BEGIN
+            SELECT RAISE(ABORT,'knowledge proposal decisions are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS knowledge_proposal_decision_no_delete BEFORE DELETE ON knowledge_proposal_decisions BEGIN
+            SELECT RAISE(ABORT,'knowledge proposal decisions are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS entity_resolution_decision_no_update BEFORE UPDATE ON entity_resolution_decisions BEGIN
+            SELECT RAISE(ABORT,'entity resolution decisions are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS entity_resolution_decision_no_delete BEFORE DELETE ON entity_resolution_decisions BEGIN
+            SELECT RAISE(ABORT,'entity resolution decisions are append-only'); END;
+        CREATE TABLE IF NOT EXISTS knowledge_state_events (
+            id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, workspace_id TEXT,
+            subject_type TEXT NOT NULL CHECK(subject_type IN ('fact','relation','canonical','proposal')),
+            subject_id TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('verified','high_confidence','inferred','conflicted','stale','proposed')),
+            reason TEXT NOT NULL, evidence_source_id TEXT, actor_id TEXT NOT NULL,
+            effective_from TEXT NOT NULL, effective_until TEXT, recorded_at TEXT NOT NULL,
+            event_sequence INTEGER NOT NULL,
+            supersedes_event_id TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_state_lookup
+            ON knowledge_state_events(workspace_id,subject_type,subject_id,effective_from,event_sequence);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_state_sequence
+            ON knowledge_state_events(organization_id,COALESCE(workspace_id,''),subject_type,subject_id,event_sequence);
+        CREATE TRIGGER IF NOT EXISTS knowledge_state_monotonic_insert BEFORE INSERT ON knowledge_state_events BEGIN
+            SELECT CASE WHEN NEW.event_sequence != COALESCE((
+                SELECT MAX(event_sequence) FROM knowledge_state_events
+                WHERE organization_id=NEW.organization_id AND workspace_id IS NEW.workspace_id
+                  AND subject_type=NEW.subject_type AND subject_id=NEW.subject_id
+            ),0)+1 THEN RAISE(ABORT,'knowledge state sequence is not monotonic') END;
+            SELECT CASE WHEN NEW.supersedes_event_id IS NOT (
+                SELECT id FROM knowledge_state_events
+                WHERE organization_id=NEW.organization_id AND workspace_id IS NEW.workspace_id
+                  AND subject_type=NEW.subject_type AND subject_id=NEW.subject_id
+                ORDER BY event_sequence DESC LIMIT 1
+            ) THEN RAISE(ABORT,'knowledge state supersedes link is invalid') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS entity_resolution_no_delete BEFORE DELETE ON entity_resolution_proposals BEGIN
+            SELECT RAISE(ABORT,'entity resolution proposals are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS entity_resolution_no_update BEFORE UPDATE ON entity_resolution_proposals BEGIN
+            SELECT RAISE(ABORT,'entity resolution proposals are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS knowledge_state_no_update BEFORE UPDATE ON knowledge_state_events BEGIN
+            SELECT RAISE(ABORT,'knowledge state events are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS knowledge_state_no_delete BEFORE DELETE ON knowledge_state_events BEGIN
+            SELECT RAISE(ABORT,'knowledge state events are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS entity_aliases_no_update BEFORE UPDATE OF entity_id,alias,normalized_alias,confidence,status,source_id,created_at ON entity_aliases BEGIN
+            SELECT RAISE(ABORT,'entity aliases are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS entity_aliases_no_update_lifecycle BEFORE UPDATE OF retired_at,reviewed_by_person_id,reviewed_at,evidence ON entity_aliases BEGIN
+            SELECT RAISE(ABORT,'entity alias lifecycle is append-only events'); END;
+        CREATE TRIGGER IF NOT EXISTS entity_aliases_no_delete BEFORE DELETE ON entity_aliases BEGIN
+            SELECT RAISE(ABORT,'entity aliases are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS entity_alias_state_no_update BEFORE UPDATE ON entity_alias_state_events BEGIN
+            SELECT RAISE(ABORT,'entity alias state events are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS entity_alias_state_no_delete BEFORE DELETE ON entity_alias_state_events BEGIN
+            SELECT RAISE(ABORT,'entity alias state events are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS entity_merge_history_no_update BEFORE UPDATE ON entity_merge_history BEGIN
+            SELECT RAISE(ABORT,'entity merge history is append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS entity_merge_history_no_delete BEFORE DELETE ON entity_merge_history BEGIN
+            SELECT RAISE(ABORT,'entity merge history is append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS memory_proposals_no_update BEFORE UPDATE ON memory_proposals BEGIN
+            SELECT RAISE(ABORT,'memory proposals are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS memory_proposals_no_delete BEFORE DELETE ON memory_proposals BEGIN
+            SELECT RAISE(ABORT,'memory proposals are append-only'); END;
+        """,
+    ),
 )
 
 
@@ -1621,12 +1742,115 @@ def migrate(conn: sqlite3.Connection) -> int:
             }
             if "operation_key" in columns:
                 sql = sql.replace("ALTER TABLE provider_sync_tasks ADD COLUMN operation_key TEXT;", "")
+        if migration.version == 18:
+            entity_columns = {row[1] for row in conn.execute("PRAGMA table_info(entities)").fetchall()}
+            alias_columns = {row[1] for row in conn.execute("PRAGMA table_info(entity_aliases)").fetchall()}
+            proposal_columns = {row[1] for row in conn.execute("PRAGMA table_info(entity_resolution_proposals)").fetchall()}
+            state_columns = {row[1] for row in conn.execute("PRAGMA table_info(knowledge_state_events)").fetchall()}
+            for column in ("status", "merged_into", "updated_at"):
+                if column in entity_columns:
+                    sql = sql.replace(f"ALTER TABLE entities ADD COLUMN {column} TEXT NOT NULL DEFAULT 'active';", "")
+                    sql = sql.replace(f"ALTER TABLE entities ADD COLUMN {column} TEXT;", "")
+            for column in ("reviewed_by_person_id", "reviewed_at", "evidence", "retired_at"):
+                if column in alias_columns:
+                    sql = sql.replace(f"ALTER TABLE entity_aliases ADD COLUMN {column} TEXT;", "")
+            if proposal_columns and "evidence_refs" not in proposal_columns:
+                conn.execute("ALTER TABLE entity_resolution_proposals ADD COLUMN evidence_refs TEXT NOT NULL DEFAULT '{}'")
+            for column, definition in (
+                ("event_sequence", "INTEGER NOT NULL DEFAULT 0"),
+                ("supersedes_event_id", "TEXT"),
+            ):
+                if state_columns and column not in state_columns:
+                    conn.execute(f"ALTER TABLE knowledge_state_events ADD COLUMN {column} {definition}")
+            if state_columns and conn.execute(
+                "SELECT 1 FROM knowledge_state_events WHERE event_sequence=0 LIMIT 1"
+            ).fetchone():
+                conn.execute("DROP TRIGGER IF EXISTS knowledge_state_no_update")
+                prior_by_subject: dict[tuple[object, object, object, object], tuple[int, str]] = {}
+                for row in conn.execute("""SELECT id,organization_id,workspace_id,subject_type,subject_id
+                    FROM knowledge_state_events
+                    ORDER BY organization_id,workspace_id,subject_type,subject_id,effective_from,recorded_at,id""").fetchall():
+                    key=(row[1],row[2],row[3],row[4]); prior=prior_by_subject.get(key)
+                    sequence=1 if prior is None else prior[0]+1
+                    conn.execute(
+                        "UPDATE knowledge_state_events SET event_sequence=?,supersedes_event_id=? WHERE id=?",
+                        (sequence,None if prior is None else prior[1],row[0]),
+                    )
+                    prior_by_subject[key]=(sequence,row[0])
         with conn:
             conn.executescript(sql)
             conn.execute(
                 "INSERT INTO schema_migrations(version, name) VALUES (?, ?)",
                 (migration.version, migration.name),
             )
+    # Schema-18 databases created before alias lifecycle events were added are
+    # upgraded in place without changing the public schema number.  This is
+    # intentionally idempotent and keeps append-only guards true for both new
+    # installs and already-opened v18 stores.
+    if 18 in {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}:
+        with conn:
+            proposal_columns = {row[1] for row in conn.execute("PRAGMA table_info(entity_resolution_proposals)").fetchall()}
+            if "evidence_refs" not in proposal_columns:
+                conn.execute("ALTER TABLE entity_resolution_proposals ADD COLUMN evidence_refs TEXT NOT NULL DEFAULT '{}'")
+            state_columns = {row[1] for row in conn.execute("PRAGMA table_info(knowledge_state_events)").fetchall()}
+            if "event_sequence" not in state_columns:
+                conn.execute("ALTER TABLE knowledge_state_events ADD COLUMN event_sequence INTEGER NOT NULL DEFAULT 0")
+            if "supersedes_event_id" not in state_columns:
+                conn.execute("ALTER TABLE knowledge_state_events ADD COLUMN supersedes_event_id TEXT")
+            if conn.execute("SELECT 1 FROM knowledge_state_events WHERE event_sequence=0 LIMIT 1").fetchone():
+                conn.execute("DROP TRIGGER IF EXISTS knowledge_state_no_update")
+                rows = conn.execute("""
+                    SELECT id,organization_id,workspace_id,subject_type,subject_id
+                    FROM knowledge_state_events
+                    ORDER BY organization_id,workspace_id,subject_type,subject_id,effective_from,recorded_at,id
+                """).fetchall()
+                previous: dict[tuple[object, object, object, object], tuple[int, str]] = {}
+                for row in rows:
+                    key = (row[1], row[2], row[3], row[4])
+                    prior = previous.get(key)
+                    sequence = 1 if prior is None else prior[0] + 1
+                    conn.execute(
+                        "UPDATE knowledge_state_events SET event_sequence=?,supersedes_event_id=? WHERE id=?",
+                        (sequence, None if prior is None else prior[1], row[0]),
+                    )
+                    previous[key] = (sequence, row[0])
+            conn.executescript("""
+            CREATE TABLE IF NOT EXISTS entity_alias_state_events (
+                id TEXT PRIMARY KEY, alias_id TEXT NOT NULL, organization_id TEXT NOT NULL,
+                workspace_id TEXT, state TEXT NOT NULL CHECK(state IN ('active','retired')),
+                reason TEXT NOT NULL, actor_id TEXT NOT NULL, created_at TEXT NOT NULL,
+                FOREIGN KEY(alias_id) REFERENCES entity_aliases(id),
+                FOREIGN KEY(organization_id) REFERENCES organizations(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_entity_alias_state_lookup ON entity_alias_state_events(alias_id,created_at,id);
+            CREATE TRIGGER IF NOT EXISTS entity_aliases_no_update_lifecycle BEFORE UPDATE OF retired_at,reviewed_by_person_id,reviewed_at,evidence ON entity_aliases BEGIN
+                SELECT RAISE(ABORT,'entity alias lifecycle is append-only events'); END;
+            CREATE TRIGGER IF NOT EXISTS entity_alias_state_no_update BEFORE UPDATE ON entity_alias_state_events BEGIN
+                SELECT RAISE(ABORT,'entity alias state events are append-only'); END;
+            CREATE TRIGGER IF NOT EXISTS entity_alias_state_no_delete BEFORE DELETE ON entity_alias_state_events BEGIN
+                SELECT RAISE(ABORT,'entity alias state events are append-only'); END;
+            CREATE TRIGGER IF NOT EXISTS knowledge_state_no_update BEFORE UPDATE ON knowledge_state_events BEGIN
+                SELECT RAISE(ABORT,'knowledge state events are append-only'); END;
+            DROP INDEX IF EXISTS idx_knowledge_state_lookup;
+            DROP INDEX IF EXISTS idx_knowledge_state_sequence;
+            CREATE INDEX IF NOT EXISTS idx_knowledge_state_lookup
+                ON knowledge_state_events(workspace_id,subject_type,subject_id,effective_from,event_sequence);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_state_sequence
+                ON knowledge_state_events(organization_id,COALESCE(workspace_id,''),subject_type,subject_id,event_sequence);
+            CREATE TRIGGER IF NOT EXISTS knowledge_state_monotonic_insert BEFORE INSERT ON knowledge_state_events BEGIN
+                SELECT CASE WHEN NEW.event_sequence != COALESCE((
+                    SELECT MAX(event_sequence) FROM knowledge_state_events
+                    WHERE organization_id=NEW.organization_id AND workspace_id IS NEW.workspace_id
+                      AND subject_type=NEW.subject_type AND subject_id=NEW.subject_id
+                ),0)+1 THEN RAISE(ABORT,'knowledge state sequence is not monotonic') END;
+                SELECT CASE WHEN NEW.supersedes_event_id IS NOT (
+                    SELECT id FROM knowledge_state_events
+                    WHERE organization_id=NEW.organization_id AND workspace_id IS NEW.workspace_id
+                      AND subject_type=NEW.subject_type AND subject_id=NEW.subject_id
+                    ORDER BY event_sequence DESC LIMIT 1
+                ) THEN RAISE(ABORT,'knowledge state supersedes link is invalid') END;
+            END;
+            """)
     row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
     return int(row[0] or 0)
 

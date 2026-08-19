@@ -4,7 +4,7 @@
 
 Organization is the tenant boundary. Internal and client workspaces sit beneath it; people are organization-level identities joined to any number of workspaces. The SQLite ledger uses ordered migrations. Delivery, client operations, agency systems, agents, automations, integrations, and reports all share that boundary.
 
-Disposable projections rebuild at process start from canonical documents, facts, and memories. Schema 16 adds a durable, rebuildable float32 document embedding projection and workspace-scoped vector index; schema 17 adds fenced graph projection generations. The offline embedding implementation is explicitly a deterministic lexical fallback; local semantic providers implement the EmbeddingProvider port and report degraded health without silently switching providers.
+Disposable projections rebuild at process start from canonical documents, facts, and memories. Schema 16 adds a durable, rebuildable float32 document embedding projection and workspace-scoped vector index; schema 17 adds fenced graph projection generations; schema 18 adds append-only entity-resolution proposals/decisions, alias lifecycle events, and temporal knowledge-state events. The offline embedding implementation is explicitly a deterministic lexical fallback; local semantic providers implement the EmbeddingProvider port and report degraded health without silently switching providers.
 
 Auremgrid is built around an evidence ledger. Documents enter from sources, facts and relations are extracted into append-only observations, and query results return evidence bundles with citations.
 
@@ -14,7 +14,21 @@ Auremgrid is built around an evidence ledger. Documents enter from sources, fact
 2. ACL first: inaccessible sources are removed before search, scoring, or graph expansion.
 3. Append-only truth: new observations never silently overwrite old observations.
 4. Provenance required: every document and fact carries source id, locator, hash, and timestamps.
-5. Agent access is read-only by default.
+5. Agent access is read-only by default; a scoped service identity may propose a candidate, but promotion always requires the separate brain_promote capability.
+
+Entity resolution is deliberately human-gated:
+
+```mermaid
+flowchart LR
+    Evidence[Canonical evidence] --> Candidate[Scoped alias / merge proposal]
+    Candidate --> Pending[Append-only pending record]
+    Pending -->|brain_promote| Decision[Immutable approve / reject decision]
+    Decision -->|approve| Projection[One-way entity redirect + alias provenance]
+    Decision -->|reject| History[Preserved proposal history]
+    Fact[Extracted fact] --> State[Temporal knowledge-state event]
+    State --> Conflict[Conflict group]
+    Conflict --> Resolution[Human resolution event]
+```
 
 ## operating layer
 
