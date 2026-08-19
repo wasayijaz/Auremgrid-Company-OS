@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterable
 
 from auremgrid.domain.models import Fact, Relation
 from auremgrid.extract.deterministic import extract_claims
@@ -19,28 +19,54 @@ class LocalTemporalGraph:
 
     def __init__(self) -> None:
         self.episodes: list[dict[str, Any]] = []
+        self._generations: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._active_generation: dict[str, str] = {}
+        self._health: dict[str, Any] = {"status": "healthy", "generation": None, "detail": None}
 
-    def upsert_episode(self, workspace_id: str, source_id: str, content: str, observed_at: str) -> None:
+    def upsert_episode(self, workspace_id: str, source_id: str, content: str, observed_at: str, generation: str | None = None) -> None:
         observed = datetime.fromisoformat(observed_at)
         extraction = extract_claims(content, observed)
-        self.episodes.append(
-            {
-                "workspace_id": workspace_id,
-                "source_id": source_id,
-                "content": content,
-                "observed_at": observed_at,
-                "facts": extraction.facts,
-                "relations": extraction.relations,
-            }
-        )
+        episode = {
+            "workspace_id": workspace_id, "source_id": source_id, "content": content,
+            "observed_at": observed_at, "facts": extraction.facts, "relations": extraction.relations,
+        }
+        target_generation = generation or self._active_generation.get(workspace_id, "live")
+        self._generations.setdefault((workspace_id, target_generation), []).append(episode)
+        if generation is None:
+            self._active_generation.setdefault(workspace_id, target_generation)
+        self.episodes = [item for (ws, gen), values in self._generations.items() if self._active_generation.get(ws) == gen for item in values]
 
-    def search(self, workspace_id: str, query: str, as_of: str | None = None) -> list[dict[str, Any]]:
+    def rebuild_workspace(self, generation: str, episodes: Iterable[dict[str, Any]]) -> None:
+        staged: list[dict[str, Any]] = []
+        for item in episodes:
+            self.upsert_episode(item["workspace_id"], item["source_id"], item["content"], item["observed_at"], generation)
+            staged.append(self._generations[(item["workspace_id"], generation)][-1])
+        self._health = {"status": "building", "generation": generation, "detail": None}
+
+    def activate_generation(self, workspace_id: str, generation: str) -> None:
+        if (workspace_id, generation) not in self._generations:
+            raise ValueError("graph generation is not staged")
+        self._active_generation[workspace_id] = generation
+        self.episodes = [item for (ws, gen), values in self._generations.items() if self._active_generation.get(ws) == gen for item in values]
+        self._health = {"status": "healthy", "generation": generation, "detail": None}
+
+    def health(self) -> dict[str, Any]:
+        return dict(self._health)
+
+    def search(self, workspace_id: str, query: str, allowed_source_ids: Iterable[str] = (), as_of: datetime | None = None, limit: int = 8, generation: str | None = None) -> list[dict[str, Any]]:
+        allowed = set(allowed_source_ids)
+        if not allowed:
+            return []
         needle = query.lower()
         hits: list[dict[str, Any]] = []
-        for episode in self.episodes:
+        active_generation = generation or self._active_generation.get(workspace_id)
+        episodes = self._generations.get((workspace_id, active_generation), []) if active_generation else []
+        for episode in episodes:
             if episode["workspace_id"] != workspace_id:
                 continue
-            if as_of and episode["observed_at"] > as_of:
+            if allowed and episode["source_id"] not in allowed:
+                continue
+            if as_of and datetime.fromisoformat(episode["observed_at"]) > as_of:
                 continue
             if needle and needle not in episode["content"].lower():
                 continue
@@ -52,7 +78,7 @@ class LocalTemporalGraph:
                     "relation_count": len(episode["relations"]),
                 }
             )
-        return hits
+        return hits[:limit]
 
     def neighbors(
         self,

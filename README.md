@@ -79,7 +79,7 @@ graph TD
     C1 --> L
     C2 --> L
     L --> ACL[ACL before lookup, ranking, counts, or aggregation]
-    L --> PROJ[Rebuildable FTS, graph, vector, memory, summary projections]
+    L --> PROJ[Rebuildable FTS, generation-fenced graph, vector, memory, summary projections]
 ```
 
 People are organization-level identities. A person can span client workspaces, but every read and write is scoped through organization and workspace membership. Denied records are not disclosed through counts, ranking, or existence checks.
@@ -134,6 +134,8 @@ flowchart LR
 The default provider is a deterministic, offline lexical fallback so a new installation works without model files or network access. Schema 16 stores rebuildable float32 vectors in `document_embedding_projection`, scoped by workspace, document, provider, model, version, and dimensions. Retrieval authorizes active source/document IDs before either channel runs; semantic candidates are never gated by an FTS hit and are rehydrated from canonical SQLite rows before ranking. A provider outage is reported as `semantic=degraded` with `fallback_used=false` while cited FTS evidence remains available.
 
 For a local open-source model, pass a local SentenceTransformers model directory to `SentenceTransformerEmbeddingProvider`. Model loading is lazy and local-files-only; no download is attempted. Rebuild projections after changing model/version and verify the projection health before enabling semantic traffic.
+
+Graph projection uses the same boundary: the default local temporal graph is rebuildable and schema 17 records building/active/failed generations. An optional injected Graphiti-compatible adapter may enrich the projection, but it never becomes canonical truth or receives an unrestricted query. Search passes the authorized source IDs and `as_of` moment to the graph, then rehydrates only canonical documents that still pass ACL and temporal checks. A failed or incomplete graph rebuild leaves the prior active generation in place and marks only the graph channel degraded.
 
 ### Authentication, jobs, connectors, and recovery
 

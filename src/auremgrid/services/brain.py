@@ -42,6 +42,7 @@ from auremgrid.domain.company import (
     Review, ReviewComment, WorkspaceMembership,
 )
 from auremgrid.adapters.graphiti_local import LocalTemporalGraph
+from auremgrid.adapters.ports import GraphProjectionPort
 from auremgrid.adapters.hybrid import HybridRanker, RankedHit
 from auremgrid.adapters.stack import OpenSourceStack
 from auremgrid.services.client_ops import ClientOperations
@@ -87,13 +88,15 @@ class CompanyOS:
         *,
         embedding_provider: EmbeddingProvider | None = None,
         vector_index: Any | None = None,
+        graph_projection: GraphProjectionPort | None = None,
     ) -> None:
         self.store = SqliteStore(db_path)
         self.company = CompanyRepository(self.store.conn)
         self.client_ops = ClientOperations(self.store.conn, new_id, self._require_person_access)
         self.agency_ops = AgencyOperations(self.store.conn, new_id, self._require_person_access, self.company)
         self.agent_ops = AgentOperations(self.store.conn, new_id, self.company, self.agency_ops, self.client_ops)
-        self.graph = LocalTemporalGraph()
+        self.graph: GraphProjectionPort = graph_projection or LocalTemporalGraph()
+        self.graph_health = {"status": "healthy", "generation": None, "detail": None}
         self.ranker = HybridRanker()
         self._embeddings: dict[str, tuple[float, ...]] = {}
         self.embedding_provider = embedding_provider or DeterministicFallbackEmbeddingProvider()
@@ -109,7 +112,7 @@ class CompanyOS:
         self.jobs = JobOperations(self.store.conn, new_id)
         self.secrets = SecretBindingService(self.store.conn, new_id, EnvironmentSecretStore())
         self.integrations = IntegrationOperations(self)
-        self.rebuild_projections()
+        self.rebuild_projections(rebuild_graph=graph_projection is None)
 
     def close(self) -> None:
         self.store.close()
@@ -134,18 +137,18 @@ class CompanyOS:
             "projection": projection,
         }
 
-    def rebuild_projections(self, workspace_id: str | None = None) -> dict[str, Any]:
+    def rebuild_projections(self, workspace_id: str | None = None, *, rebuild_graph: bool = True) -> dict[str, Any]:
         """Rebuild disposable projections from current canonical evidence.
 
         The in-memory adapters are shared across workspaces, so a requested
         workspace acts as the trigger rather than a destructive partial filter.
         Rebuilding the full active set preserves isolation for every other workspace.
         """
-        self.graph = LocalTemporalGraph()
         self.stack = OpenSourceStack()
         workspaces = self.store.conn.execute("SELECT id FROM workspaces").fetchall()
         total_documents = total_facts = 0
         embedding_documents: list[tuple[str, Document]] = []
+        graph_documents: list[tuple[str, Document]] = []
         for ws_row in workspaces:
             ws = ws_row["id"]
             documents = self.store.conn.execute(
@@ -166,9 +169,9 @@ class CompanyOS:
             for row in documents:
                 document = self.store._document_from_row(row)
                 embedding_documents.append((ws, document))
+                graph_documents.append((ws, document))
                 if document.source_id in source_ids:
                     current_documents.append(document)
-                    self.graph.upsert_episode(ws, document.source_id, document.content, document.observed_at.isoformat())
                     self.stack.ingest_document(document, document.content, document.observed_at)
             facts = self.store.list_facts(ws, source_ids, include_superseded=True) if source_ids else []
             for fact in facts: self.stack.ingest_fact(fact)
@@ -179,6 +182,42 @@ class CompanyOS:
                 fact_count=excluded.fact_count,last_rebuilt_at=excluded.last_rebuilt_at,last_error=NULL""",
                 (ws,"healthy",len(current_documents),len(facts),utcnow().isoformat(),None))
             total_documents += len(current_documents); total_facts += len(facts)
+            if rebuild_graph:
+                generation = new_id("graphgen")
+                self.store.conn.commit()
+                snapshot_documents = [document for graph_ws, document in graph_documents if graph_ws == ws]
+                maximum = max(
+                    (f"{document.recorded_at.isoformat()}|{document.id}" for document in snapshot_documents),
+                    default="",
+                )
+                snapshot_watermark = f"{len(snapshot_documents)}|{maximum}"
+                self.store.start_graph_generation(ws, generation, snapshot_watermark)
+                self.store.conn.commit()
+                try:
+                    self.graph.rebuild_workspace(
+                        generation,
+                        [
+                            {"workspace_id": ws, "source_id": document.source_id,
+                             "content": document.content, "observed_at": document.observed_at.isoformat()}
+                            for graph_ws, document in graph_documents
+                            if graph_ws == ws
+                        ],
+                    )
+                    self.store.activate_graph_generation(ws, generation)
+                    activate = getattr(self.graph, "activate_generation", None)
+                    if activate is not None:
+                        activate(ws, generation)
+                    self.graph_health = self.graph.health()
+                except ValidationError as exc:
+                    self.store.fail_graph_generation(ws, generation, "stale_snapshot")
+                    active_generation = self.store.graph_generation_state(ws)["active_generation"]
+                    activate = getattr(self.graph, "activate_generation", None)
+                    if activate is not None and active_generation:
+                        activate(ws, active_generation)
+                    self.graph_health = {"status": "healthy", "generation": active_generation, "detail": "stale_generation"}
+                except Exception:
+                    self.store.fail_graph_generation(ws, generation)
+                    self.graph_health = {"status": "degraded", "generation": None, "detail": "provider_failed"}
         # Projection-health rows above are independent of the vector generation;
         # close that write before the atomic vector replacement begins.
         self.store.conn.commit()
@@ -419,6 +458,18 @@ class CompanyOS:
         digest = content_hash(content)
         existing = self.store.find_source(workspace_id, source_key, digest)
         if existing:
+            if self.graph_health.get("status") == "degraded":
+                row = self.store.conn.execute(
+                    "SELECT * FROM documents WHERE workspace_id=? AND source_id=? ORDER BY recorded_at DESC LIMIT 1",
+                    (workspace_id, existing.id),
+                ).fetchone()
+                if row is not None:
+                    document = self.store._document_from_row(row)
+                    try:
+                        self.graph.upsert_episode(workspace_id, existing.id, document.content, document.observed_at.isoformat())
+                        self.graph_health = self.graph.health()
+                    except Exception:
+                        self.graph_health = {"status": "degraded", "generation": None, "detail": "provider_failed"}
             if not self.store.source_is_active(workspace_id, existing.id):
                 self.store.activate_source(workspace_id, existing.id, reason="identical_source_reactivated")
                 self.rebuild_projections(workspace_id)
@@ -459,7 +510,13 @@ class CompanyOS:
         facts, relations = self._persist_ingestion(
             actor, source, document, extraction, lifecycle_at
         )
-        self.graph.upsert_episode(workspace_id, source.id, content, observed.isoformat())
+        try:
+            self.graph.upsert_episode(workspace_id, source.id, content, observed.isoformat())
+            self.graph_health = self.graph.health()
+        except Exception:
+            # Canonical ingestion has already committed; graph projection repair
+            # is retried by the next explicit rebuild and cannot roll back truth.
+            self.graph_health = {"status": "degraded", "generation": None, "detail": "provider_failed"}
         try:
             vector = tuple(self.embedding_provider.embed([content])[0])
             if len(vector) != self.embedding_provider.dimensions:
@@ -605,6 +662,41 @@ class CompanyOS:
         for document, source, score in fts_hits:
             documents_by_id[document.id] = (document, source)
             fused_hits.append(RankedHit("document", document.id, score, ("keyword",)))
+        graph_status = "healthy"
+        graph_hits = 0
+        try:
+            graph_state = self.store.graph_generation_state(workspace_id)
+            active_graph_generation = graph_state["active_generation"]
+            if not active_graph_generation:
+                raise RuntimeError("graph projection is not active")
+            for external_hit in self.graph.search(
+                workspace_id, query, source_ids, as_of=as_of, limit=limit, generation=active_graph_generation
+            ):
+                source_id = external_hit.get("source_id")
+                if not isinstance(source_id, str) or source_id not in source_ids:
+                    continue
+                document_ref = external_hit.get("document_id")
+                if document_ref is not None:
+                    document = self.store.get_document(workspace_id, document_ref) if isinstance(document_ref, str) else None
+                    if document is None or document.source_id != source_id or document.id not in self.store.allowed_document_ids(workspace_id, [source_id], as_of):
+                        continue
+                else:
+                    document = next(
+                        (candidate for candidate in (self.store.get_document(workspace_id, doc_id) for doc_id in
+                         self.store.allowed_document_ids(workspace_id, [source_id], as_of)) if candidate is not None),
+                        None,
+                    )
+                if document is None:
+                    continue
+                source = next((candidate for candidate in sources if candidate.id == source_id), None)
+                if source is None:
+                    continue
+                documents_by_id[document.id] = (document, source)
+                fused_hits.append(RankedHit("document", document.id, 0.2, ("graph",)))
+                graph_hits += 1
+        except Exception:
+            graph_status = "degraded"
+            self.graph_health = {"status": "degraded", "generation": None, "detail": "provider_failed"}
         semantic_status = "healthy"
         semantic_detail: str | None = None
         semantic_hits = 0
@@ -643,7 +735,7 @@ class CompanyOS:
         for fact in self.store.list_facts(workspace_id, source_ids, as_of=as_of, include_superseded=True):
             haystack = normalize_text(f"{fact.subject} {fact.predicate} {fact.object}")
             keyword_hit = _token_overlap(query_norm, haystack)
-            graph_boost = self.graph.related_fact_boost(fact, query)
+            graph_boost = self.graph.related_fact_boost(fact, query) if hasattr(self.graph, "related_fact_boost") else 0.0
             if not keyword_hit and graph_boost <= 0:
                 continue
             facts_by_id[fact.id] = fact
@@ -696,6 +788,8 @@ class CompanyOS:
             "fts": "healthy",
             "semantic": semantic_status,
             "semantic_hits": semantic_hits,
+            "graph": graph_status,
+            "graph_hits": graph_hits,
             "fallback_used": self.embedding_provider.name == "deterministic_lexical_fallback",
             "provider": self.embedding_provider.name,
             "model": self.embedding_provider.model,

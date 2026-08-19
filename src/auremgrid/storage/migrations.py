@@ -1576,6 +1576,28 @@ MIGRATIONS = (
             ON document_embedding_projection(workspace_id, provider, model, provider_version);
         """,
     ),
+    Migration(
+        17,
+        "graph_projection_generations",
+        """
+        CREATE TABLE IF NOT EXISTS graph_projection_generations (
+            workspace_id TEXT NOT NULL,
+            generation TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('building','active','failed','retired')),
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            failed_at TEXT,
+            error_code TEXT,
+            snapshot_watermark TEXT NOT NULL DEFAULT '',
+            expected_prior_generation TEXT,
+            ordinal INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(workspace_id,generation),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_graph_projection_active
+            ON graph_projection_generations(workspace_id) WHERE status='active';
+        """,
+    ),
 )
 
 

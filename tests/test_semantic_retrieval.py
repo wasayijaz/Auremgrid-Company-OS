@@ -122,7 +122,7 @@ class SemanticRetrievalTests(unittest.TestCase):
             self.assertEqual(len(row["vector"]), 64 * 4)
             first.close()
             second = CompanyOS(path)
-            self.assertEqual(second.store.schema_version, 16)
+            self.assertEqual(second.store.schema_version, 17)
             bundle = second.search(ws.id, actor.id, "launch")
             self.assertIn(result.document_id, {item.payload.get("document_id") for item in bundle.items})
             second.close()
@@ -130,14 +130,14 @@ class SemanticRetrievalTests(unittest.TestCase):
     def test_historical_semantic_hit_survives_restart_after_source_retirement(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "historical.sqlite"
-            base = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=2)
+            base = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=30)
             first = CompanyOS(path, embedding_provider=TinySemanticProvider())
             ws, actor = self._workspace(first)
             result = first.ingest_text(
                 ws.id, actor.id, "brief", "release readiness", "memory://brief", observed_at=base
             )
             first.store.retire_source(ws.id, result.source.id, base + timedelta(days=2))
-            as_of = base + timedelta(days=1)
+            as_of = base + timedelta(minutes=15)
             before = first.search(ws.id, actor.id, "launch", as_of=as_of)
             self.assertIn(result.document_id, {item.payload.get("document_id") for item in before.items})
             first.close()

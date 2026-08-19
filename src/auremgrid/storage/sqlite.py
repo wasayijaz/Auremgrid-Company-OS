@@ -269,6 +269,79 @@ class SqliteStore:
     def now_iso() -> str:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
+    def graph_snapshot_watermark(self, workspace_id: str) -> str:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS count, COALESCE(MAX(recorded_at || '|' || id), '') AS maximum FROM documents WHERE workspace_id=?",
+            (workspace_id,),
+        ).fetchone()
+        return f"{int(row['count'])}|{row['maximum'] or ''}"
+
+    def start_graph_generation(self, workspace_id: str, generation: str, snapshot_watermark: str = "") -> None:
+        with self.atomic(immediate=True):
+            prior = self.conn.execute(
+                "SELECT generation FROM graph_projection_generations WHERE workspace_id=? AND status='active'",
+                (workspace_id,),
+            ).fetchone()
+            ordinal_row = self.conn.execute(
+                "SELECT COALESCE(MAX(ordinal),0)+1 AS next_ordinal FROM graph_projection_generations WHERE workspace_id=?",
+                (workspace_id,),
+            ).fetchone()
+            self.conn.execute(
+                """INSERT INTO graph_projection_generations(
+                    workspace_id,generation,status,started_at,snapshot_watermark,expected_prior_generation,ordinal
+                ) VALUES (?,?,'building',?,?,?,?)""",
+                (workspace_id, generation, self.now_iso(), snapshot_watermark,
+                 prior["generation"] if prior else None, int(ordinal_row["next_ordinal"])),
+            )
+
+    def activate_graph_generation(self, workspace_id: str, generation: str) -> None:
+        with self.atomic(immediate=True):
+            row = self.conn.execute(
+                "SELECT * FROM graph_projection_generations WHERE workspace_id=? AND generation=?",
+                (workspace_id, generation),
+            ).fetchone()
+            if row is None or row["status"] != "building":
+                raise ValidationError("graph generation is not building")
+            prior = self.conn.execute(
+                "SELECT generation,ordinal FROM graph_projection_generations WHERE workspace_id=? AND status='active'",
+                (workspace_id,),
+            ).fetchone()
+            if prior is not None and row["expected_prior_generation"] != prior["generation"]:
+                raise ValidationError("graph generation is stale")
+            if self.graph_snapshot_watermark(workspace_id) != row["snapshot_watermark"]:
+                raise ValidationError("graph snapshot is stale")
+            now = self.now_iso()
+            self.conn.execute(
+                "UPDATE graph_projection_generations SET status='retired' WHERE workspace_id=? AND status='active'",
+                (workspace_id,),
+            )
+            self.conn.execute(
+                "UPDATE graph_projection_generations SET status='active',completed_at=? WHERE workspace_id=? AND generation=?",
+                (now, workspace_id, generation),
+            )
+
+    def fail_graph_generation(self, workspace_id: str, generation: str, error_code: str = "provider_failed") -> None:
+        self.conn.execute(
+            """UPDATE graph_projection_generations SET status='failed',failed_at=?,error_code=?
+               WHERE workspace_id=? AND generation=? AND status='building'""",
+            (self.now_iso(), error_code, workspace_id, generation),
+        )
+
+    def graph_generation_state(self, workspace_id: str) -> dict[str, object]:
+        active = self.conn.execute(
+            "SELECT generation,status,completed_at FROM graph_projection_generations WHERE workspace_id=? AND status='active'",
+            (workspace_id,),
+        ).fetchone()
+        building = self.conn.execute(
+            "SELECT generation,status FROM graph_projection_generations WHERE workspace_id=? AND status='building' ORDER BY started_at DESC LIMIT 1",
+            (workspace_id,),
+        ).fetchone()
+        return {
+            "active_generation": active["generation"] if active else None,
+            "active_status": active["status"] if active else None,
+            "building_generation": building["generation"] if building else None,
+        }
+
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
