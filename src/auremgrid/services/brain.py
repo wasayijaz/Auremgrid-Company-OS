@@ -36,9 +36,21 @@ from auremgrid.domain.ops import (
 )
 from auremgrid.extract.deterministic import extract_claims
 from auremgrid.storage.sqlite import SqliteStore
+from auremgrid.storage.company import CompanyRepository
+from auremgrid.domain.company import (
+    Decision, Deliverable, Organization, OrganizationMembership, Person, Project,
+    Review, ReviewComment, WorkspaceMembership,
+)
 from auremgrid.adapters.graphiti_local import LocalTemporalGraph
 from auremgrid.adapters.hybrid import HybridRanker, RankedHit, cosine, hashed_embedding
 from auremgrid.adapters.stack import OpenSourceStack
+from auremgrid.services.client_ops import ClientOperations
+from auremgrid.services.agency_ops import AgencyOperations
+from auremgrid.services.agent_ops import AgentOperations
+from auremgrid.services.brain_ops import BrainOperations
+from auremgrid.services.dashboard import DashboardService
+from auremgrid.services.work_ops import WorkOperations
+from auremgrid.adapters.semantic import DeterministicFallbackEmbeddingProvider, LocalVectorIndex
 
 
 def utcnow() -> datetime:
@@ -60,13 +72,205 @@ def normalize_text(value: str) -> str:
 class CompanyOS:
     def __init__(self, db_path: str | Path = ":memory:") -> None:
         self.store = SqliteStore(db_path)
+        self.company = CompanyRepository(self.store.conn)
+        self.client_ops = ClientOperations(self.store.conn, new_id, self._require_person_access)
+        self.agency_ops = AgencyOperations(self.store.conn, new_id, self._require_person_access, self.company)
+        self.agent_ops = AgentOperations(self.store.conn, new_id, self.company, self.agency_ops, self.client_ops)
         self.graph = LocalTemporalGraph()
         self.ranker = HybridRanker()
         self._embeddings: dict[str, tuple[float, ...]] = {}
+        self.embedding_provider = DeterministicFallbackEmbeddingProvider()
+        self.vector_index = LocalVectorIndex()
         self.stack = OpenSourceStack()
+        self.brain_ops = BrainOperations(self)
+        self.dashboard = DashboardService(self)
+        self.work_ops = WorkOperations(self.store,self.company,new_id,self._require_person_access)
+        self.rebuild_projections()
 
     def close(self) -> None:
         self.store.close()
+
+    def rebuild_projections(self, workspace_id: str | None = None) -> dict[str, Any]:
+        """Rebuild every disposable local projection from the canonical SQLite ledger."""
+        self.graph = LocalTemporalGraph()
+        self.stack = OpenSourceStack()
+        self._embeddings.clear()
+        self.vector_index = LocalVectorIndex()
+        workspaces = self.store.conn.execute(
+            "SELECT id FROM workspaces" + (" WHERE id=?" if workspace_id else ""),
+            (workspace_id,) if workspace_id else (),
+        ).fetchall()
+        total_documents = total_facts = 0
+        for ws_row in workspaces:
+            ws = ws_row["id"]
+            documents = self.store.conn.execute("SELECT * FROM documents WHERE workspace_id=?", (ws,)).fetchall()
+            for row in documents:
+                document = self.store._document_from_row(row)
+                self.graph.upsert_episode(ws, document.source_id, document.content, document.observed_at.isoformat())
+                self.stack.ingest_document(document, document.content, document.observed_at)
+                vector = self.embedding_provider.embed([document.content])[0]
+                self._embeddings[document.id] = vector
+                self.vector_index.upsert(ws, document.id, vector)
+            source_ids = [row["id"] for row in self.store.conn.execute("SELECT id FROM sources WHERE workspace_id=?", (ws,)).fetchall()]
+            facts = self.store.list_facts(ws, source_ids, include_superseded=True) if source_ids else []
+            for fact in facts: self.stack.ingest_fact(fact)
+            memories = self.store.conn.execute("SELECT * FROM memories WHERE workspace_id=?",(ws,)).fetchall()
+            for memory in memories: self.stack.remember(ws,memory["actor_id"],memory["content"],memory["kind"])
+            self.store.conn.execute("""INSERT INTO projection_state VALUES ('local_projections',?,?,?,?,?,?)
+                ON CONFLICT(name,workspace_id) DO UPDATE SET status=excluded.status,document_count=excluded.document_count,
+                fact_count=excluded.fact_count,last_rebuilt_at=excluded.last_rebuilt_at,last_error=NULL""",
+                (ws,"healthy",len(documents),len(facts),utcnow().isoformat(),None))
+            total_documents += len(documents); total_facts += len(facts)
+        self.store.conn.commit()
+        return {"status":"healthy","workspaces":len(workspaces),"documents":total_documents,"facts":total_facts,
+            "embedding_provider":self.embedding_provider.name}
+
+    def create_organization(self, name: str, organization_id: str | None = None) -> Organization:
+        if not name.strip():
+            raise ValidationError("organization name is required")
+        if organization_id:
+            existing = self.company.get_organization(organization_id)
+            if existing:
+                return existing
+        item = Organization(organization_id or new_id("org"), name.strip(), utcnow())
+        return self.company.save_organization(item)
+
+    def create_organization_workspace(
+        self, organization_id: str, name: str, kind: str = "client", workspace_id: str | None = None
+    ) -> Workspace:
+        if self.company.get_organization(organization_id) is None:
+            raise NotFoundError(f"organization not found: {organization_id}")
+        if kind not in {"internal", "client"}:
+            raise ValidationError("workspace kind must be internal or client")
+        workspace = self.create_workspace(name, workspace_id)
+        if self.company.workspace_scope(workspace.id) is None:
+            self.company.attach_workspace(organization_id, workspace.id, kind)
+        return workspace
+
+    def create_person(
+        self, organization_id: str, name: str, email: str | None = None, title: str | None = None,
+        department: str | None = None, manager_id: str | None = None, role: str = "member",
+        person_id: str | None = None,
+    ) -> Person:
+        if self.company.get_organization(organization_id) is None:
+            raise NotFoundError(f"organization not found: {organization_id}")
+        if not name.strip() or role not in {"owner", "admin", "member"}:
+            raise ValidationError("valid person name and organization role are required")
+        now = utcnow()
+        person = self.company.save_person(Person(person_id or new_id("person"), organization_id, name.strip(), email,
+            title, department, manager_id, "active", now, now))
+        self.company.save_org_membership(OrganizationMembership(new_id("om"), organization_id, person.id, role, now))
+        return person
+
+    def add_person_to_workspace(self, organization_id: str, workspace_id: str, person_id: str, role: str = "operator") -> WorkspaceMembership:
+        scope = self.company.workspace_scope(workspace_id)
+        if scope is None or scope["organization_id"] != organization_id:
+            raise NotFoundError("workspace not found in organization")
+        if self.company.get_person(organization_id, person_id) is None:
+            raise NotFoundError("person not found in organization")
+        if role not in {"admin", "operator", "viewer"}:
+            raise ValidationError("unsupported workspace role")
+        return self.company.save_workspace_membership(WorkspaceMembership(new_id("wm"), workspace_id, person_id, role, utcnow()))
+
+    def create_project(self, organization_id: str, workspace_id: str, person_id: str, name: str,
+        description: str = "", priority: str = "normal", due_date: str | None = None,
+        budget: float | None = None, tags: list[str] | None = None) -> Project:
+        self._require_person_access(organization_id, workspace_id, person_id, write=True)
+        if not name.strip() or priority not in {"low", "normal", "high", "urgent"}:
+            raise ValidationError("valid project name and priority are required")
+        now = utcnow()
+        return self.company.save_project(Project(new_id("project"), organization_id, workspace_id, name.strip(),
+            description, person_id, "planned", priority, None, due_date, budget, tuple(tags or ()), "healthy", 0.0, now, now))
+
+    def create_initiative(self, organization_id: str, workspace_id: str, person_id: str, project_id: str,
+        name: str, description: str = "") -> dict[str,Any]:
+        self._require_person_access(organization_id,workspace_id,person_id,write=True)
+        if self.company.get_project(workspace_id,project_id) is None: raise NotFoundError("project not found")
+        now=utcnow().isoformat();item={"id":new_id("initiative"),"organization_id":organization_id,"workspace_id":workspace_id,
+            "project_id":project_id,"name":name,"description":description,"status":"planned","owner_person_id":person_id,"created_at":now,"updated_at":now}
+        self.store.conn.execute("INSERT INTO initiatives VALUES (?,?,?,?,?,?,?,?,?,?)",tuple(item.values()));self.store.conn.commit();return item
+
+    def list_projects(self, organization_id: str, workspace_id: str, person_id: str) -> list[Project]:
+        self._require_person_access(organization_id, workspace_id, person_id)
+        return self.company.list_projects(workspace_id)
+
+    def create_deliverable(self, organization_id: str, workspace_id: str, person_id: str, project_id: str,
+        title: str, type: str, work_item_id: str | None = None) -> Deliverable:
+        self._require_person_access(organization_id, workspace_id, person_id, write=True)
+        if self.company.get_project(workspace_id, project_id) is None:
+            raise NotFoundError("project not found")
+        allowed = {"design_asset","landing_page","ad_creative","video","report","copy","presentation","website","document","campaign_output"}
+        if type not in allowed or not title.strip():
+            raise ValidationError("valid deliverable title and type are required")
+        return self.company.save_deliverable(Deliverable(new_id("deliverable"),organization_id,workspace_id,project_id,
+            work_item_id,title.strip(),type,person_id,1,"draft",None,None,None,None,0,utcnow(),None))
+
+    def open_review(self, organization_id: str, workspace_id: str, person_id: str, deliverable_id: str,
+        kind: str = "internal", reviewer_person_id: str | None = None) -> Review:
+        self._require_person_access(organization_id, workspace_id, person_id, write=True)
+        deliverable = self.company.get_deliverable(workspace_id, deliverable_id)
+        if deliverable is None:
+            raise NotFoundError("deliverable not found")
+        if kind not in {"internal", "client"}:
+            raise ValidationError("review kind must be internal or client")
+        return self.company.save_review(Review(new_id("review"),organization_id,workspace_id,deliverable_id,
+            deliverable.current_version,kind,"open",reviewer_person_id,utcnow(),None,None))
+
+    def add_deliverable_version(self, organization_id: str, workspace_id: str, person_id: str,
+        deliverable_id: str, notes: str, file_url: str | None = None) -> Deliverable:
+        self._require_person_access(organization_id,workspace_id,person_id,write=True)
+        deliverable=self.company.get_deliverable(workspace_id,deliverable_id)
+        if deliverable is None: raise NotFoundError("deliverable not found")
+        version=deliverable.current_version+1;now=utcnow()
+        self.store.conn.execute("INSERT INTO deliverable_versions VALUES (?,?,?,?,?,?)",(new_id("dversion"),deliverable_id,version,notes,person_id,now.isoformat()))
+        if file_url:self.store.conn.execute("INSERT INTO deliverable_files VALUES (?,?,?,?,?,?,?)",(new_id("dfile"),deliverable_id,version,f"Version {version}",file_url,"source",now.isoformat()))
+        updated=Deliverable(**{**deliverable.__dict__,"current_version":version,"approval_status":"draft"})
+        return self.company.update_deliverable(updated)
+
+    def decide_review(self, organization_id: str, workspace_id: str, person_id: str, review_id: str, decision: str) -> Review:
+        self._require_person_access(organization_id, workspace_id, person_id, write=True)
+        review = self.company.get_review(workspace_id, review_id)
+        if review is None:
+            raise NotFoundError("review not found")
+        if review.status != "open" or decision not in {"approved", "revision_requested", "rejected"}:
+            raise ValidationError("open review and valid decision are required")
+        status = "approved" if decision == "approved" else decision
+        updated=self.company.update_review(Review(**{**review.__dict__, "status": status, "decision": decision, "closed_at": utcnow()}))
+        deliverable=self.company.get_deliverable(workspace_id,review.deliverable_id)
+        if deliverable:
+            revisions=deliverable.revision_count+(1 if decision=="revision_requested" else 0)
+            self.company.update_deliverable(Deliverable(**{**deliverable.__dict__,"approval_status":decision,"revision_count":revisions}))
+        return updated
+
+    def add_review_comment(self, organization_id: str, workspace_id: str, person_id: str, review_id: str,
+        body: str, timestamp_seconds: float | None = None) -> ReviewComment:
+        self._require_person_access(organization_id,workspace_id,person_id,write=True)
+        if self.company.get_review(workspace_id,review_id) is None: raise NotFoundError("review not found")
+        if not body.strip(): raise ValidationError("review comment body is required")
+        return self.company.save_review_comment(ReviewComment(new_id("reviewcomment"),review_id,person_id,body.strip(),timestamp_seconds,utcnow()))
+
+    def create_decision(self, organization_id: str, person_id: str, statement: str, rationale: str,
+        workspace_id: str | None = None, project_id: str | None = None, source_id: str | None = None,
+        evidence: str = "", tags: list[str] | None = None) -> Decision:
+        membership = self.company.org_membership(organization_id, person_id)
+        if membership is None:
+            raise AuthorizationError("person is not an organization member")
+        if workspace_id:
+            self._require_person_access(organization_id, workspace_id, person_id, write=True)
+        if not statement.strip() or not rationale.strip():
+            raise ValidationError("decision statement and rationale are required")
+        now = utcnow()
+        return self.company.save_decision(Decision(new_id("decision"),organization_id,workspace_id,project_id,None,
+            statement.strip(),rationale.strip(),person_id,(),source_id,None,evidence,now,now,None,None,tuple(tags or ()),()))
+
+    def _require_person_access(self, organization_id: str, workspace_id: str, person_id: str, write: bool = False) -> WorkspaceMembership:
+        scope = self.company.workspace_scope(workspace_id)
+        membership = self.company.workspace_membership(workspace_id, person_id)
+        if scope is None or scope["organization_id"] != organization_id or membership is None:
+            raise AuthorizationError("person cannot access workspace")
+        if write and membership.role == "viewer":
+            raise AuthorizationError("person cannot write workspace")
+        return membership
 
     def create_workspace(self, name: str, workspace_id: str | None = None) -> Workspace:
         if workspace_id:
@@ -161,7 +365,9 @@ class CompanyOS:
             content,
             observed.isoformat(),
         )
-        self._embeddings[document.id] = hashed_embedding(content)
+        vector = self.embedding_provider.embed([content])[0]
+        self._embeddings[document.id] = vector
+        self.vector_index.upsert(workspace_id, document.id, vector)
         self.stack.ingest_document(document, content, observed)
         fact_ids: list[str] = []
         relation_ids: list[str] = []
@@ -489,13 +695,18 @@ class CompanyOS:
         needed_by: str | None = None,
         playbook_id: str | None = None,
         decision_maker: str | None = None,
+        work_item_id: str | None = None,
     ) -> WorkItem:
         actor = self._require_writable(workspace_id, actor_id, "capture_work")
+        if work_item_id:
+            existing = self.store.get_work_item(workspace_id, work_item_id)
+            if existing:
+                return existing
         if not title.strip() or not request.strip() or not requested_by.strip():
             raise ValidationError("intake requires title, request, and requested_by")
         now = utcnow()
         item = WorkItem(
-            id=new_id("work"),
+            id=work_item_id or new_id("work"),
             workspace_id=workspace_id,
             title=title.strip(),
             request=request.strip(),
@@ -618,10 +829,15 @@ class CompanyOS:
         summary: str,
         kind: str = "client",
         occurred_at: datetime | None = None,
+        touchpoint_id: str | None = None,
     ) -> Touchpoint:
         actor = self._require_writable(workspace_id, actor_id, "record_touchpoint")
+        if touchpoint_id:
+            row = self.store.conn.execute("SELECT * FROM touchpoints WHERE workspace_id=? AND id=?",(workspace_id,touchpoint_id)).fetchone()
+            if row:
+                return self.store._touchpoint_from_row(row)
         touchpoint = Touchpoint(
-            id=new_id("tp"),
+            id=touchpoint_id or new_id("tp"),
             workspace_id=workspace_id,
             actor_id=actor.id,
             kind=kind,
@@ -865,8 +1081,24 @@ class CompanyOS:
 
     def seed_demo(self, fixtures_root: str | Path | None = None) -> dict[str, Any]:
         root = Path(fixtures_root or Path(__file__).resolve().parents[3] / "fixtures")
+        organization = self.create_organization("Auremgrid Demo Agency", "org_demo")
         alpha = self.create_workspace("Client Alpha", workspace_id="ws_alpha")
         beta = self.create_workspace("Client Beta", workspace_id="ws_beta")
+        if self.company.workspace_scope(alpha.id) is None:
+            self.company.attach_workspace(organization.id, alpha.id, "client")
+        if self.company.workspace_scope(beta.id) is None:
+            self.company.attach_workspace(organization.id, beta.id, "client")
+        owner = self.company.get_person(organization.id, "person_demo_owner")
+        if owner is None:
+            owner = self.create_person(organization.id, "Demo Owner", "owner@demo.invalid", role="owner", person_id="person_demo_owner")
+        for workspace in (alpha, beta):
+            if self.company.workspace_membership(workspace.id, owner.id) is None:
+                self.add_person_to_workspace(organization.id, workspace.id, owner.id, "admin")
+        if self.store.conn.execute("SELECT COUNT(*) FROM agents WHERE organization_id=?",(organization.id,)).fetchone()[0] == 0:
+            seeded_agents=self.agent_ops.seed_primary_agents(organization.id,owner.id)
+            for agent in seeded_agents:
+                self.agent_ops.configure_agent(organization.id,owner.id,agent["id"],"unconfigured",
+                    ["brain.search","work.list","projects.list"],[alpha.id,beta.id],json.loads(agent["write_permissions"]))
         alpha_admin = self.create_actor(alpha.id, "Alpha Admin", "admin", "act_alpha_admin")
         alpha_operator = self.create_actor(alpha.id, "Alpha Operator", "operator", "act_alpha_operator")
         alpha_agent = self.create_actor(alpha.id, "Alpha Agent", "agent", "act_alpha_agent")
@@ -920,29 +1152,32 @@ class CompanyOS:
             needed_by="2026-04-10",
             playbook_id="landing-pages",
             decision_maker="Alpha Operator",
+            work_item_id="work_demo_consultation_page",
         )
-        work = self.assign_work(alpha.id, alpha_admin.id, work.id, alpha_operator.id)
-        work = self.start_work(alpha.id, alpha_operator.id, work.id)
-        self.mark_dod(
-            alpha.id,
-            alpha_operator.id,
-            work.id,
-            {
-                "mobile_responsive": True,
-                "assets_exported": True,
-                "creative_safe_zone": True,
-                "copy_spellchecked": True,
-                "handoff_notes": True,
-            },
-        )
-        work = self.submit_review(alpha.id, alpha_operator.id, work.id)
-        work = self.close_review(alpha.id, alpha_admin.id, work.id, approved=True, note="Internal review closed")
-        self.ship_work(alpha.id, alpha_admin.id, work.id, note="Shipped current consultation page")
+        if work.status != "shipped":
+            work = self.assign_work(alpha.id, alpha_admin.id, work.id, alpha_operator.id)
+            work = self.start_work(alpha.id, alpha_operator.id, work.id)
+            self.mark_dod(
+                alpha.id,
+                alpha_operator.id,
+                work.id,
+                {
+                    "mobile_responsive": True,
+                    "assets_exported": True,
+                    "creative_safe_zone": True,
+                    "copy_spellchecked": True,
+                    "handoff_notes": True,
+                },
+            )
+            work = self.submit_review(alpha.id, alpha_operator.id, work.id)
+            work = self.close_review(alpha.id, alpha_admin.id, work.id, approved=True, note="Internal review closed")
+            self.ship_work(alpha.id, alpha_admin.id, work.id, note="Shipped current consultation page")
         self.record_touchpoint(
             alpha.id,
             alpha_admin.id,
             "Shared the shipped consultation page and confirmed the current price.",
             occurred_at=datetime(2026, 4, 12, tzinfo=timezone.utc),
+            touchpoint_id="tp_demo_consultation_shipped",
         )
         open_work = self.capture_work(
             alpha.id,
@@ -953,8 +1188,13 @@ class CompanyOS:
             needed_by="2026-04-20",
             playbook_id="ads",
             decision_maker="Alpha Operator",
+            work_item_id="work_demo_retargeting_ads",
         )
-        self.assign_work(alpha.id, alpha_admin.id, open_work.id, alpha_operator.id)
+        if open_work.status == "captured":
+            self.assign_work(alpha.id, alpha_admin.id, open_work.id, alpha_operator.id)
+        for workspace in (alpha, beta):
+            if self.store.conn.execute("SELECT COUNT(*) FROM client_health_snapshots WHERE workspace_id=?",(workspace.id,)).fetchone()[0] == 0:
+                self.client_ops.calculate_health(organization.id,workspace.id,owner.id)
         return {
             "workspaces": [alpha.to_dict(), beta.to_dict()],
             "actors": [

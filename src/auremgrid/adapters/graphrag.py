@@ -10,7 +10,7 @@ from auremgrid.domain.models import Fact
 class GraphRAGAdapter:
     """Community-level questions over a whole workspace corpus."""
 
-    name = "graphrag"
+    name = "local_graphrag_style_projection"
     role = "corpus community summaries"
     license = "MIT"
 

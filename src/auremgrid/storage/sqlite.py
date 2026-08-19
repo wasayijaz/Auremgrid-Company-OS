@@ -28,6 +28,7 @@ from auremgrid.domain.ops import (
     WorkEvent,
     WorkItem,
 )
+from auremgrid.storage.migrations import migrate, schema_version
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -240,7 +241,12 @@ class SqliteStore:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        migrate(self.conn)
         self._lock = threading.RLock()
+
+    @property
+    def schema_version(self) -> int:
+        return schema_version(self.conn)
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -519,8 +525,10 @@ class SqliteStore:
             """
             INSERT INTO work_items(
                 id, workspace_id, title, request, requested_by, needed_by, status,
-                assignee_id, playbook_id, decision_maker, definition_of_done, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                assignee_id, playbook_id, decision_maker, definition_of_done, created_at, updated_at,
+                project_id,campaign_id,parent_id,owner_person_id,assignee_person_id,reviewer_person_id,
+                priority,tags,estimate_hours,actual_effort_hours,start_date,deadline,blocking_reason,brief,brain_context,financial_value
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title,
                 request=excluded.request,
@@ -531,6 +539,12 @@ class SqliteStore:
                 playbook_id=excluded.playbook_id,
                 decision_maker=excluded.decision_maker,
                 definition_of_done=excluded.definition_of_done,
+                project_id=excluded.project_id,campaign_id=excluded.campaign_id,parent_id=excluded.parent_id,
+                owner_person_id=excluded.owner_person_id,assignee_person_id=excluded.assignee_person_id,
+                reviewer_person_id=excluded.reviewer_person_id,priority=excluded.priority,tags=excluded.tags,
+                estimate_hours=excluded.estimate_hours,actual_effort_hours=excluded.actual_effort_hours,
+                start_date=excluded.start_date,deadline=excluded.deadline,blocking_reason=excluded.blocking_reason,
+                brief=excluded.brief,brain_context=excluded.brain_context,financial_value=excluded.financial_value,
                 updated_at=excluded.updated_at
             """,
             (
@@ -547,6 +561,9 @@ class SqliteStore:
                 json.dumps(item.definition_of_done),
                 item.created_at.isoformat(),
                 item.updated_at.isoformat(),
+                item.project_id,item.campaign_id,item.parent_id,item.owner_person_id,item.assignee_person_id,
+                item.reviewer_person_id,item.priority,json.dumps(item.tags),item.estimate_hours,item.actual_effort_hours,
+                item.start_date,item.deadline,item.blocking_reason,item.brief,item.brain_context,item.financial_value,
             ),
         )
         self.conn.commit()
@@ -766,6 +783,12 @@ class SqliteStore:
             definition_of_done=json.loads(row["definition_of_done"]),
             created_at=parse_dt(row["created_at"]),
             updated_at=parse_dt(row["updated_at"]),
+            project_id=row["project_id"],campaign_id=row["campaign_id"],parent_id=row["parent_id"],
+            owner_person_id=row["owner_person_id"],assignee_person_id=row["assignee_person_id"],
+            reviewer_person_id=row["reviewer_person_id"],priority=row["priority"],tags=tuple(json.loads(row["tags"])),
+            estimate_hours=row["estimate_hours"],actual_effort_hours=row["actual_effort_hours"],
+            start_date=row["start_date"],deadline=row["deadline"],blocking_reason=row["blocking_reason"],
+            brief=row["brief"],brain_context=row["brain_context"],financial_value=row["financial_value"],
         )
 
     def _touchpoint_from_row(self, row: sqlite3.Row) -> Touchpoint:

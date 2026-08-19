@@ -8,7 +8,7 @@ from auremgrid.adapters.hybrid import tokens
 class Mem0Adapter:
     """Subjective preference and interaction memory. Never canonical client truth."""
 
-    name = "mem0"
+    name = "local_mem0_style_projection"
     role = "preference and interaction memory"
     license = "Apache-2.0"
 

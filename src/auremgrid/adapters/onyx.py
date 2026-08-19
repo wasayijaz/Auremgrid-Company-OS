@@ -6,7 +6,7 @@ from typing import Any
 class OnyxAdapter:
     """Company-knowledge shell: connector catalog and permissioned source index."""
 
-    name = "onyx"
+    name = "local_onyx_style_projection"
     role = "connector catalog and knowledge UI contract"
     license = "MIT"
 

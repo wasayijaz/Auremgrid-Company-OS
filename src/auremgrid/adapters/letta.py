@@ -6,7 +6,7 @@ from typing import Any
 class LettaAdapter:
     """Stateful agent identity. This is the agent's memory, not the client's truth."""
 
-    name = "letta"
+    name = "local_letta_style_projection"
     role = "stateful agent identity"
     license = "Apache-2.0"
 

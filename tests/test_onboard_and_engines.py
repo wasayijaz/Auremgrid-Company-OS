@@ -8,6 +8,22 @@ from auremgrid.services.brain import CompanyOS
 
 
 class OnboardAndEngineTests(unittest.TestCase):
+    def test_demo_seed_is_repeatable_without_duplicate_work_or_touchpoints(self) -> None:
+        os = CompanyOS(":memory:")
+        fixtures = Path(__file__).resolve().parents[1] / "fixtures"
+        os.seed_demo(fixtures)
+        counts_before = (
+            os.store.conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0],
+            os.store.conn.execute("SELECT COUNT(*) FROM touchpoints").fetchone()[0],
+        )
+        os.seed_demo(fixtures)
+        counts_after = (
+            os.store.conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0],
+            os.store.conn.execute("SELECT COUNT(*) FROM touchpoints").fetchone()[0],
+        )
+        os.close()
+        self.assertEqual(counts_before, counts_after)
+
     def test_any_agency_can_onboard_without_demo_names(self) -> None:
         os = CompanyOS(":memory:")
         with tempfile.TemporaryDirectory() as tmp:
@@ -26,7 +42,11 @@ class OnboardAndEngineTests(unittest.TestCase):
         self.assertEqual(result["ingested_sources"], 1)
         self.assertGreaterEqual(len(result["engines"]), 8)
         names = {engine for engine in result["engines"]}
-        self.assertTrue({"graphiti", "cognee", "mem0", "onyx", "ragflow", "lightrag", "graphrag", "letta"} <= names)
+        self.assertTrue({
+            "local_graphiti_style_projection", "local_cognee_style_projection", "local_mem0_style_projection",
+            "local_onyx_style_projection", "local_ragflow_style_projection", "local_lightrag_style_projection",
+            "local_graphrag_style_projection", "local_letta_style_projection",
+        } <= names)
         brief = os.account_brief("ws_northwind", result["operator"]["id"], query="charcoal")
         self.assertFalse(brief.evidence["unknown"])
         os.close()
@@ -39,7 +59,7 @@ class OnboardAndEngineTests(unittest.TestCase):
         leaked = os.search("ws_b", "act_ws_b_admin", "intro week")
         self.assertTrue(leaked.unknown)
         status = os.engine_status("ws_b", "act_ws_b_admin", "intro week")
-        graphiti_hits = next(item for item in status["engines"] if item["name"] == "graphiti")["hits"]
+        graphiti_hits = next(item for item in status["engines"] if item["name"] == "local_graphiti_style_projection")["hits"]
         self.assertEqual(graphiti_hits, [])
         os.close()
 

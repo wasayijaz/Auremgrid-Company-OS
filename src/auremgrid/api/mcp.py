@@ -14,7 +14,7 @@ class McpToolRouter:
         self.os = os
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return [
+        tools = [
             {"name": "search", "description": "Retrieve citation-backed evidence for a workspace query."},
             {"name": "entity", "description": "Return facts and relations for one entity."},
             {"name": "history", "description": "Return temporal versions of a subject/predicate claim."},
@@ -32,12 +32,47 @@ class McpToolRouter:
             {"name": "submit_review", "description": "Submit a complete work item for internal review."},
             {"name": "close_review", "description": "Approve or return an item from internal review."},
             {"name": "ship_work", "description": "Ship an item after client review is complete."},
+            {"name": "projects.list", "description": "List projects visible to an organization person."},
+            {"name": "projects.get", "description": "Get a project without exposing another workspace."},
+            {"name": "decisions.list", "description": "List temporal decisions in an allowed workspace."},
+            {"name": "decisions.create", "description": "Create a durable, sourced decision."},
+            {"name": "people.list", "description": "List organization people for an authorized member."},
+            {"name": "clients.list", "description": "List client workspaces visible to a person."},
+            {"name": "clients.health", "description": "Calculate explainable client health."},
+            {"name": "meetings.list", "description": "List meetings in an allowed client workspace."},
+            {"name": "campaigns.list", "description": "List campaigns in an allowed workspace."},
+            {"name": "campaigns.performance", "description": "Return sourced campaign performance or not_connected."},
+            {"name": "people.capacity", "description": "Return capacity snapshots for the organization."},
+            {"name": "risks.list", "description": "List open client risks."},
+            {"name": "opportunities.list", "description": "List client opportunities."},
+            {"name": "agents.list", "description": "Return agents and recent auditable runs."},
+            {"name": "notifications.list", "description": "Return relevance-ranked attention items."},
+            {"name": "reports.generate", "description": "Generate a report with canonical citations."},
         ]
+        namespaced = {
+            "brain.search":"Search cited evidence.","brain.entity":"Get a brain entity.","brain.history":"Get temporal fact history.",
+            "brain.neighbors":"Get entity neighbors.","brain.sources":"List permitted sources.","brain.recent":"List recent evidence.",
+            "clients.brief":"Get a client operating brief.","work.list":"List work.","work.create":"Capture work.",
+            "work.assign":"Assign work.","work.update":"Advance work.","work.review":"Submit work for review.",
+            "meetings.get":"Get one meeting.","campaigns.get":"Get one campaign.","agents.runs":"List auditable agent runs.",
+        }
+        existing={tool["name"] for tool in tools}
+        tools.extend({"name":name,"description":description} for name,description in namespaced.items() if name not in existing)
+        return tools
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         try:
             if not isinstance(arguments, dict):
                 raise AuremgridError("arguments must be an object")
+            aliases={"brain.search":"search","brain.entity":"entity","brain.history":"history","brain.neighbors":"neighbors",
+                "brain.sources":"sources","brain.recent":"recent","clients.brief":"brief","work.list":"work",
+                "work.create":"capture_work","work.assign":"assign_work","work.update":"start_work","work.review":"submit_review"}
+            name=aliases.get(name,name)
+            company_tools={"projects.list","projects.get","decisions.list","decisions.create","people.list","clients.list",
+                "clients.health","meetings.list","meetings.get","campaigns.list","campaigns.get","campaigns.performance",
+                "people.capacity","risks.list","opportunities.list","agents.list","agents.runs","notifications.list","reports.generate"}
+            if name in company_tools:
+                return self._call_company_tool(name, arguments)
             workspace_id = _required(arguments, "workspace_id")
             actor_id = _required(arguments, "actor_id")
             if name == "search":
@@ -160,6 +195,69 @@ class McpToolRouter:
             raise AuremgridError(f"unknown tool: {name}")
         except (AuremgridError, ValueError, TypeError) as exc:
             return {"error": exc.__class__.__name__, "message": str(exc)}
+
+    def _call_company_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        organization_id = _required(arguments, "organization_id")
+        person_id = _required(arguments, "person_id")
+        workspace_id = _optional_str(arguments.get("workspace_id"))
+        if name == "projects.list":
+            items = self.os.list_projects(organization_id, _required(arguments, "workspace_id"), person_id)
+            return {"projects": [item.to_dict() for item in items]}
+        if name == "projects.get":
+            workspace = _required(arguments, "workspace_id")
+            self.os._require_person_access(organization_id, workspace, person_id)
+            item = self.os.company.get_project(workspace, _required(arguments, "project_id"))
+            if item is None:
+                raise AuremgridError("project not found")
+            return item.to_dict()
+        if name == "decisions.list":
+            if workspace_id:
+                self.os._require_person_access(organization_id, workspace_id, person_id)
+            elif self.os.company.org_membership(organization_id, person_id) is None:
+                raise AuremgridError("person is not an organization member")
+            return {"decisions": [item.to_dict() for item in self.os.company.list_decisions(organization_id, workspace_id)]}
+        if name == "decisions.create":
+            return self.os.create_decision(
+                organization_id, person_id, _required(arguments, "statement"), _required(arguments, "rationale"),
+                workspace_id, _optional_str(arguments.get("project_id")), _optional_str(arguments.get("source_id")),
+                str(arguments.get("evidence", "")), [str(value) for value in arguments.get("tags", [])],
+            ).to_dict()
+        if name == "people.list":
+            if self.os.company.org_membership(organization_id, person_id) is None:
+                raise AuremgridError("person is not an organization member")
+            return {"people": [item.to_dict() for item in self.os.company.list_people(organization_id)]}
+        if name == "clients.list":
+            items=self.os.company.list_workspaces(organization_id)
+            visible=[item for item in items if item["kind"]=="client" and self.os.company.workspace_membership(item["id"],person_id)]
+            return {"clients":visible}
+        if name == "clients.health":
+            return self.os.client_ops.calculate_health(organization_id,_required(arguments,"workspace_id"),person_id).to_dict()
+        if name in {"meetings.list","meetings.get"}:
+            workspace=_required(arguments,"workspace_id"); self.os._require_person_access(organization_id,workspace,person_id)
+            if name.endswith(".get"):
+                row=self.os.store.conn.execute("SELECT * FROM meetings WHERE workspace_id=? AND id=?",(workspace,_required(arguments,"meeting_id"))).fetchone()
+                if row is None: raise AuremgridError("meeting not found")
+                return dict(row)
+            return {"meetings":[dict(r) for r in self.os.store.conn.execute("SELECT * FROM meetings WHERE workspace_id=? ORDER BY occurred_at DESC",(workspace,)).fetchall()]}
+        if name in {"campaigns.list","campaigns.get","campaigns.performance"}:
+            workspace=_required(arguments,"workspace_id"); self.os._require_person_access(organization_id,workspace,person_id)
+            if name=="campaigns.list": return {"campaigns":[dict(r) for r in self.os.store.conn.execute("SELECT * FROM campaigns WHERE workspace_id=? ORDER BY updated_at DESC",(workspace,)).fetchall()]}
+            campaign_id=_required(arguments,"campaign_id")
+            if name=="campaigns.performance": return self.os.agency_ops.campaign_performance(organization_id,workspace,person_id,campaign_id)
+            row=self.os.store.conn.execute("SELECT * FROM campaigns WHERE workspace_id=? AND id=?",(workspace,campaign_id)).fetchone()
+            if row is None: raise AuremgridError("campaign not found")
+            return dict(row)
+        if name == "people.capacity":
+            if self.os.company.org_membership(organization_id,person_id) is None: raise AuremgridError("organization membership required")
+            return {"capacity":[dict(r) for r in self.os.store.conn.execute("SELECT * FROM capacity_snapshots WHERE organization_id=? ORDER BY calculated_at DESC",(organization_id,)).fetchall()]}
+        if name in {"risks.list","opportunities.list"}:
+            workspace=_required(arguments,"workspace_id"); self.os._require_person_access(organization_id,workspace,person_id)
+            if name=="risks.list": return {"risks":self.os.client_ops.list_risks(organization_id,workspace,person_id)}
+            return {"opportunities":[dict(r) for r in self.os.store.conn.execute("SELECT * FROM opportunities WHERE workspace_id=? ORDER BY created_at DESC",(workspace,)).fetchall()]}
+        if name in {"agents.list","agents.runs"}: return self.os.agent_ops.command_center(organization_id,person_id)
+        if name == "notifications.list": return {"notifications":self.os.agency_ops.attention(organization_id,person_id,int(arguments.get("limit",20)))}
+        if name == "reports.generate": return self.os.agent_ops.generate_report(organization_id,person_id,_required(arguments,"type"),workspace_id)
+        raise AuremgridError(f"unknown tool: {name}")
 
 
 def _required(arguments: dict[str, Any], key: str) -> str:

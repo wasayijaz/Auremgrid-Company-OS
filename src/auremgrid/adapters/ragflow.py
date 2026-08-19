@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 class RAGFlowAdapter:
-    name = "ragflow"
+    name = "local_ragflow_style_projection"
     role = "messy document extraction"
     license = "Apache-2.0"
 

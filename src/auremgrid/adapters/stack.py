@@ -15,7 +15,7 @@ from auremgrid.domain.models import Document, Fact
 
 
 class OpenSourceStack:
-    """All eight engines, used in-process, never as competing sources of truth."""
+    """Eight local style projections; no upstream engine is implied or required."""
 
     def __init__(self) -> None:
         self.graphiti = GraphitiAdapter()

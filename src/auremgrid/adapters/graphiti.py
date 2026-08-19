@@ -10,7 +10,7 @@ from auremgrid.extract.deterministic import extract_claims
 class GraphitiAdapter:
     """Temporal client-brain engine. Local stand-in for Graphiti by Zep."""
 
-    name = "graphiti"
+    name = "local_graphiti_style_projection"
     role = "temporal client knowledge graph"
     license = "Apache-2.0"
 

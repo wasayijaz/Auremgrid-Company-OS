@@ -53,6 +53,22 @@ class WorkItem:
     definition_of_done: dict[str, bool]
     created_at: datetime
     updated_at: datetime
+    project_id: str | None = None
+    campaign_id: str | None = None
+    parent_id: str | None = None
+    owner_person_id: str | None = None
+    assignee_person_id: str | None = None
+    reviewer_person_id: str | None = None
+    priority: str = "normal"
+    tags: tuple[str, ...] = ()
+    estimate_hours: float | None = None
+    actual_effort_hours: float = 0.0
+    start_date: str | None = None
+    deadline: str | None = None
+    blocking_reason: str | None = None
+    brief: str = ""
+    brain_context: str = ""
+    financial_value: float | None = None
 
     @property
     def dod_complete(self) -> bool:
@@ -74,6 +90,22 @@ class WorkItem:
             "dod_complete": self.dod_complete,
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
+            "project_id": self.project_id,
+            "campaign_id": self.campaign_id,
+            "parent_id": self.parent_id,
+            "owner_person_id": self.owner_person_id,
+            "assignee_person_id": self.assignee_person_id,
+            "reviewer_person_id": self.reviewer_person_id,
+            "priority": self.priority,
+            "tags": list(self.tags),
+            "estimate_hours": self.estimate_hours,
+            "actual_effort_hours": self.actual_effort_hours,
+            "start_date": self.start_date,
+            "deadline": self.deadline,
+            "blocking_reason": self.blocking_reason,
+            "brief": self.brief,
+            "brain_context": self.brain_context,
+            "financial_value": self.financial_value,
         }
 
 

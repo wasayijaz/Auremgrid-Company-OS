@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import hashlib
 from collections import Counter
 from dataclasses import dataclass
 from typing import Iterable
@@ -33,7 +34,9 @@ def hashed_embedding(text: str, dims: int = 64) -> tuple[float, ...]:
     if not counts:
         return tuple(vector)
     for token, count in counts.items():
-        index = hash(token) % dims
+        # Python's hash is process-randomized; SHA-256 keeps the offline fallback
+        # deterministic across restarts and projection rebuilds.
+        index = int.from_bytes(hashlib.sha256(token.encode("utf-8")).digest()[:8], "big") % dims
         vector[index] += float(count)
     norm = math.sqrt(sum(value * value for value in vector)) or 1.0
     return tuple(value / norm for value in vector)

@@ -10,7 +10,7 @@ from auremgrid.domain.models import Fact
 class CogneeAdapter:
     """Memory control plane: current beliefs per workspace."""
 
-    name = "cognee"
+    name = "local_cognee_style_projection"
     role = "memory control plane"
     license = "Apache-2.0"
 

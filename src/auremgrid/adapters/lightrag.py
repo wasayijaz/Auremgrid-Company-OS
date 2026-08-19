@@ -9,7 +9,7 @@ from auremgrid.domain.models import Document
 class LightRAGAdapter:
     """Lightweight graph RAG over relatively static approved documents."""
 
-    name = "lightrag"
+    name = "local_lightrag_style_projection"
     role = "static corpus graph RAG"
     license = "MIT"
 
