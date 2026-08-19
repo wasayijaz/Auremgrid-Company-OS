@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 import sqlite3
+import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Protocol
@@ -22,6 +25,7 @@ DRIVE_READ_SCOPES = frozenset(
 )
 GMAIL_READ_SCOPES = frozenset(
     {
+        "https://www.googleapis.com/auth/gmail.metadata",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.modify",
         "https://mail.google.com/",
@@ -86,6 +90,12 @@ class GoogleApiFailure:
     message: str
 
 
+class GoogleRequestError(Exception):
+    def __init__(self, failure: GoogleApiFailure) -> None:
+        super().__init__(failure.message)
+        self.failure = failure
+
+
 @dataclass(frozen=True)
 class RouteLifecycleMutation:
     """A durable route-state change the integration layer must commit with a batch."""
@@ -95,6 +105,7 @@ class RouteLifecycleMutation:
     workspace_id: str
     operation: str  # upsert | tombstone
     provider_version: str
+    event_dedupe_key: str
 
 
 _QUOTA_REASONS = frozenset(
@@ -143,10 +154,16 @@ def classify_google_failure(response: HttpResponse, provider: str) -> GoogleApiF
     if 200 <= response.status < 300:
         return None
     reasons = _google_error_reasons(response)
-    reason = next(iter(reasons), "")
+    reason = sorted(reasons)[0] if reasons else ""
     retry_after = retry_after_seconds(response)
-    if response.status == 401:
+    if response.status == 0:
+        code, retryable = "network_error", True
+    elif response.status == 401:
         code, retryable = "authorization_required", False
+    elif response.status == 408:
+        code, retryable = "request_timeout", True
+    elif response.status == 425:
+        code, retryable = "too_early", True
     elif response.status == 403 and reasons.intersection(_QUOTA_REASONS):
         code, retryable = "quota_exhausted", True
     elif response.status == 403:
@@ -266,6 +283,8 @@ class UrllibTransport:
             raw = error.read()
             text = raw.decode("utf-8")
             return HttpResponse(error.code, dict(error.headers), _json_or_none(text), text)
+        except (urllib.error.URLError, TimeoutError, socket.timeout):
+            return HttpResponse(0, {}, {"error": {"errors": [{"reason": "networkError"}]}}, "")
 
 
 class GoogleOAuthClient:
@@ -375,6 +394,8 @@ class ConnectorInboxRepository:
         reservation_token: str | None = None,
         credential_binding_id: str | None = None,
         credential_generation: int | None = None,
+        lifecycle_mutations: Iterable[RouteLifecycleMutation] = (),
+        manage_transaction: bool = True,
     ) -> dict[str, Any]:
         now = utcnow().isoformat()
         error = str(redact(error))[:300] if error is not None else None
@@ -385,7 +406,7 @@ class ConnectorInboxRepository:
             organization_id, workspace_id, connector, account_key, cursor_type
         )["version"]
         batch_id = self.new_id("cbatch")
-        with self.conn:
+        with (self.conn if manage_transaction else nullcontext(self.conn)):
             self._assert_stream_fence(stream_lock_id,reservation_token,now)
             self._assert_credential_fence(credential_binding_id,credential_generation)
             self.conn.execute(
@@ -419,6 +440,10 @@ class ConnectorInboxRepository:
                 self._store_or_reference_event(batch_id, organization_id, workspace_id, connector, account_key, event, now)
                 for event in events
             ]
+            self._stage_lifecycle_mutations(
+                batch_id, organization_id, workspace_id, connector, account_key,
+                stored_events, lifecycle_mutations, now,
+            )
         return {**self.get_batch(batch_id), "events": stored_events}
 
     def claim_event(
@@ -630,9 +655,10 @@ class ConnectorInboxRepository:
     def complete_batch(
         self,batch_id: str,stream_lock_id: str | None=None,reservation_token: str | None=None,
         credential_binding_id: str | None=None,credential_generation: int | None=None,
+        manage_transaction: bool=True,
     ) -> dict[str, Any]:
         now = utcnow().isoformat()
-        with self.conn:
+        with (self.conn if manage_transaction else nullcontext(self.conn)):
             self._assert_stream_fence(stream_lock_id,reservation_token,now)
             self._assert_credential_fence(credential_binding_id,credential_generation)
             batch = self.get_batch(batch_id)
@@ -649,6 +675,30 @@ class ConnectorInboxRepository:
             ).fetchone()[0]
             if unfinished:
                 raise ValidationError("connector batch still has unprocessed events")
+            lifecycle_blockers = self.conn.execute(
+                """SELECT COUNT(*) FROM provider_route_mutation_staging mutation
+                   JOIN connector_source_events event ON event.id=mutation.event_id
+                   WHERE mutation.batch_id=?
+                     AND (mutation.status!='applied' OR event.status='quarantined')""",
+                (batch_id,),
+            ).fetchone()[0]
+            if lifecycle_blockers:
+                raise ValidationError("connector batch has unapplied or quarantined lifecycle state")
+            incomplete_tasks = self.conn.execute(
+                """SELECT COUNT(*) FROM provider_sync_tasks
+                   WHERE workspace_id=? AND connector=? AND account_key=?
+                     AND status NOT IN ('completed','cancelled')""",
+                (batch["workspace_id"], batch["connector"], batch["account_key"]),
+            ).fetchone()[0]
+            if incomplete_tasks:
+                raise ValidationError("connector batch has incomplete provider sync tasks")
+            running_generations = self.conn.execute(
+                """SELECT COUNT(*) FROM provider_sync_generations
+                   WHERE workspace_id=? AND connector=? AND account_key=? AND status='running'""",
+                (batch["workspace_id"], batch["connector"], batch["account_key"]),
+            ).fetchone()[0]
+            if running_generations:
+                raise ValidationError("connector batch has incomplete provider generation coverage")
             if batch["cursor_after"] is not None:
                 self._promote_cursor(
                     batch["organization_id"],
@@ -692,6 +742,51 @@ class ConnectorInboxRepository:
             (batch_id,),
         ).fetchall()
         return [self.get_event(row["id"]) for row in rows]
+
+    def _stage_lifecycle_mutations(
+        self,
+        batch_id: str,
+        organization_id: str,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        stored_events: list[dict[str, Any]],
+        mutations: Iterable[RouteLifecycleMutation],
+        now: str,
+    ) -> None:
+        events_by_dedupe = {str(event["dedupe_key"]): event for event in stored_events}
+        for mutation in mutations:
+            event = events_by_dedupe.get(mutation.event_dedupe_key)
+            if event is None:
+                raise ValidationError("lifecycle mutation does not match an exact pulled event")
+            if (
+                event["external_id"] != mutation.external_id
+                or event["source_key"] != f"google-drive/files/{mutation.external_id}"
+                and event["source_key"] != f"gmail/messages/{mutation.external_id}"
+            ):
+                raise ValidationError("lifecycle mutation identity does not match pulled event")
+            if mutation.workspace_id != workspace_id:
+                raise ValidationError("lifecycle mutation workspace is outside pulled stream")
+            operation = {"upsert": "activate", "tombstone": "retire"}.get(mutation.operation)
+            if operation is None:
+                raise ValidationError("lifecycle mutation operation is invalid")
+            mutation_id = "pmut_" + hashlib.sha256(
+                "\x1f".join(
+                    (batch_id, mutation.event_dedupe_key, mutation.route_key,
+                     mutation.provider_version, operation)
+                ).encode("utf-8")
+            ).hexdigest()[:32]
+            self.conn.execute(
+                """INSERT OR IGNORE INTO provider_route_mutation_staging(
+                       id,batch_id,event_id,workspace_id,connector,account_key,external_id,
+                       route_key,source_key,source_id,provider_version,operation,occurred_at,
+                       status,created_at,applied_at,event_dedupe_key
+                   ) VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?,?,'staged',?,NULL,?)""",
+                (mutation_id, batch_id, event["id"], workspace_id, connector, account_key,
+                 mutation.external_id, mutation.route_key, event["source_key"],
+                 mutation.provider_version, operation, event.get("observed_at") or now,
+                 now, mutation.event_dedupe_key),
+            )
 
     def reserve_stream(
         self,

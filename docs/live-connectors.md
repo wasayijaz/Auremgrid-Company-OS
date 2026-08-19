@@ -12,6 +12,10 @@ credentials are never stored in SQLite or job payloads.
 Google provider verification and enqueue remain behind the same closed live
 gate. Configuration and credential-reference binding do not ingest historical
 files or messages; no Google content is represented as synchronized evidence.
+The future Google execution path expects the referenced environment value to be
+a JSON object containing exactly `client_id`, `client_secret`, and
+`refresh_token`. It refreshes an access token in memory, requires provider-
+reported granted scopes, and persists none of those four credential values.
 
 ## Connection lifecycle
 

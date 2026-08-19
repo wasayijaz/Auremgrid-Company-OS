@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import urllib.parse
+import urllib.error
 import unittest
 import tempfile
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from auremgrid.connectors.gmail import GMAIL_API, GmailConnector
 from auremgrid.connectors.google_auth import (
@@ -15,6 +17,8 @@ from auremgrid.connectors.google_auth import (
     ConnectorInboxRepository,
     HttpResponse,
     GoogleOAuthClient,
+    UrllibTransport,
+    classify_google_failure,
 )
 from auremgrid.connectors.google_drive import DRIVE_API, GOOGLE_FOLDER, DriveBackfillTask, GoogleDriveConnector
 from auremgrid.domain.errors import AuthorizationError, ValidationError
@@ -55,7 +59,7 @@ class GoogleConnectorTests(unittest.TestCase):
         self.os.close()
 
     def test_v12_schema_has_connector_inbox_without_token_value_columns(self) -> None:
-        self.assertEqual(self.os.store.schema_version, 13)
+        self.assertEqual(self.os.store.schema_version, 14)
         self.assertTrue(
             {
                 "connector_cursors",
@@ -687,6 +691,148 @@ class GoogleConnectorTests(unittest.TestCase):
         self.assertEqual(result.events[0].dedupe_key, "gmail:msg-1:101:labels_removed")
         self.assertEqual(result.lifecycle_mutations[0].operation, "tombstone")
 
+    def test_drive_nested_change_consumes_durable_root_ancestry(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {"newStartPageToken": "base-2", "changes": [{
+            "fileId": "file-1", "time": "2026-08-19T12:00:00Z",
+            "file": {"id": "file-1", "name": "Nested", "mimeType": "application/pdf", "parents": ["nested"]},
+        }]}))
+        cursor = json.dumps({"v": 1, "phase": "changes", "checkpoint": "base-1", "page_token": None})
+        result = GoogleDriveConnector(
+            "access", transport, folder_workspace_mappings={"root": self.ws.id},
+            route_state={"file-1": ["folder:root"]},
+            ancestry_state={"nested": {"route_keys": ["folder:root"], "reconciliation_status": "resolved"}},
+        ).pull(cursor)
+        self.assertEqual(result.events[0].event_type, "file_changed")
+        self.assertEqual(result.events[0].payload["route_keys"], ["folder:root"])
+        self.assertFalse(any(item.operation == "tombstone" for item in result.lifecycle_mutations))
+        self.assertEqual(result.reconciliation_requests, ())
+
+    def test_drive_unknown_ancestry_preserves_route_and_requests_reconciliation(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {"newStartPageToken": "base-2", "changes": [{
+            "fileId": "file-1", "time": "2026-08-19T12:00:00Z",
+            "file": {"id": "file-1", "name": "Unknown parent", "mimeType": "application/pdf", "parents": ["missing"]},
+        }]}))
+        cursor = json.dumps({"v": 1, "phase": "changes", "checkpoint": "base-1", "page_token": None})
+        result = GoogleDriveConnector(
+            "access", transport, folder_workspace_mappings={"root": self.ws.id},
+            route_state={"file-1": ["folder:root"]}, ancestry_state={},
+        ).pull(cursor)
+        self.assertEqual(result.events[0].payload["route_keys"], ["folder:root"])
+        self.assertFalse(any(item.operation == "tombstone" for item in result.lifecycle_mutations))
+        self.assertEqual(result.reconciliation_requests[0].parent_ids, ("missing",))
+        self.assertEqual(result.reconciliation_requests[0].reason, "unknown_ancestry")
+
+    def test_drive_repeated_removals_have_stable_distinct_transition_keys(self) -> None:
+        change = {"fileId": "file-1", "removed": True, "time": "2026-08-19T12:00:00Z"}
+
+        def pull(checkpoint: str) -> object:
+            transport = FakeTransport()
+            transport.queue(HttpResponse(200, {}, {"newStartPageToken": checkpoint + "-next", "changes": [change]}))
+            cursor = json.dumps({"v": 1, "phase": "changes", "checkpoint": checkpoint, "page_token": None})
+            return GoogleDriveConnector(
+                "access", transport, folder_workspace_mappings={"root": self.ws.id},
+                route_state={"file-1": ["folder:root"]},
+            ).pull(cursor)
+
+        first = pull("base-1")
+        replay = pull("base-1")
+        repeated = pull("base-2")
+        self.assertEqual(first.events[0].dedupe_key, replay.events[0].dedupe_key)
+        self.assertNotEqual(first.events[0].dedupe_key, repeated.events[0].dedupe_key)
+        self.assertEqual(first.lifecycle_mutations[0].event_dedupe_key, first.events[0].dedupe_key)
+
+    def test_drive_content_export_failure_is_structured_without_cursor_advance(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {"newStartPageToken": "base-2", "changes": [{
+            "fileId": "doc-1", "time": "2026-08-19T12:00:00Z",
+            "file": {"id": "doc-1", "name": "Doc", "mimeType": "application/vnd.google-apps.document", "parents": ["root"]},
+        }]}))
+        transport.queue(HttpResponse(403, {"Retry-After": "9"}, {"error": {"errors": [{"reason": "quotaExceeded"}]}}))
+        cursor = json.dumps({"v": 1, "phase": "changes", "checkpoint": "base-1", "page_token": None})
+        result = GoogleDriveConnector(
+            "access", transport, folder_workspace_mappings={"root": self.ws.id}
+        ).pull(cursor)
+        self.assertEqual(result.error_code, "quota_exhausted")
+        self.assertTrue(result.retryable)
+        self.assertEqual(result.retry_after_seconds, 9)
+        self.assertEqual(result.next_cursor, cursor)
+        self.assertEqual(result.events, [])
+
+    def test_gmail_message_fetch_failure_is_structured_without_cursor_advance(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {"historyId": "101", "history": [{
+            "id": "101", "messagesAdded": [{"message": {"id": "msg-1", "labelIds": ["Label_1"]}}],
+        }]}))
+        transport.queue(HttpResponse(401, {}, {"error": {"errors": [{"reason": "authError"}]}}))
+        cursor = json.dumps({"v": 1, "phase": "history", "checkpoint": "100", "page_token": None})
+        result = GmailConnector(
+            "access", transport, label_workspace_mappings={"label:Label_1": self.ws.id}
+        ).pull(cursor)
+        self.assertEqual(result.error_code, "authorization_required")
+        self.assertFalse(result.retryable)
+        self.assertEqual(result.next_cursor, cursor)
+        self.assertEqual(result.events, [])
+
+    def test_strict_google_cursor_validation_rejects_extra_missing_and_wrong_fields(self) -> None:
+        invalid_drive = (
+            {"v": 1, "phase": "changes", "checkpoint": "c"},
+            {"v": 1, "phase": "changes", "checkpoint": "c", "page_token": None, "extra": True},
+            {"v": 1, "phase": "backfill", "checkpoint": 1},
+        )
+        for value in invalid_drive:
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                GoogleDriveConnector("access", FakeTransport()).pull(json.dumps(value))
+        invalid_gmail = (
+            {"v": 1, "phase": "history", "checkpoint": "c"},
+            {"v": 1, "phase": "backfill", "checkpoint": "c", "label_index": True, "page_token": None},
+            {"v": 1, "phase": "history", "checkpoint": "c", "page_token": ""},
+        )
+        for value in invalid_gmail:
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                GmailConnector("access", FakeTransport()).pull(json.dumps(value))
+
+    def test_malformed_success_pages_fail_before_cursor_advancement(self) -> None:
+        drive = FakeTransport()
+        drive.queue(HttpResponse(200, {}, {"newStartPageToken": "base-2", "changes": {}}))
+        drive_cursor = json.dumps({"v": 1, "phase": "changes", "checkpoint": "base-1", "page_token": None})
+        with self.assertRaises(ValidationError):
+            GoogleDriveConnector("access", drive).pull(drive_cursor)
+        gmail = FakeTransport()
+        gmail.queue(HttpResponse(200, {}, {"historyId": "101", "history": {}}))
+        gmail_cursor = json.dumps({"v": 1, "phase": "history", "checkpoint": "100", "page_token": None})
+        with self.assertRaises(ValidationError):
+            GmailConnector("access", gmail).pull(gmail_cursor)
+
+    def test_network_and_transient_status_classification_is_stable(self) -> None:
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("secret host detail")):
+            response = UrllibTransport()("GET", "https://example.invalid")
+        network = classify_google_failure(response, "Google")
+        self.assertEqual(network.code, "network_error")
+        self.assertTrue(network.retryable)
+        self.assertNotIn("secret host detail", network.message)
+        self.assertEqual(classify_google_failure(HttpResponse(408, {}, {}), "Google").code, "request_timeout")
+        self.assertEqual(classify_google_failure(HttpResponse(425, {}, {}), "Google").code, "too_early")
+        multi = HttpResponse(403, {}, {"error": {"errors": [
+            {"reason": "userRateLimitExceeded"}, {"reason": "dailyLimitExceeded"},
+        ]}})
+        first = classify_google_failure(multi, "Google")
+        second = classify_google_failure(multi, "Google")
+        self.assertEqual(first, second)
+        self.assertIn("dailylimitexceeded", first.message)
+
+    def test_drive_expected_identity_must_be_permission_id_not_email(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {"user": {
+            "permissionId": "perm-1", "emailAddress": "ops@example.test", "displayName": "Ops",
+        }}))
+        with self.assertRaises(AuthorizationError):
+            GoogleDriveConnector(
+                "access", transport, expected_account_id="ops@example.test",
+                granted_scopes=(next(iter(DRIVE_READ_SCOPES)),),
+            ).verify_credentials()
+
     def _tables(self) -> set[str]:
         return {
             row["name"]
@@ -694,7 +840,7 @@ class GoogleConnectorTests(unittest.TestCase):
         }
 
     def _source_event(self):
-        event, _ = GoogleDriveConnector(
+        event, _, _ = GoogleDriveConnector(
             "access", FakeTransport(), folder_workspace_mappings={"folder-1": self.ws.id},
             route_state={"file-replay": ["folder:folder-1"]},
         )._event_from_change(

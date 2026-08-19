@@ -1426,6 +1426,53 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        14,
+        "atomic_provider_sync_coordination",
+        """
+        ALTER TABLE provider_route_mutation_staging ADD COLUMN event_dedupe_key TEXT;
+        UPDATE provider_route_mutation_staging
+        SET event_dedupe_key=(
+            SELECT dedupe_key FROM connector_source_events event
+            WHERE event.id=provider_route_mutation_staging.event_id
+        )
+        WHERE event_dedupe_key IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_mutation_exact_event
+            ON provider_route_mutation_staging(
+                batch_id,event_dedupe_key,route_key,provider_version,operation
+            );
+        CREATE TRIGGER provider_mutation_event_key_required
+        BEFORE INSERT ON provider_route_mutation_staging
+        WHEN NEW.event_dedupe_key IS NULL OR NEW.event_dedupe_key=''
+        BEGIN
+            SELECT RAISE(ABORT, 'provider mutation requires exact event dedupe key');
+        END;
+
+        ALTER TABLE provider_sync_generations ADD COLUMN cancelled_at TEXT;
+
+        DROP TRIGGER IF EXISTS provider_mutation_identity_no_update;
+        CREATE TRIGGER provider_mutation_identity_no_update
+        BEFORE UPDATE OF id,batch_id,event_id,event_dedupe_key,workspace_id,connector,account_key,
+            external_id,route_key,source_key,provider_version,operation,occurred_at,created_at
+            ON provider_route_mutation_staging
+        BEGIN
+            SELECT RAISE(ABORT, 'provider mutation identity is immutable');
+        END;
+        CREATE TRIGGER provider_mutation_source_bind_once
+        BEFORE UPDATE OF source_id ON provider_route_mutation_staging
+        WHEN OLD.source_id IS NOT NULL OR NEW.source_id IS NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'provider mutation source binding is one-way');
+        END;
+        CREATE TRIGGER provider_mutation_apply_once
+        BEFORE UPDATE OF status,applied_at ON provider_route_mutation_staging
+        WHEN OLD.status != 'staged' OR NEW.status != 'applied'
+             OR OLD.applied_at IS NOT NULL OR NEW.applied_at IS NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'provider mutation application is one-way');
+        END;
+        """,
+    ),
 )
 
 

@@ -21,6 +21,12 @@ mapping keys. Google enqueue is rejected while
 `live_enabled` is false; provider verification and historical ingestion are not
 claimed while that gate is closed.
 
+A bound Google environment reference must resolve to a strict JSON credential
+bundle with exactly `client_id`, `client_secret`, and `refresh_token`. The
+closed-gate execution path refreshes access in memory and fails when Google does
+not return authoritative granted-scope evidence; credential components and
+ephemeral access tokens are not returned or persisted.
+
 Organization-domain routes require organization_id and person_id. Evidence/legacy work routes require workspace_id and actor_id.
 
 All JSON routes except `/health` require a bearer session or API token. Caller

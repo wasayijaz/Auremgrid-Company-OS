@@ -9,12 +9,22 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from auremgrid.connectors.clickup import ClickUpConnector
-from auremgrid.connectors.google_auth import ConnectorInboxRepository, ConnectorSourceEvent
+from auremgrid.connectors.gmail import GmailConnector
+from auremgrid.connectors.google_auth import (
+    ConnectorInboxRepository,
+    ConnectorSourceEvent,
+    GoogleRequestError,
+    GoogleOAuthClient,
+    OAuthRefreshResult,
+    RouteLifecycleMutation,
+)
+from auremgrid.connectors.google_drive import DriveBackfillTask, GoogleDriveConnector
 from auremgrid.connectors.http import ConnectorTransportError, sanitize_content
 from auremgrid.connectors.slack import SlackConnector
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
 from auremgrid.domain.security import AuthenticatedIdentity
 from auremgrid.services.secrets import redact
+from auremgrid.storage.sqlite import ProviderSyncFence
 
 
 GOOGLE_DRIVE_READ_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
@@ -158,6 +168,9 @@ class IntegrationOperations:
         if integration["source"] not in LIVE_SOURCES:
             raise ValidationError("connector provider verification is not enabled")
         secret = self._resolve(identity, integration)
+        if self._is_google(integration["source"]):
+            secret, granted = self._refresh_google_access(integration, secret)
+            integration = {**integration, "_runtime_granted_permissions": granted}
         verified = self._provider_verify(integration,secret)
         account_id, account_name, granted = self._verified_account(integration["source"], verified)
         if not self._account_ids_match(integration["source"], account_id, integration["expected_account_id"]):
@@ -253,6 +266,19 @@ class IntegrationOperations:
         secret = self.os.secrets.resolve_for_use(
             identity, binding["id"], f"connector:{integration['source']}"
         )
+        if self._is_google(integration["source"]):
+            try:
+                secret, granted = self._refresh_google_access(integration, secret)
+            except ConnectorTransportError as exc:
+                health, connection_state = self._transport_failure_state(exc)
+                if self._owns_sync_fences(
+                    stream_lock_id, stream_reservation_token, binding["id"], binding["generation"]
+                ):
+                    self._record_failure(
+                        integration_id, health, self._stable_error(exc), connection_state
+                    )
+                raise
+            integration = {**integration, "_runtime_granted_permissions": granted}
         total_created = total_seen = total_quarantined = 0
         backfill_remaining=False
         batches: list[str] = []
@@ -279,18 +305,100 @@ class IntegrationOperations:
                 actor_id = self.os.auth.actor_for_identity(identity, workspace_id)
                 account_key = f"{integration_id}:{self._mapping_hash(integration['source'],external_key,workspace_id)}"
                 cursor = self.inbox.get_cursor(identity.organization_id, workspace_id, integration["source"], account_key)
+                provider_stream_key = f"managed:{account_key}"
+                provider_fence = self._provider_fence(
+                    stream_lock_id, stream_reservation_token, binding
+                )
                 page_count=0
                 while True:
-                    events,next_cursor,has_more = self._pull(
-                        integration["source"],secret,external_key,workspace_id,cursor,integration
+                    provider_task = None
+                    page_integration = integration
+                    if self._is_google(integration["source"]):
+                        running_generation = self.os.store.get_running_generation(
+                            workspace_id, integration["source"], account_key,
+                            provider_stream_key, external_key,
+                        )
+                        if cursor is None and running_generation is not None:
+                            cursor = running_generation["baseline_cursor"]
+                        next_task_type = self.conn.execute(
+                            """SELECT task_type FROM provider_sync_tasks
+                            WHERE workspace_id=? AND connector=? AND account_key=? AND stream_key=?
+                              AND status IN ('pending','leased')
+                            ORDER BY created_at,id LIMIT 1""",
+                            (workspace_id, integration["source"], account_key, provider_stream_key),
+                        ).fetchone()
+                        if next_task_type is not None and next_task_type["task_type"] != "backfill":
+                            raise ConnectorTransportError(
+                                "Google Drive reconciliation is pending", retryable=True,
+                                retry_after=60,
+                            )
+                        provider_task = self.os.store.claim_provider_sync_task(
+                            workspace_id, integration["source"], account_key,
+                            provider_stream_key, event_lease_owner, 60,
+                            fence=provider_fence,
+                        )
+                        if provider_task is not None:
+                            payload = json.loads(provider_task["payload"] or "{}")
+                            if integration["source"] == "google_drive" and provider_task["task_type"] == "backfill":
+                                page_integration = {
+                                    **integration,
+                                    "_runtime_backfill_task": DriveBackfillTask(
+                                        provider_task["route_key"],
+                                        provider_task["external_id"],
+                                        provider_task["page_token"],
+                                    ),
+                                }
+                            elif integration["source"] == "gmail" and provider_task["task_type"] == "backfill":
+                                cursor = str(payload["cursor"])
+                    events,next_cursor,has_more,page_meta = self._pull(
+                        integration["source"],secret,external_key,workspace_id,cursor,page_integration
                     )
+                    if page_meta.get("cursor_expired"):
+                        if cursor is None:
+                            raise ConnectorTransportError(
+                                "Google provider cursor rebootstrap failed", retryable=False
+                            )
+                        with self.os.store.atomic(immediate=True):
+                            self.os.store.cancel_provider_rebootstrap(
+                                workspace_id, integration["source"], account_key,
+                                provider_stream_key, external_key, provider_fence,
+                            )
+                        cursor = None
+                        continue
                     events = [self._sanitize_source_event(event, secret) for event in events]
-                    batch = self.inbox.record_pull(
-                        identity.organization_id, workspace_id, integration["source"], account_key,
-                        cursor, next_cursor, events,
-                        stream_lock_id=stream_lock_id,reservation_token=stream_reservation_token,
-                        credential_binding_id=binding["id"],credential_generation=binding["generation"],
-                    )
+                    next_phase = self._google_cursor_phase(next_cursor) if self._is_google(integration["source"]) else None
+                    durable_cursor_after = next_cursor
+                    if self._is_google(integration["source"]) and (
+                        next_phase == "backfill" or page_meta.get("backfill_tasks")
+                    ):
+                        durable_cursor_after = None
+                    with self.os.store.atomic(immediate=True):
+                        batch = self.inbox.record_pull(
+                            identity.organization_id, workspace_id, integration["source"], account_key,
+                            cursor, durable_cursor_after, events,
+                            stream_lock_id=stream_lock_id,reservation_token=stream_reservation_token,
+                            credential_binding_id=binding["id"],credential_generation=binding["generation"],
+                            lifecycle_mutations=page_meta.get("lifecycle_mutations", ()),
+                            manage_transaction=False,
+                        )
+                        generation = None
+                        if self._is_google(integration["source"]):
+                            generation = self.os.store.get_running_generation(
+                                workspace_id, integration["source"], account_key,
+                                provider_stream_key, external_key,
+                            )
+                            if generation is None and (cursor is None or self._google_cursor_phase(cursor) == "backfill"):
+                                generation = self.os.store.start_provider_sync_generation(
+                                    workspace_id, integration["source"], account_key,
+                                    provider_stream_key, external_key,
+                                    next_cursor if cursor is None else cursor,
+                                    fence=provider_fence,
+                                )
+                            self._persist_google_page_state(
+                                integration["source"], workspace_id, account_key,
+                                provider_stream_key, external_key, next_cursor,
+                                events, page_meta, generation, provider_fence,
+                            )
                     batches.append(batch["id"])
                     total_seen += len(batch["events"])
                     processed_in_batch = 0
@@ -311,11 +419,20 @@ class IntegrationOperations:
                                 self.inbox._assert_credential_fence(
                                     binding["id"], binding["generation"]
                                 )
-                                result = self.os.ingest_text(
-                                    workspace_id, actor_id, event["source_key"], event["content"], event["locator"],
-                                    observed_at=self._observed_at(event["observed_at"]), media_type=event["media_type"],
-                                    trust_level="external",
-                                )
+                                staged = self.conn.execute(
+                                    """SELECT operation FROM provider_route_mutation_staging
+                                    WHERE batch_id=? AND event_dedupe_key=?""",
+                                    (batch["id"], event["dedupe_key"]),
+                                ).fetchall()
+                                activates = any(row["operation"] == "activate" for row in staged)
+                                if activates or not self._is_google(integration["source"]):
+                                    result = self.os.ingest_text(
+                                        workspace_id, actor_id, event["source_key"], event["content"], event["locator"],
+                                        observed_at=self._observed_at(event["observed_at"]), media_type=event["media_type"],
+                                        trust_level="external",
+                                    )
+                                else:
+                                    result = None
                                 self.inbox.complete_event(
                                     event["id"], event_lease_owner, event["lease_token"],
                                     stream_lock_id=stream_lock_id,
@@ -323,6 +440,29 @@ class IntegrationOperations:
                                     credential_binding_id=binding["id"],
                                     credential_generation=binding["generation"],
                                 )
+                                if self._is_google(integration["source"]):
+                                    fence = self._provider_fence(
+                                        stream_lock_id, stream_reservation_token, binding
+                                    )
+                                    if result is not None:
+                                        self.os.store.bind_provider_event_source(
+                                            batch["id"], event["dedupe_key"], workspace_id,
+                                            result.source.id, fence,
+                                        )
+                                    self.os.store.apply_provider_event_mutations(
+                                        batch["id"], event["dedupe_key"], fence
+                                    )
+                                    if generation is not None:
+                                        activated = self.conn.execute(
+                                            """SELECT route_key FROM provider_route_mutation_staging
+                                            WHERE batch_id=? AND event_dedupe_key=? AND operation='activate'""",
+                                            (batch["id"], event["dedupe_key"]),
+                                        ).fetchall()
+                                        for row in activated:
+                                            self.os.store.mark_provider_object_seen(
+                                                generation["id"], event["external_id"],
+                                                row["route_key"], fence=fence,
+                                            )
                         except Exception as exc:
                             self.os.rebuild_projections(workspace_id)
                             failed=self.inbox.fail_event(
@@ -335,14 +475,44 @@ class IntegrationOperations:
                                     "connector inbox processing failed",retryable=True,retry_after=60
                                 ) from exc
                             continue
-                        total_created += int(result.created)
+                        total_created += int(result.created) if result is not None else 0
                         processed_in_batch += 1
                         if progress_callback is not None:
                             progress_callback(min(0.95, (page_count + .5) / 20))
                     try:
-                        self.inbox.complete_batch(
-                            batch["id"],stream_lock_id,stream_reservation_token,binding["id"],binding["generation"]
-                        )
+                        with self.os.store.atomic(immediate=True):
+                            if provider_task is not None:
+                                self.os.store.complete_provider_sync_task(
+                                    provider_task["id"], provider_task["lease_token"],
+                                    provider_fence,
+                                )
+                            if self._is_google(integration["source"]):
+                                pending = self.os.store.pending_provider_task_count(
+                                    workspace_id, integration["source"], account_key,
+                                    provider_stream_key,
+                                )
+                                if generation is not None and pending == 0 and next_phase != "backfill":
+                                    self.os.store.complete_provider_sync_generation(
+                                        generation["id"], fence=provider_fence
+                                    )
+                                if pending == 0 and next_phase != "backfill":
+                                    pending_batches = self.conn.execute(
+                                        """SELECT id FROM connector_ingest_batches
+                                        WHERE workspace_id=? AND connector=? AND account_key=?
+                                          AND status='pending' ORDER BY created_at,id""",
+                                        (workspace_id, integration["source"], account_key),
+                                    ).fetchall()
+                                    for pending_batch in pending_batches:
+                                        self.inbox.complete_batch(
+                                            pending_batch["id"], stream_lock_id,
+                                            stream_reservation_token, binding["id"],
+                                            binding["generation"], manage_transaction=False,
+                                        )
+                            else:
+                                self.inbox.complete_batch(
+                                    batch["id"],stream_lock_id,stream_reservation_token,
+                                    binding["id"],binding["generation"],manage_transaction=False,
+                                )
                     except ValidationError as exc:
                         raise ConnectorTransportError(
                             "connector inbox is waiting for retry",retryable=True,retry_after=60
@@ -352,6 +522,8 @@ class IntegrationOperations:
                         JOIN connector_source_events e ON e.id=be.event_id
                         WHERE be.batch_id=? AND e.status='quarantined'""",(batch["id"],)
                     ).fetchone()[0]
+                    if self._is_google(integration["source"]):
+                        self.os.rebuild_projections(workspace_id)
                     cursor=next_cursor
                     page_count += 1
                     if not has_more:
@@ -367,12 +539,20 @@ class IntegrationOperations:
                 self.inbox._assert_stream_fence(stream_lock_id,stream_reservation_token,now)
                 self.inbox._assert_credential_fence(binding["id"],binding["generation"])
                 rollup=self._stream_rollup(integration)
+                if self._is_google(integration["source"]):
+                    current_objects = int(self.conn.execute(
+                        """SELECT COUNT(DISTINCT external_id) FROM provider_object_routes
+                        WHERE connector=? AND account_key LIKE ? AND status='active'""",
+                        (integration["source"], f"{integration_id}:%"),
+                    ).fetchone()[0])
+                else:
+                    current_objects = int(integration["object_count"]) + total_created
                 self.conn.execute(
                     """UPDATE integrations SET status=?,health=?,last_sync_at=?,last_error=NULL,
-                    object_count=object_count+? WHERE id=?""",
+                    object_count=? WHERE id=?""",
                     ("connected" if rollup["all_completed"] and not rollup["backfilling"] else "authorized",
                      "degraded" if rollup["quarantined"] else ("backfilling" if rollup["backfilling"] else ("healthy" if rollup["all_completed"] else "partial")),
-                     now,total_created,integration_id),
+                     now,current_objects,integration_id),
                 )
                 self.conn.commit()
             except Exception:
@@ -381,8 +561,7 @@ class IntegrationOperations:
                     "created": total_created, "quarantined":total_quarantined,
                     "backfill_remaining":backfill_remaining,"batch_ids": batches}
         except ConnectorTransportError as exc:
-            health = "rate_limited" if exc.status == 429 else "degraded"
-            connection_state = "reauth_required" if exc.status == 401 else ("action_required" if exc.status == 403 else None)
+            health, connection_state = self._transport_failure_state(exc)
             if self._owns_sync_fences(
                 stream_lock_id, stream_reservation_token, binding["id"], binding["generation"]
             ):
@@ -456,21 +635,181 @@ class IntegrationOperations:
     def _pull(
         self, source: str, secret: str, external_key: str, workspace_id: str,
         cursor: str | None, integration: dict[str, Any],
-    ) -> tuple[list[ConnectorSourceEvent], str | None, bool]:
+    ) -> tuple[list[ConnectorSourceEvent], str | None, bool, dict[str, Any]]:
         if self.connector_factory is not None:
             result=self.connector_factory("pull", source, secret, external_key, workspace_id, cursor, integration)
             if len(result)==2:
-                return result[0],result[1],False
+                return result[0],result[1],False,{}
+            if len(result)==3:
+                return result[0],result[1],result[2],{}
             return result
         if source == "slack":
             connector = SlackConnector(secret, {external_key: workspace_id}, cursor=cursor)
             raw = connector.pull()
-            return [self._normalize_event(item) for item in raw], connector.next_cursor, connector.has_more
+            return [self._normalize_event(item) for item in raw], connector.next_cursor, connector.has_more, {}
         if source == "clickup":
             connector = ClickUpConnector(secret, {external_key: workspace_id}, cursor=cursor)
             raw = connector.pull()
-            return [self._normalize_event(item) for item in raw], connector.next_cursor, connector.has_more
+            return [self._normalize_event(item) for item in raw], connector.next_cursor, connector.has_more, {}
+        if source == "google_drive":
+            folders, drives = self._drive_mappings({external_key: workspace_id})
+            account_key = f"{integration['id']}:{self._mapping_hash(source,external_key,workspace_id)}"
+            connector = GoogleDriveConnector(
+                secret,
+                folder_workspace_mappings=folders,
+                shared_drive_workspace_mappings=drives,
+                expected_account_id=integration["expected_account_id"],
+                granted_scopes=integration.get("_runtime_granted_permissions", ()),
+                route_state=self.os.store.provider_route_state(workspace_id, source, account_key),
+                ancestry_state=self._drive_ancestry_state(workspace_id, source, account_key),
+                backfill_task=integration.get("_runtime_backfill_task"),
+            )
+            return self._google_pull_page(connector.pull(cursor), source, external_key, workspace_id)
+        if source == "gmail":
+            account_key = f"{integration['id']}:{self._mapping_hash(source,external_key,workspace_id)}"
+            connector = GmailConnector(
+                secret,
+                label_workspace_mappings={external_key: workspace_id},
+                expected_account_id=integration["expected_account_id"],
+                granted_scopes=integration.get("_runtime_granted_permissions", ()),
+                route_state=self.os.store.provider_route_state(workspace_id, source, account_key),
+            )
+            return self._google_pull_page(connector.pull(cursor), source, external_key, workspace_id)
         raise ValidationError("connector adapter is not enabled for live synchronization")
+
+    def _google_pull_page(
+        self, result: Any, source: str, external_key: str, workspace_id: str
+    ) -> tuple[list[ConnectorSourceEvent], str | None, bool, dict[str, Any]]:
+        if result.cursor_expired:
+            return [], None, True, {"cursor_expired": True}
+        if result.error:
+            status = 401 if result.error_code == "authorization_required" else (
+                403 if result.error_code in {"permission_denied", "not_found"} else (
+                    429 if result.error_code in {"quota_exhausted", "rate_limited"} else 503
+                )
+            )
+            raise ConnectorTransportError(
+                "Google provider read failed", status=status,
+                retryable=bool(result.retryable), retry_after=result.retry_after_seconds,
+            )
+        events_by_key = {event.dedupe_key: event for event in result.events}
+        mutations = tuple(result.lifecycle_mutations)
+        for mutation in mutations:
+            if mutation.event_dedupe_key not in events_by_key:
+                raise ValidationError("Google lifecycle mutation has no exact page event")
+            if mutation.route_key != external_key or mutation.workspace_id != workspace_id:
+                raise AuthorizationError("Google lifecycle mutation is outside the immutable mapped stream")
+        return list(result.events), result.next_cursor, bool(result.has_more), {
+            "lifecycle_mutations": mutations,
+            "backfill_tasks": tuple(getattr(result, "backfill_tasks", ())),
+            "reconciliation_requests": tuple(getattr(result, "reconciliation_requests", ())),
+        }
+
+    def _drive_ancestry_state(
+        self, workspace_id: str, source: str, account_key: str
+    ) -> dict[str, dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT external_id,root_route_keys,reconciliation_status
+            FROM provider_object_ancestry
+            WHERE workspace_id=? AND connector=? AND account_key=?""",
+            (workspace_id, source, account_key),
+        ).fetchall()
+        return {
+            row["external_id"]: {
+                "root_route_keys": json.loads(row["root_route_keys"]),
+                "reconciliation_status": row["reconciliation_status"],
+            }
+            for row in rows
+        }
+
+    @staticmethod
+    def _provider_fence(
+        stream_lock_id: str | None,
+        reservation_token: str | None,
+        binding: dict[str, Any],
+    ) -> ProviderSyncFence | None:
+        if stream_lock_id is None or reservation_token is None:
+            return None
+        return ProviderSyncFence(
+            stream_lock_id, reservation_token, binding["id"], int(binding["generation"])
+        )
+
+    @staticmethod
+    def _google_cursor_phase(cursor: str | None) -> str | None:
+        if cursor is None:
+            return None
+        try:
+            value = json.loads(cursor)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValidationError("Google provider cursor is invalid") from exc
+        phase = value.get("phase") if isinstance(value, dict) else None
+        if phase not in {"backfill", "changes", "history"}:
+            raise ValidationError("Google provider cursor phase is invalid")
+        return str(phase)
+
+    def _persist_google_page_state(
+        self,
+        source: str,
+        workspace_id: str,
+        account_key: str,
+        stream_key: str,
+        route_key: str,
+        next_cursor: str | None,
+        events: list[ConnectorSourceEvent],
+        page_meta: dict[str, Any],
+        generation: dict[str, Any] | None,
+        fence: ProviderSyncFence | None,
+    ) -> None:
+        generation_id = str(generation["id"]) if generation is not None else None
+        if source == "google_drive":
+            versions = {
+                mutation.event_dedupe_key: mutation.provider_version
+                for mutation in page_meta.get("lifecycle_mutations", ())
+            }
+            for event in events:
+                file_node = event.payload.get("file")
+                file_data = file_node if isinstance(file_node, dict) else {}
+                parents = file_data.get("parents") or ()
+                direct_routes = event.payload.get("route_keys") or ()
+                self.os.store.resolve_provider_object_routes(
+                    workspace_id, source, account_key, event.external_id,
+                    versions.get(event.dedupe_key, event.event_type),
+                    direct_route_keys=direct_routes,
+                    parent_ids=parents,
+                    is_container=file_data.get("mimeType") == (
+                        "application/vnd.google-apps.folder"
+                    ),
+                    occurred_at=self._observed_at(event.observed_at),
+                    fence=fence,
+                )
+            for task in page_meta.get("backfill_tasks", ()):
+                self.os.store.enqueue_provider_sync_task(
+                    workspace_id, source, account_key, stream_key, "backfill",
+                    generation_id=generation_id, external_id=task.container_id,
+                    route_key=task.route_key, page_token=task.page_token,
+                    payload={"kind": "drive_tree"}, fence=fence,
+                )
+            for request in page_meta.get("reconciliation_requests", ()):
+                self.os.store.enqueue_provider_sync_task(
+                    workspace_id, source, account_key, stream_key,
+                    "descendants" if request.descendants else "reconcile",
+                    generation_id=generation_id, external_id=request.external_id,
+                    route_key=route_key,
+                    payload={
+                        "parent_ids": list(request.parent_ids),
+                        "reason": request.reason,
+                    },
+                    fence=fence,
+                )
+        elif source == "gmail" and self._google_cursor_phase(next_cursor) == "backfill":
+            self.os.store.enqueue_provider_sync_task(
+                workspace_id, source, account_key, stream_key, "backfill",
+                generation_id=generation_id, external_id=route_key,
+                route_key=route_key, page_token=hashlib.sha256(
+                    next_cursor.encode("utf-8")
+                ).hexdigest()[:24],
+                payload={"cursor": next_cursor}, fence=fence,
+            )
 
     def _provider_verify(self,integration: dict[str,Any],secret: str) -> Any:
         source=integration["source"]
@@ -483,7 +822,97 @@ class IntegrationOperations:
             teams=ClickUpConnector(secret,integration["workspace_mappings"],
                 expected_team_id=integration["expected_account_id"]).verify_credentials()
             return next(team for team in teams if team.team_id==integration["expected_account_id"])
+        if source == "google_drive":
+            folders, drives = self._drive_mappings(integration["workspace_mappings"])
+            return GoogleDriveConnector(
+                secret,
+                folder_workspace_mappings=folders,
+                shared_drive_workspace_mappings=drives,
+                expected_account_id=integration["expected_account_id"],
+                granted_scopes=integration.get("_runtime_granted_permissions", ()),
+            ).verify_credentials()
+        if source == "gmail":
+            return GmailConnector(
+                secret,
+                label_workspace_mappings=integration["workspace_mappings"],
+                expected_account_id=integration["expected_account_id"],
+                granted_scopes=integration.get("_runtime_granted_permissions", ()),
+            ).verify_credentials()
         raise ValidationError("unsupported live connector")
+
+    def _refresh_google_access(
+        self, integration: dict[str, Any], raw_secret: str
+    ) -> tuple[str, tuple[str, ...]]:
+        bundle = self._parse_google_credential_bundle(raw_secret)
+        if self.connector_factory is not None:
+            value = self.connector_factory("refresh", integration["source"], raw_secret, integration)
+            if isinstance(value, dict):
+                result = OAuthRefreshResult(
+                    value.get("access_token"), value.get("expires_at"),
+                    tuple(str(scope) for scope in value.get("scopes", ())),
+                    bool(value.get("rate_limited", False)), value.get("retry_after_seconds"),
+                    value.get("error"), value.get("error_code"), bool(value.get("retryable", False)),
+                )
+            else:
+                result = value
+        else:
+            result = GoogleOAuthClient().refresh_access_token(
+                bundle["client_id"], bundle["client_secret"], bundle["refresh_token"]
+            )
+        if not isinstance(result, OAuthRefreshResult):
+            raise ValidationError("Google credential refresh returned an invalid result")
+        if result.error or not result.access_token:
+            status = 401 if result.error_code == "authorization_required" else (
+                403 if result.error_code == "permission_denied" else (
+                    429 if result.rate_limited else (503 if result.retryable else 400)
+                )
+            )
+            raise ConnectorTransportError(
+                "Google credential refresh failed", status=status,
+                retryable=result.retryable or result.rate_limited,
+                retry_after=result.retry_after_seconds,
+            )
+        scopes = tuple(sorted({str(scope).strip() for scope in result.scopes if str(scope).strip()}))
+        if not scopes:
+            raise ConnectorTransportError(
+                "Google credential grant could not be proven", status=403, retryable=False
+            )
+        missing = self._missing_permissions(integration["source"], set(integration["permissions"]), set(scopes))
+        if missing:
+            raise ConnectorTransportError(
+                "Google credential is missing required permissions", status=403, retryable=False
+            )
+        return result.access_token, scopes
+
+    @staticmethod
+    def _parse_google_credential_bundle(raw_secret: str) -> dict[str, str]:
+        try:
+            value = json.loads(raw_secret)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValidationError("Google credential reference must resolve to a JSON credential bundle") from exc
+        required = {"client_id", "client_secret", "refresh_token"}
+        if not isinstance(value, dict) or set(value) != required:
+            raise ValidationError("Google credential bundle must contain exactly client_id, client_secret, and refresh_token")
+        result: dict[str, str] = {}
+        for key in sorted(required):
+            item = value.get(key)
+            if not isinstance(item, str) or not item.strip() or item != item.strip():
+                raise ValidationError("Google credential bundle fields must be non-empty strings")
+            result[key] = item
+        return result
+
+    @staticmethod
+    def _is_google(source: str) -> bool:
+        return source in {"google_drive", "gmail"}
+
+    @staticmethod
+    def _drive_mappings(workspace_mappings: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+        folders: dict[str, str] = {}
+        drives: dict[str, str] = {}
+        for route_key, workspace_id in workspace_mappings.items():
+            kind, identifier = route_key.split(":", 1)
+            (folders if kind == "folder" else drives)[identifier] = workspace_id
+        return folders, drives
 
     @staticmethod
     def _normalize_event(event: Any) -> ConnectorSourceEvent:
@@ -722,6 +1151,14 @@ class IntegrationOperations:
         }):
             missing.remove(GMAIL_READ_SCOPE)
         return missing
+
+    @staticmethod
+    def _transport_failure_state(exc: ConnectorTransportError) -> tuple[str, str | None]:
+        health = "rate_limited" if exc.status == 429 else "degraded"
+        status = "reauth_required" if exc.status == 401 else (
+            "action_required" if exc.status == 403 else None
+        )
+        return health, status
 
     @staticmethod
     def _stable_error(exc: Exception) -> str:

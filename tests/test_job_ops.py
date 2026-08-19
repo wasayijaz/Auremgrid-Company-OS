@@ -28,7 +28,7 @@ class JobOperationTests(unittest.TestCase):
         self.os.close()
 
     def test_schema_v11_auth_control_tables_exist_without_secret_values(self) -> None:
-        self.assertEqual(self.os.store.schema_version, 13)
+        self.assertEqual(self.os.store.schema_version, 14)
         secret_columns = [
             row["name"]
             for row in self.os.store.conn.execute("PRAGMA table_info(secret_bindings)").fetchall()
@@ -68,12 +68,20 @@ class JobOperationTests(unittest.TestCase):
                 "granted_permissions", "credential_verified_at",
             ):
                 connection.execute(f"ALTER TABLE integrations DROP COLUMN {column}")
+            connection.execute("DROP INDEX IF EXISTS idx_provider_mutation_exact_event")
+            for trigger in (
+                "provider_mutation_event_key_required", "provider_mutation_identity_no_update",
+                "provider_mutation_source_bind_once", "provider_mutation_apply_once",
+            ):
+                connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            connection.execute("ALTER TABLE provider_route_mutation_staging DROP COLUMN event_dedupe_key")
+            connection.execute("ALTER TABLE provider_sync_generations DROP COLUMN cancelled_at")
             connection.execute("DELETE FROM schema_migrations WHERE version>=11")
             connection.commit()
             connection.close()
 
             upgraded = CompanyOS(path)
-            self.assertEqual(upgraded.store.schema_version, 13)
+            self.assertEqual(upgraded.store.schema_version, 14)
             restored = upgraded.workflow_ops.summary(org.id, ws.id, person.id, run["id"])
             self.assertEqual(restored["run"]["definition_key"], "client_request")
             upgraded.close()

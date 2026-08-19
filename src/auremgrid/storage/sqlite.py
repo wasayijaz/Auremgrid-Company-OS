@@ -6,6 +6,7 @@ import sqlite3
 import threading
 from collections.abc import Iterable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
@@ -31,6 +32,14 @@ from auremgrid.domain.ops import (
     WorkItem,
 )
 from auremgrid.storage.migrations import migrate, schema_version
+
+
+@dataclass(frozen=True)
+class ProviderSyncFence:
+    stream_lock_id: str
+    reservation_token: str
+    credential_binding_id: str
+    credential_generation: int
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -497,12 +506,14 @@ class SqliteStore:
         source_id: str,
         provider_version: str,
         occurred_at: datetime | None = None,
+        fence: ProviderSyncFence | None = None,
     ) -> dict[str, object]:
         """Atomically activate a provider membership and its current evidence."""
 
         self._validate_route_identity(connector, account_key, external_id, route_key, source_key, provider_version)
         when = (occurred_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0).isoformat()
         with self.atomic(immediate=True):
+            self._assert_provider_fence(workspace_id, connector, account_key, fence, when)
             source = self._require_scoped_source(workspace_id, source_id)
             if source["source_key"] != source_key:
                 raise ValueError("provider route source_key does not match source")
@@ -572,12 +583,14 @@ class SqliteStore:
         source_key: str,
         provider_version: str,
         occurred_at: datetime | None = None,
+        fence: ProviderSyncFence | None = None,
     ) -> dict[str, object]:
         """Atomically retire a membership and hide evidence once no route references it."""
 
         self._validate_route_identity(connector, account_key, external_id, route_key, source_key, provider_version)
         when = (occurred_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0).isoformat()
         with self.atomic(immediate=True):
+            self._assert_provider_fence(workspace_id, connector, account_key, fence, when)
             if connector == "google_drive":
                 ancestry = self.conn.execute(
                     """SELECT reconciliation_status FROM provider_object_ancestry
@@ -648,6 +661,7 @@ class SqliteStore:
         parent_ids: Iterable[str] = (),
         is_container: bool = False,
         occurred_at: datetime | None = None,
+        fence: ProviderSyncFence | None = None,
     ) -> dict[str, object]:
         """Resolve durable root membership without guessing through missing ancestry.
 
@@ -663,6 +677,7 @@ class SqliteStore:
         parents = tuple(sorted({str(parent) for parent in parent_ids if str(parent)}))
         when = (occurred_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0).isoformat()
         with self.atomic(immediate=True):
+            self._assert_provider_fence(workspace_id, connector, account_key, fence, when)
             previous = self.conn.execute(
                 """SELECT * FROM provider_object_ancestry
                    WHERE workspace_id=? AND connector=? AND account_key=? AND external_id=?""",
@@ -717,15 +732,17 @@ class SqliteStore:
         connector: str,
         account_key: str,
         external_id: str,
+        fence: ProviderSyncFence | None = None,
     ) -> bool:
         with self.atomic(immediate=True):
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            self._assert_provider_fence(workspace_id, connector, account_key, fence, now)
             cursor = self.conn.execute(
                 """UPDATE provider_object_ancestry
                    SET reconciliation_status='resolved', updated_at=?
                    WHERE workspace_id=? AND connector=? AND account_key=? AND external_id=?
                      AND reconciliation_status='descendants_required'""",
-                (datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-                 workspace_id, connector, account_key, external_id),
+                (now, workspace_id, connector, account_key, external_id),
             )
             return cursor.rowcount == 1
 
@@ -760,13 +777,16 @@ class SqliteStore:
         provider_version: str,
         operation: str,
         occurred_at: datetime,
+        fence: ProviderSyncFence | None = None,
     ) -> dict[str, object]:
         if operation not in {"activate", "retire"}:
             raise ValidationError("provider route operation is invalid")
         self._validate_route_identity(connector, account_key, external_id, route_key, source_key, provider_version)
         with self.atomic(immediate=True):
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            self._assert_provider_fence(workspace_id, connector, account_key, fence, now)
             event = self.conn.execute(
-                """SELECT event.id,event.external_id,event.source_key FROM connector_source_events event
+                """SELECT event.id,event.external_id,event.source_key,event.dedupe_key FROM connector_source_events event
                    JOIN connector_batch_events link ON link.event_id=event.id
                    JOIN connector_ingest_batches batch ON batch.id=link.batch_id
                    WHERE event.id=? AND link.batch_id=? AND event.workspace_id=?
@@ -784,22 +804,111 @@ class SqliteStore:
                 """INSERT OR IGNORE INTO provider_route_mutation_staging(
                        id,batch_id,event_id,workspace_id,connector,account_key,external_id,
                        route_key,source_key,source_id,provider_version,operation,occurred_at,
-                       status,created_at,applied_at
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'staged',?,NULL)""",
+                       status,created_at,applied_at,event_dedupe_key
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'staged',?,NULL,?)""",
                 (mutation_id, batch_id, event_id, workspace_id, connector, account_key,
                  external_id, route_key, source_key, source_id, provider_version, operation,
                  occurred_at.astimezone(timezone.utc).isoformat(),
-                 datetime.now(timezone.utc).replace(microsecond=0).isoformat()),
+                 now, event["dedupe_key"]),
             )
             return dict(self.conn.execute(
                 "SELECT * FROM provider_route_mutation_staging WHERE id=?", (mutation_id,)
             ).fetchone())
 
-    def apply_staged_provider_route_mutations(self, batch_id: str) -> list[dict[str, object]]:
+    def bind_provider_event_source(
+        self,
+        batch_id: str,
+        event_dedupe_key: str,
+        workspace_id: str,
+        source_id: str,
+        fence: ProviderSyncFence | None = None,
+    ) -> int:
+        """Bind staged activations to ingested evidence exactly once."""
+
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with self.atomic(immediate=True):
+            event = self.conn.execute(
+                """SELECT event.*,batch.connector,batch.account_key FROM connector_source_events event
+                   JOIN connector_batch_events link ON link.event_id=event.id
+                   JOIN connector_ingest_batches batch ON batch.id=link.batch_id
+                   WHERE link.batch_id=? AND event.dedupe_key=? AND event.workspace_id=?""",
+                (batch_id, event_dedupe_key, workspace_id),
+            ).fetchone()
+            if event is None:
+                raise ValidationError("exact provider event was not found in batch")
+            self._assert_provider_fence(
+                workspace_id, event["connector"], event["account_key"], fence, now
+            )
+            source = self._require_scoped_source(workspace_id, source_id)
+            if source["source_key"] != event["source_key"]:
+                raise ValidationError("provider event source binding does not match evidence")
+            rows = self.conn.execute(
+                """SELECT id,source_id FROM provider_route_mutation_staging
+                   WHERE batch_id=? AND event_dedupe_key=? AND operation='activate'""",
+                (batch_id, event_dedupe_key),
+            ).fetchall()
+            if not rows:
+                return 0
+            if any(row["source_id"] not in {None, source_id} for row in rows):
+                raise ValidationError("provider event source is already bound differently")
+            cursor = self.conn.execute(
+                """UPDATE provider_route_mutation_staging SET source_id=?
+                   WHERE batch_id=? AND event_dedupe_key=? AND operation='activate'
+                     AND source_id IS NULL""",
+                (source_id, batch_id, event_dedupe_key),
+            )
+            return cursor.rowcount
+
+    def apply_provider_event_mutations(
+        self,
+        batch_id: str,
+        event_dedupe_key: str,
+        fence: ProviderSyncFence | None = None,
+    ) -> list[dict[str, object]]:
+        """Apply only one exact event's staged route transitions."""
+
+        applied: list[dict[str, object]] = []
+        with self.atomic(immediate=True):
+            event = self.conn.execute(
+                """SELECT event.*,batch.connector,batch.account_key FROM connector_source_events event
+                   JOIN connector_batch_events link ON link.event_id=event.id
+                   JOIN connector_ingest_batches batch ON batch.id=link.batch_id
+                   WHERE link.batch_id=? AND event.dedupe_key=?""",
+                (batch_id, event_dedupe_key),
+            ).fetchone()
+            if event is None or event["status"] not in {"ingested", "skipped"}:
+                raise ValidationError("provider event is not safely ingested")
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            self._assert_provider_fence(
+                event["workspace_id"], event["connector"], event["account_key"], fence, now
+            )
+            rows = self.conn.execute(
+                """SELECT * FROM provider_route_mutation_staging
+                   WHERE batch_id=? AND event_dedupe_key=? AND status='staged'
+                   ORDER BY created_at,id""",
+                (batch_id, event_dedupe_key),
+            ).fetchall()
+            for row in rows:
+                applied.append(self._apply_provider_mutation_row(row))
+        return applied
+
+    def apply_staged_provider_route_mutations(
+        self, batch_id: str, fence: ProviderSyncFence | None = None
+    ) -> list[dict[str, object]]:
         """Apply an ingested batch's staged memberships in one local transaction."""
 
         applied: list[dict[str, object]] = []
         with self.atomic(immediate=True):
+            batch = self.conn.execute(
+                "SELECT workspace_id,connector,account_key FROM connector_ingest_batches WHERE id=?",
+                (batch_id,),
+            ).fetchone()
+            if batch is None:
+                raise ValidationError("connector batch not found")
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            self._assert_provider_fence(
+                batch["workspace_id"], batch["connector"], batch["account_key"], fence, now
+            )
             rows = self.conn.execute(
                 """SELECT mutation.* FROM provider_route_mutation_staging mutation
                    JOIN connector_source_events event ON event.id=mutation.event_id
@@ -809,28 +918,31 @@ class SqliteStore:
                 (batch_id,),
             ).fetchall()
             for row in rows:
-                occurred = parse_dt(row["occurred_at"])
-                if row["operation"] == "activate":
-                    if row["source_id"] is None:
-                        raise ValidationError("activation mutation requires source_id")
-                    result = self.activate_provider_route(
-                        row["workspace_id"], row["connector"], row["account_key"],
-                        row["external_id"], row["route_key"], row["source_key"],
-                        row["source_id"], row["provider_version"], occurred,
-                    )
-                else:
-                    result = self.retire_provider_route(
-                        row["workspace_id"], row["connector"], row["account_key"],
-                        row["external_id"], row["route_key"], row["source_key"],
-                        row["provider_version"], occurred,
-                    )
-                self.conn.execute(
-                    """UPDATE provider_route_mutation_staging
-                       SET status='applied', applied_at=? WHERE id=? AND status='staged'""",
-                    (datetime.now(timezone.utc).replace(microsecond=0).isoformat(), row["id"]),
-                )
-                applied.append(result)
+                applied.append(self._apply_provider_mutation_row(row))
         return applied
+
+    def _apply_provider_mutation_row(self, row: sqlite3.Row) -> dict[str, object]:
+        occurred = parse_dt(row["occurred_at"])
+        if row["operation"] == "activate":
+            if row["source_id"] is None:
+                raise ValidationError("activation mutation requires source_id")
+            result = self.activate_provider_route(
+                row["workspace_id"], row["connector"], row["account_key"],
+                row["external_id"], row["route_key"], row["source_key"],
+                row["source_id"], row["provider_version"], occurred,
+            )
+        else:
+            result = self.retire_provider_route(
+                row["workspace_id"], row["connector"], row["account_key"],
+                row["external_id"], row["route_key"], row["source_key"],
+                row["provider_version"], occurred,
+            )
+        self.conn.execute(
+            """UPDATE provider_route_mutation_staging
+               SET status='applied', applied_at=? WHERE id=? AND status='staged'""",
+            (datetime.now(timezone.utc).replace(microsecond=0).isoformat(), row["id"]),
+        )
+        return result
 
     def enqueue_provider_sync_task(
         self,
@@ -845,6 +957,7 @@ class SqliteStore:
         route_key: str | None = None,
         page_token: str | None = None,
         payload: dict[str, object] | None = None,
+        fence: ProviderSyncFence | None = None,
     ) -> dict[str, object]:
         if task_type not in {"backfill", "reconcile", "descendants"}:
             raise ValidationError("provider sync task type is invalid")
@@ -853,6 +966,15 @@ class SqliteStore:
         task_id = _stable_id("ptask", *identity)
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with self.atomic(immediate=True):
+            self._assert_provider_fence(workspace_id, connector, account_key, fence, now)
+            if generation_id is not None:
+                generation = self.conn.execute(
+                    """SELECT 1 FROM provider_sync_generations
+                       WHERE id=? AND workspace_id=? AND connector=? AND account_key=? AND status='running'""",
+                    (generation_id, workspace_id, connector, account_key),
+                ).fetchone()
+                if generation is None:
+                    raise ValidationError("provider sync task generation is not running")
             self.conn.execute(
                 """INSERT OR IGNORE INTO provider_sync_tasks(
                        id,workspace_id,connector,account_key,stream_key,generation_id,task_type,
@@ -874,6 +996,7 @@ class SqliteStore:
         lease_owner: str,
         lease_seconds: int = 60,
         now: datetime | None = None,
+        fence: ProviderSyncFence | None = None,
     ) -> dict[str, object] | None:
         if lease_seconds <= 0 or not lease_owner:
             raise ValidationError("provider task lease is invalid")
@@ -881,10 +1004,15 @@ class SqliteStore:
         now_text = now_dt.isoformat()
         expires = (now_dt + timedelta(seconds=lease_seconds)).isoformat()
         with self.atomic(immediate=True):
+            self._assert_provider_fence(workspace_id, connector, account_key, fence, now_text)
             row = self.conn.execute(
                 """SELECT * FROM provider_sync_tasks
                    WHERE workspace_id=? AND connector=? AND account_key=? AND stream_key=?
                      AND (status='pending' OR (status='leased' AND lease_expires_at <= ?))
+                     AND (generation_id IS NULL OR EXISTS (
+                         SELECT 1 FROM provider_sync_generations generation
+                         WHERE generation.id=provider_sync_tasks.generation_id AND generation.status='running'
+                     ))
                    ORDER BY created_at,id LIMIT 1""",
                 (workspace_id, connector, account_key, stream_key, now_text),
             ).fetchone()
@@ -901,9 +1029,60 @@ class SqliteStore:
                 return None
             return dict(self.conn.execute("SELECT * FROM provider_sync_tasks WHERE id=?", (row["id"],)).fetchone())
 
-    def complete_provider_sync_task(self, task_id: str, lease_token: str) -> bool:
+    def heartbeat_provider_sync_task(
+        self,
+        task_id: str,
+        lease_token: str,
+        lease_seconds: int = 60,
+        now: datetime | None = None,
+        fence: ProviderSyncFence | None = None,
+    ) -> dict[str, object]:
+        if lease_seconds <= 0:
+            raise ValidationError("provider task lease is invalid")
+        now_dt = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0)
+        now_text = now_dt.isoformat()
+        expires = (now_dt + timedelta(seconds=lease_seconds)).isoformat()
+        with self.atomic(immediate=True):
+            task = self.conn.execute("SELECT * FROM provider_sync_tasks WHERE id=?", (task_id,)).fetchone()
+            if task is None:
+                raise ValidationError("provider sync task not found")
+            self._assert_provider_fence(
+                task["workspace_id"], task["connector"], task["account_key"], fence, now_text
+            )
+            if task["generation_id"] is not None:
+                generation = self.conn.execute(
+                    "SELECT status FROM provider_sync_generations WHERE id=?",
+                    (task["generation_id"],),
+                ).fetchone()
+                if generation is None or generation["status"] != "running":
+                    raise ValidationError("provider sync task generation is not running")
+            cursor = self.conn.execute(
+                """UPDATE provider_sync_tasks SET lease_expires_at=?,updated_at=?
+                   WHERE id=? AND status='leased' AND lease_token=? AND lease_expires_at>?""",
+                (expires, now_text, task_id, lease_token, now_text),
+            )
+            if cursor.rowcount != 1:
+                raise ValidationError("provider sync task lease is stale")
+            return dict(self.conn.execute("SELECT * FROM provider_sync_tasks WHERE id=?", (task_id,)).fetchone())
+
+    def complete_provider_sync_task(
+        self, task_id: str, lease_token: str, fence: ProviderSyncFence | None = None
+    ) -> bool:
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with self.atomic(immediate=True):
+            task = self.conn.execute("SELECT * FROM provider_sync_tasks WHERE id=?", (task_id,)).fetchone()
+            if task is None:
+                raise ValidationError("provider sync task not found")
+            self._assert_provider_fence(
+                task["workspace_id"], task["connector"], task["account_key"], fence, now
+            )
+            if task["generation_id"] is not None:
+                generation = self.conn.execute(
+                    "SELECT status FROM provider_sync_generations WHERE id=?",
+                    (task["generation_id"],),
+                ).fetchone()
+                if generation is None or generation["status"] != "running":
+                    raise ValidationError("provider sync task generation is not running")
             cursor = self.conn.execute(
                 """UPDATE provider_sync_tasks SET status='completed', completed_at=?, updated_at=?,
                        lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
@@ -921,9 +1100,11 @@ class SqliteStore:
         route_key: str,
         baseline_cursor: str | None,
         started_at: datetime | None = None,
+        fence: ProviderSyncFence | None = None,
     ) -> dict[str, object]:
         when = (started_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0).isoformat()
         with self.atomic(immediate=True):
+            self._assert_provider_fence(workspace_id, connector, account_key, fence, when)
             running = self.conn.execute(
                 """SELECT * FROM provider_sync_generations
                    WHERE workspace_id=? AND connector=? AND account_key=? AND stream_key=?
@@ -958,6 +1139,7 @@ class SqliteStore:
         external_id: str,
         route_key: str,
         seen_at: datetime | None = None,
+        fence: ProviderSyncFence | None = None,
     ) -> bool:
         when = (seen_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0).isoformat()
         with self.atomic(immediate=True):
@@ -967,6 +1149,9 @@ class SqliteStore:
             ).fetchone()
             if generation is None or generation["route_key"] != route_key:
                 raise ValidationError("provider sync generation does not own route")
+            self._assert_provider_fence(
+                generation["workspace_id"], generation["connector"], generation["account_key"], fence, when
+            )
             cursor = self.conn.execute(
                 """INSERT OR IGNORE INTO provider_object_generation_seen(
                        generation_id,workspace_id,connector,account_key,external_id,route_key,seen_at
@@ -980,6 +1165,7 @@ class SqliteStore:
         self,
         generation_id: str,
         completed_at: datetime | None = None,
+        fence: ProviderSyncFence | None = None,
     ) -> dict[str, object]:
         """Retire only unseen objects after every generation task is durable and complete."""
 
@@ -994,6 +1180,11 @@ class SqliteStore:
                 raise ValidationError("provider sync generation not found")
             if generation["status"] == "completed":
                 return {"generation_id": generation_id, "retired": 0, "idempotent": True}
+            if generation["status"] != "running":
+                raise ValidationError("cancelled provider generation cannot retire unseen objects")
+            self._assert_provider_fence(
+                generation["workspace_id"], generation["connector"], generation["account_key"], fence, when
+            )
             pending = self.conn.execute(
                 """SELECT COUNT(*) FROM provider_sync_tasks
                    WHERE generation_id=? AND status NOT IN ('completed','cancelled')""",
@@ -1026,6 +1217,76 @@ class SqliteStore:
             )
             return {"generation_id": generation_id, "retired": len(unseen), "idempotent": False}
 
+    def get_running_generation(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        stream_key: str,
+        route_key: str | None = None,
+    ) -> dict[str, object] | None:
+        sql = """SELECT * FROM provider_sync_generations
+                 WHERE workspace_id=? AND connector=? AND account_key=? AND stream_key=?
+                   AND status='running'"""
+        params: tuple[object, ...] = (workspace_id, connector, account_key, stream_key)
+        if route_key is not None:
+            sql += " AND route_key=?"
+            params += (route_key,)
+        sql += " ORDER BY started_at,id LIMIT 1"
+        row = self.conn.execute(sql, params).fetchone()
+        return dict(row) if row is not None else None
+
+    def pending_provider_task_count(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        stream_key: str,
+        generation_id: str | None = None,
+    ) -> int:
+        sql = """SELECT COUNT(*) FROM provider_sync_tasks
+                 WHERE workspace_id=? AND connector=? AND account_key=? AND stream_key=?
+                   AND status IN ('pending','leased')"""
+        params: tuple[object, ...] = (workspace_id, connector, account_key, stream_key)
+        if generation_id is not None:
+            sql += " AND generation_id=?"
+            params += (generation_id,)
+        return int(self.conn.execute(sql, params).fetchone()[0])
+
+    def cancel_provider_rebootstrap(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        stream_key: str,
+        route_key: str,
+        fence: ProviderSyncFence | None = None,
+    ) -> dict[str, object]:
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with self.atomic(immediate=True):
+            self._assert_provider_fence(workspace_id, connector, account_key, fence, now)
+            generation = self.conn.execute(
+                """SELECT * FROM provider_sync_generations
+                   WHERE workspace_id=? AND connector=? AND account_key=? AND stream_key=?
+                     AND route_key=? AND status='running'""",
+                (workspace_id, connector, account_key, stream_key, route_key),
+            ).fetchone()
+            if generation is None:
+                return {"generation_id": None, "cancelled_tasks": 0, "idempotent": True}
+            tasks = self.conn.execute(
+                """UPDATE provider_sync_tasks SET status='cancelled',updated_at=?,completed_at=?,
+                       lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
+                   WHERE generation_id=? AND status IN ('pending','leased')""",
+                (now, now, generation["id"]),
+            ).rowcount
+            self.conn.execute(
+                """UPDATE provider_sync_generations
+                   SET status='cancelled',cancelled_at=?
+                   WHERE id=? AND status='running'""",
+                (now, generation["id"]),
+            )
+            return {"generation_id": generation["id"], "cancelled_tasks": tasks, "idempotent": False}
+
     def _require_scoped_source(self, workspace_id: str, source_id: str) -> sqlite3.Row:
         row = self.conn.execute(
             "SELECT * FROM sources WHERE workspace_id=? AND id=?",
@@ -1034,6 +1295,33 @@ class SqliteStore:
         if row is None:
             raise ValidationError("source does not belong to workspace")
         return row
+
+    def _assert_provider_fence(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        fence: ProviderSyncFence | None,
+        now: str,
+    ) -> None:
+        if fence is None:
+            return
+        lock = self.conn.execute(
+            """SELECT 1 FROM connector_stream_locks
+               WHERE id=? AND workspace_id=? AND connector=? AND account_key=?
+                 AND status='active' AND reservation_token=? AND lease_expires_at>?""",
+            (fence.stream_lock_id, workspace_id, connector, account_key,
+             fence.reservation_token, now),
+        ).fetchone()
+        if lock is None:
+            raise ValidationError("provider sync stream fence is stale")
+        credential = self.conn.execute(
+            """SELECT 1 FROM secret_bindings
+               WHERE id=? AND status='active' AND revoked_at IS NULL AND generation=?""",
+            (fence.credential_binding_id, int(fence.credential_generation)),
+        ).fetchone()
+        if credential is None:
+            raise ValidationError("provider sync credential fence is stale")
 
     def _activate_source_tx(
         self,

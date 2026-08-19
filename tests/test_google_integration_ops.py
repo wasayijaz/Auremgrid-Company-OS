@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os as environment
+import json
 import unittest
+from unittest.mock import patch
 
 from auremgrid.connectors.catalog import connector_catalog
 from auremgrid.api.mcp import McpToolRouter
+from auremgrid.connectors.http import ConnectorTransportError
 from auremgrid.domain.errors import ValidationError
 from auremgrid.services.brain import CompanyOS
 from auremgrid.services.integration_ops import (
@@ -216,6 +219,163 @@ class GoogleIntegrationContractTests(unittest.TestCase):
                 {"folder:one": self.ws.id},
                 [GOOGLE_DRIVE_READ_SCOPE],
             )
+
+    def test_google_credential_bundle_is_strict_and_never_echoed_on_failure(self) -> None:
+        sentinel = "refresh-secret-sentinel"
+        raw = json.dumps({
+            "client_id": "client-id",
+            "client_secret": "client-secret-sentinel",
+            "refresh_token": sentinel,
+        })
+        parsed = self.os.integrations._parse_google_credential_bundle(raw)
+        self.assertEqual(parsed["refresh_token"], sentinel)
+        for invalid in (
+            "not-json",
+            json.dumps({"client_id": "id", "client_secret": "secret"}),
+            json.dumps({"client_id": "id", "client_secret": "secret", "refresh_token": sentinel, "extra": "x"}),
+            json.dumps({"client_id": " id ", "client_secret": "secret", "refresh_token": sentinel}),
+        ):
+            with self.assertRaises(ValidationError) as raised:
+                self.os.integrations._parse_google_credential_bundle(invalid)
+            self.assertNotIn(sentinel, str(raised.exception))
+
+    def test_google_refresh_uses_actual_broader_grant_and_keeps_bundle_in_memory(self) -> None:
+        sentinel = "refresh-secret-sentinel"
+        raw = json.dumps({
+            "client_id": "client-id",
+            "client_secret": "client-secret-sentinel",
+            "refresh_token": sentinel,
+        })
+        calls = []
+        def factory(mode, source, secret, integration):
+            calls.append((mode, source, secret, integration["source"]))
+            return {
+                "access_token": "ephemeral-access-token",
+                "expires_at": "2026-08-19T13:00:00+00:00",
+                "scopes": ["https://www.googleapis.com/auth/gmail.modify"],
+            }
+        self.os.integrations.connector_factory = factory
+        token, scopes = self.os.integrations._refresh_google_access(
+            {"source": "gmail", "permissions": [GMAIL_READ_SCOPE]}, raw
+        )
+        self.assertEqual(token, "ephemeral-access-token")
+        self.assertEqual(scopes, ("https://www.googleapis.com/auth/gmail.modify",))
+        self.assertEqual(calls[0][:2], ("refresh", "gmail"))
+        self.assertEqual(self.os.store.conn.execute(
+            "SELECT COUNT(*) FROM secret_bindings"
+        ).fetchone()[0], 0)
+
+    def test_google_refresh_fails_closed_when_provider_omits_grant_evidence(self) -> None:
+        raw = json.dumps({
+            "client_id": "client-id",
+            "client_secret": "client-secret-sentinel",
+            "refresh_token": "refresh-secret-sentinel",
+        })
+        self.os.integrations.connector_factory = lambda *_args: {
+            "access_token": "ephemeral-access-token", "scopes": []
+        }
+        with self.assertRaises(ConnectorTransportError) as raised:
+            self.os.integrations._refresh_google_access(
+                {"source": "google_drive", "permissions": [GOOGLE_DRIVE_READ_SCOPE]}, raw
+            )
+        self.assertEqual(raised.exception.status, 403)
+        self.assertFalse(raised.exception.retryable)
+        self.assertNotIn("refresh-secret-sentinel", str(raised.exception))
+
+    def test_internal_google_path_refreshes_for_verify_and_every_sync_without_persisting_tokens(self) -> None:
+        bundle = json.dumps({
+            "client_id": "client-id-sentinel",
+            "client_secret": "client-secret-sentinel",
+            "refresh_token": "refresh-token-sentinel",
+        })
+        environment.environ["AUREMGRID_TEST_GOOGLE_TOKEN"] = bundle
+        integration = self.os.integrations.configure(
+            self.identity, "gmail", "user@example.test",
+            {"label:INBOX": self.ws.id}, [GMAIL_READ_SCOPE],
+        )
+        self.os.integrations.bind_credential(
+            self.identity, integration["id"], "Google bundle",
+            "env:AUREMGRID_TEST_GOOGLE_TOKEN", ["connector:gmail", GMAIL_READ_SCOPE],
+        )
+        calls: list[str] = []
+        def factory(mode, source, secret, *args):
+            calls.append(mode)
+            if mode == "refresh":
+                self.assertIn("refresh-token-sentinel", secret)
+                return {
+                    "access_token": "ephemeral-access-sentinel",
+                    "scopes": ["https://www.googleapis.com/auth/gmail.modify"],
+                }
+            self.assertEqual(secret, "ephemeral-access-sentinel")
+            if mode == "verify":
+                return {
+                    "account_id": "User@Example.Test",
+                    "account_name": "User@Example.Test",
+                    "granted_permissions": ["https://www.googleapis.com/auth/gmail.modify"],
+                }
+            return [], '{"v":1,"phase":"history","checkpoint":"101","page_token":null}', False
+        self.os.integrations.connector_factory = factory
+        with patch(
+            "auremgrid.services.integration_ops.LIVE_SOURCES",
+            frozenset({"slack", "clickup", "gmail"}),
+        ):
+            verified = self.os.integrations.verify(self.identity, integration["id"])
+            self.assertEqual(verified["integration"]["status"], "authorized")
+            result = self.os.integrations.sync(self.identity, integration["id"])
+            self.assertEqual(result["status"], "completed")
+        self.assertEqual(calls.count("refresh"), 2)
+        persisted = "\n".join(self.os.store.conn.iterdump())
+        for sentinel in (
+            "client-id-sentinel", "client-secret-sentinel",
+            "refresh-token-sentinel", "ephemeral-access-sentinel",
+        ):
+            self.assertNotIn(sentinel, persisted)
+
+    def test_refresh_revocation_sets_reauthentication_state_before_any_provider_page(self) -> None:
+        environment.environ["AUREMGRID_TEST_GOOGLE_TOKEN"] = json.dumps({
+            "client_id": "client-id", "client_secret": "client-secret",
+            "refresh_token": "refresh-token",
+        })
+        integration = self.os.integrations.configure(
+            self.identity, "gmail", "user@example.test",
+            {"label:INBOX": self.ws.id}, [GMAIL_READ_SCOPE],
+        )
+        self.os.integrations.bind_credential(
+            self.identity, integration["id"], "Google bundle",
+            "env:AUREMGRID_TEST_GOOGLE_TOKEN", ["connector:gmail", GMAIL_READ_SCOPE],
+        )
+        state = {"revoked": False, "pulls": 0}
+        def factory(mode, source, secret, *args):
+            if mode == "refresh":
+                if state["revoked"]:
+                    return {
+                        "access_token": None, "scopes": [], "error": "sanitized",
+                        "error_code": "authorization_required", "retryable": False,
+                    }
+                return {"access_token": "access", "scopes": [GMAIL_READ_SCOPE]}
+            if mode == "verify":
+                return {
+                    "account_id": "user@example.test", "account_name": "Mailbox",
+                    "granted_permissions": [GMAIL_READ_SCOPE],
+                }
+            state["pulls"] += 1
+            return [], None, False
+        self.os.integrations.connector_factory = factory
+        with patch(
+            "auremgrid.services.integration_ops.LIVE_SOURCES",
+            frozenset({"slack", "clickup", "gmail"}),
+        ):
+            self.os.integrations.verify(self.identity, integration["id"])
+            state["revoked"] = True
+            with self.assertRaises(ConnectorTransportError):
+                self.os.integrations.sync(self.identity, integration["id"])
+        current = self.os.integrations.get(self.identity, integration["id"])
+        self.assertEqual(current["status"], "reauth_required")
+        self.assertEqual(current["health"], "degraded")
+        self.assertEqual(state["pulls"], 0)
+        self.assertEqual(self.os.store.conn.execute(
+            "SELECT COUNT(*) FROM connector_ingest_batches"
+        ).fetchone()[0], 0)
 
 
 if __name__ == "__main__":

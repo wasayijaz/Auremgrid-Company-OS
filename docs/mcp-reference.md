@@ -34,3 +34,8 @@ health, and `live_enabled`. Google mapping contracts use `folder:<id>` or
 `drive:<id>` for Drive and `label:<id>` for Gmail; configuration does not imply
 live sync or historical ingestion, and `integrations.sync` refuses sources
 whose live gate is false.
+
+Google credential references are external `env:` bindings whose value is a
+strict JSON bundle containing `client_id`, `client_secret`, and `refresh_token`.
+The values and refreshed access token remain in memory and never enter MCP
+arguments, results, jobs, or ledger records.

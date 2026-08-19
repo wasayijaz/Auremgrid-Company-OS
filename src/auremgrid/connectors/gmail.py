@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from auremgrid.connectors.google_auth import (
-    GMAIL_READ_SCOPES, ConnectorSourceEvent, GoogleApiFailure, HttpResponse, HttpTransport,
+    GMAIL_READ_SCOPES, ConnectorSourceEvent, GoogleApiFailure, GoogleRequestError, HttpResponse, HttpTransport,
     RouteLifecycleMutation, UrllibTransport, classify_google_failure, require_any_scope,
     sanitize_google_payload,
 )
@@ -92,6 +92,12 @@ class GmailConnector:
             raise ValidationError("Gmail label mapping is unavailable: " + ", ".join(sorted(missing)))
 
     def pull(self, cursor: str | None) -> GmailPullResult:
+        try:
+            return self._pull(cursor)
+        except GoogleRequestError as exc:
+            return _failure_result(cursor, exc.failure)
+
+    def _pull(self, cursor: str | None) -> GmailPullResult:
         state = _parse_cursor(cursor)
         if state is None:
             response = self._get(f"{GMAIL_API}/users/me/profile")
@@ -108,6 +114,8 @@ class GmailConnector:
 
     def _pull_backfill(self, state: dict[str, Any]) -> GmailPullResult:
         labels = sorted(self.label_workspace_mappings)
+        if state["label_index"] >= len(labels):
+            raise ValidationError("Gmail backfill cursor label_index is outside configured mappings")
         label_id = labels[int(state["label_index"])]
         params: list[tuple[str, str]] = [("labelIds", label_id), ("maxResults", str(self.backfill_page_size)), ("includeSpamTrash", "false")]
         if state.get("page_token"):
@@ -119,12 +127,14 @@ class GmailConnector:
         data = _json(response)
         events: list[ConnectorSourceEvent] = []
         mutations: list[RouteLifecycleMutation] = []
-        for stub in data.get("messages") or []:
-            if isinstance(stub, dict) and stub.get("id"):
-                event, event_mutations = self._message_event(str(stub["id"]), str(state["checkpoint"]), "message_discovered", (label_id,))
-                events.append(event)
-                mutations.extend(event_mutations)
-        state["page_token"] = data.get("nextPageToken")
+        messages = _list_page(data, "messages", "Gmail messages page")
+        for stub in messages:
+            if not isinstance(stub, dict) or not isinstance(stub.get("id"), str) or not stub["id"]:
+                raise ValidationError("Gmail messages page contains an invalid message")
+            event, event_mutations = self._message_event(stub["id"], str(state["checkpoint"]), "message_discovered", (label_id,))
+            events.append(event)
+            mutations.extend(event_mutations)
+        state["page_token"] = _optional_token(data, "nextPageToken", "Gmail messages page")
         if not state["page_token"]:
             state["label_index"] = int(state["label_index"]) + 1
         has_more = int(state["label_index"]) < len(labels)
@@ -149,22 +159,29 @@ class GmailConnector:
         data = _json(response)
         events: list[ConnectorSourceEvent] = []
         mutations: list[RouteLifecycleMutation] = []
-        for history in data.get("history") or []:
-            if not isinstance(history, dict):
-                continue
-            history_id = str(history.get("id") or state["checkpoint"])
+        histories = _list_page(data, "history", "Gmail history page")
+        for history in histories:
+            if not isinstance(history, dict) or not isinstance(history.get("id"), str) or not history["id"]:
+                raise ValidationError("Gmail history page contains an invalid history record")
+            history_id = history["id"]
             for collection, event_type in (
                 ("messagesAdded", "message_added"), ("messagesDeleted", "message_deleted"),
                 ("labelsAdded", "labels_added"), ("labelsRemoved", "labels_removed"),
             ):
-                for item in history.get(collection) or []:
+                collection_value = history.get(collection, [])
+                if not isinstance(collection_value, list):
+                    raise ValidationError(f"Gmail history record contains invalid {collection}")
+                for item in collection_value:
                     if not isinstance(item, dict):
-                        continue
+                        raise ValidationError(f"Gmail history record contains invalid {collection} item")
                     message = item.get("message") if isinstance(item.get("message"), dict) else {}
                     message_id = str(message.get("id") or "")
                     if not message_id:
-                        continue
-                    label_ids = tuple(sorted({str(label) for label in item.get("labelIds") or message.get("labelIds") or []}))
+                        raise ValidationError("Gmail history transition missing message id")
+                    raw_labels = item.get("labelIds") or message.get("labelIds") or []
+                    if not isinstance(raw_labels, list) or any(not isinstance(label, str) or not label for label in raw_labels):
+                        raise ValidationError("Gmail history transition contains invalid labels")
+                    label_ids = tuple(sorted(set(raw_labels)))
                     relevant = tuple(label for label in label_ids if label in self.label_workspace_mappings)
                     if event_type in {"message_added", "labels_added"}:
                         event, event_mutations = self._message_event(message_id, history_id, event_type, relevant)
@@ -174,22 +191,41 @@ class GmailConnector:
                     else:
                         removed_routes = relevant or tuple(sorted(self.route_state.get(message_id) or ()))
                         if removed_routes:
-                            events.append(self._tombstone_event(message_id, history_id, event_type, removed_routes))
-                            mutations.extend(self._mutations(message_id, removed_routes, "tombstone", history_id))
-        state["page_token"] = data.get("nextPageToken")
-        if not state["page_token"] and isinstance(data.get("historyId"), str):
-            state["checkpoint"] = data["historyId"]
+                            event = self._tombstone_event(message_id, history_id, event_type, removed_routes)
+                            events.append(event)
+                            mutations.extend(self._mutations(
+                                message_id, removed_routes, "tombstone", history_id, event.dedupe_key
+                            ))
+        state["page_token"] = _optional_token(data, "nextPageToken", "Gmail history page")
+        terminal_history_id = _optional_token(data, "historyId", "Gmail history page")
+        if not state["page_token"]:
+            if not terminal_history_id:
+                raise ValidationError("Gmail terminal history page missing historyId")
+            state["checkpoint"] = terminal_history_id
         return GmailPullResult(events, _encode_cursor(state), has_more=bool(state["page_token"]), lifecycle_mutations=tuple(mutations))
 
     def _message_event(self, message_id: str, history_id: str, event_type: str,
                        hinted_labels: tuple[str, ...]) -> tuple[ConnectorSourceEvent, list[RouteLifecycleMutation]]:
         query = urllib.parse.urlencode({"format": "metadata", "metadataHeaders": ["Subject", "From", "To", "Date"]}, doseq=True)
         response = self._get(f"{GMAIL_API}/users/me/messages/{urllib.parse.quote(message_id)}?{query}")
-        self._raise_failure(response)
+        failure = classify_google_failure(response, "Gmail message fetch")
+        if failure:
+            raise GoogleRequestError(failure)
         data = _json(response)
-        labels = tuple(sorted({str(label) for label in data.get("labelIds") or hinted_labels if str(label) in self.label_workspace_mappings}))
+        if data.get("id") != message_id:
+            raise ValidationError("Gmail message response identity mismatch")
+        raw_labels = data.get("labelIds") if "labelIds" in data else list(hinted_labels)
+        if not isinstance(raw_labels, list) or any(not isinstance(label, str) or not label for label in raw_labels):
+            raise ValidationError("Gmail message response labels are invalid")
+        payload_node = data.get("payload")
+        if not isinstance(payload_node, dict):
+            raise ValidationError("Gmail message response payload is invalid")
+        header_items = payload_node.get("headers")
+        if not isinstance(header_items, list) or any(not isinstance(item, dict) for item in header_items):
+            raise ValidationError("Gmail message response headers are invalid")
+        labels = tuple(sorted({label for label in raw_labels if label in self.label_workspace_mappings}))
         self._reject_overlap(labels)
-        headers = {str(item.get("name")): str(item.get("value") or "") for item in (data.get("payload") or {}).get("headers", []) if isinstance(item, dict)}
+        headers = {str(item.get("name")): str(item.get("value") or "") for item in header_items}
         subject = headers.get("Subject") or "(no subject)"
         snippet = str(sanitize_google_payload(str(data.get("snippet") or ""), (self.access_token,)))
         observed_at = _millis_to_iso(int(data["internalDate"])) if str(data.get("internalDate") or "").isdigit() else None
@@ -204,7 +240,7 @@ class GmailConnector:
             f"# Gmail message\n\nSubject: {subject}\nFrom: {headers.get('From', '')}\nTo: {headers.get('To', '')}\nDate: {headers.get('Date', '')}\n\n{snippet}",
             payload, observed_at,
         )
-        return event, self._mutations(message_id, labels, "upsert", history_id)
+        return event, self._mutations(message_id, labels, "upsert", history_id, event.dedupe_key)
 
     def _tombstone_event(self, message_id: str, history_id: str, event_type: str,
                          labels: tuple[str, ...]) -> ConnectorSourceEvent:
@@ -218,8 +254,14 @@ class GmailConnector:
         )
 
     def _mutations(self, message_id: str, labels: Iterable[str], operation: str,
-                   history_id: str) -> list[RouteLifecycleMutation]:
-        return [RouteLifecycleMutation(message_id, f"label:{label}", self.label_workspace_mappings[label], operation, history_id) for label in labels]
+                   history_id: str, event_dedupe_key: str) -> list[RouteLifecycleMutation]:
+        return [
+            RouteLifecycleMutation(
+                message_id, f"label:{label}", self.label_workspace_mappings[label],
+                operation, history_id, event_dedupe_key,
+            )
+            for label in labels
+        ]
 
     def _reject_overlap(self, labels: Iterable[str]) -> None:
         workspaces = {self.label_workspace_mappings[label] for label in labels}
@@ -229,8 +271,7 @@ class GmailConnector:
     def _raise_failure(self, response: HttpResponse) -> None:
         failure = classify_google_failure(response, "Gmail")
         if failure:
-            error = AuthorizationError if failure.code in {"authorization_required", "permission_denied"} else ValidationError
-            raise error(failure.message)
+            raise GoogleRequestError(failure)
 
     def _get(self, url: str) -> HttpResponse:
         return self.transport("GET", url, {"Authorization": f"Bearer {self.access_token}"}, None)
@@ -245,6 +286,24 @@ def _parse_cursor(cursor: str | None) -> dict[str, Any] | None:
         raise ValidationError("Gmail cursor is invalid") from exc
     if not isinstance(state, dict) or state.get("v") != _CURSOR_VERSION or state.get("phase") not in {"backfill", "history"}:
         raise ValidationError("Gmail cursor is unsupported")
+    expected = (
+        {"v", "phase", "checkpoint", "label_index", "page_token"}
+        if state["phase"] == "backfill"
+        else {"v", "phase", "checkpoint", "page_token"}
+    )
+    if set(state) != expected:
+        raise ValidationError("Gmail cursor fields are invalid")
+    if not isinstance(state.get("checkpoint"), str) or not state["checkpoint"]:
+        raise ValidationError("Gmail cursor checkpoint is invalid")
+    if state["page_token"] is not None and (
+        not isinstance(state["page_token"], str) or not state["page_token"]
+    ):
+        raise ValidationError("Gmail page cursor is invalid")
+    if state["phase"] == "backfill" and (
+        not isinstance(state["label_index"], int) or isinstance(state["label_index"], bool)
+        or state["label_index"] < 0
+    ):
+        raise ValidationError("Gmail cursor label_index is invalid")
     return state
 
 
@@ -260,6 +319,22 @@ def _json(response: HttpResponse) -> dict[str, Any]:
     if not isinstance(response.json_body, dict):
         raise ValidationError("Gmail response was not JSON")
     return response.json_body
+
+
+def _list_page(data: dict[str, Any], field: str, page_name: str) -> list[Any]:
+    value = data.get(field)
+    if not isinstance(value, list):
+        raise ValidationError(f"{page_name} missing valid {field}")
+    return value
+
+
+def _optional_token(data: dict[str, Any], field: str, page_name: str) -> str | None:
+    value = data.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValidationError(f"{page_name} contains invalid {field}")
+    return value
 
 
 def _failure_result(cursor: str | None, failure: GoogleApiFailure) -> GmailPullResult:
