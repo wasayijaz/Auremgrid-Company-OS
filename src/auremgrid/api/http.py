@@ -97,7 +97,9 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200, {"workspaces": items})
                 return
             if parsed.path == "/people":
-                items = self.os.company.list_people(_need(params, "organization_id"))
+                organization_id,person_id=_need(params,"organization_id"),_need(params,"person_id")
+                if self.os.company.org_membership(organization_id,person_id) is None: raise AuthorizationError("organization membership required")
+                items = self.os.company.list_people(organization_id)
                 self._json(200, {"people": [item.to_dict() for item in items]})
                 return
             if parsed.path == "/projects":
