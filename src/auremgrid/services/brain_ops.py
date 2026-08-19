@@ -277,12 +277,36 @@ class BrainOperations:
     def resolve_fact_conflict(self, identity: Any, conflict_group: str, winner_fact_id: str) -> dict[str, Any]:
         if not hasattr(identity, "person_id"): raise AuthorizationError("authenticated identity is required")
         identity.require("brain_promote")
-        rows=self.conn.execute("SELECT * FROM facts WHERE workspace_id=? AND conflict_group=? AND superseded_by IS NULL",(identity.workspace_id,conflict_group)).fetchall()
+        rows=self.conn.execute(
+            "SELECT * FROM facts WHERE workspace_id=? AND conflict_group=? AND superseded_by IS NULL",
+            (identity.workspace_id,conflict_group),
+        ).fetchall()
         if not rows or winner_fact_id not in {row["id"] for row in rows}: raise NotFoundError("conflict not found")
+        try:
+            actor_id=self.os.auth.actor_for_identity(identity,identity.workspace_id)
+            actor=self.os._require_actor(identity.workspace_id,actor_id)
+            allowed={source.id for source in self.os.store.allowed_sources(identity.workspace_id,actor)}
+        except AuthorizationError as exc:
+            membership=self.os.company.workspace_membership(identity.workspace_id,identity.person_id)
+            if membership is None or membership.role != "admin":
+                raise NotFoundError("conflict not found") from exc
+            allowed={str(row["id"]) for row in self.conn.execute("""SELECT DISTINCT s.id FROM sources s
+                JOIN source_lifecycle_intervals l ON l.source_id=s.id AND l.workspace_id=s.workspace_id
+                WHERE s.workspace_id=? AND l.retired_at IS NULL""",(identity.workspace_id,)).fetchall()}
+        if any(row["source_id"] not in allowed for row in rows): raise NotFoundError("conflict not found")
+        states={
+            row["id"]: self._knowledge_state_row(identity.workspace_id,"fact",row["id"])
+            for row in rows
+        }
+        resolved=[row["id"] for row in rows if states[row["id"]] is not None and states[row["id"]]["state"]=="verified"]
+        stale=[row["id"] for row in rows if states[row["id"]] is not None and states[row["id"]]["state"]=="stale"]
+        if len(resolved)==1 and len(stale)==len(rows)-1:
+            if resolved[0] != winner_fact_id: raise ValidationError("conflict already resolved with a different winner")
+            return {"conflict_group":conflict_group,"winner_fact_id":winner_fact_id,"resolved":True,"changed":False}
         with self.os.store.atomic(immediate=True):
             for row in rows:
                 self._state_event(identity.organization_id,identity.workspace_id,"fact",row["id"],"verified" if row["id"]==winner_fact_id else "stale","human conflict resolution",row["source_id"],identity.person_id)
-        return {"conflict_group":conflict_group,"winner_fact_id":winner_fact_id,"resolved":True}
+        return {"conflict_group":conflict_group,"winner_fact_id":winner_fact_id,"resolved":True,"changed":True}
 
     def create_proposal(self, organization_id: str, workspace_id: str | None, proposer_type: str, proposer_id: str,
         kind: str, content: str, payload: dict[str, Any], evidence: str, confidence: float, source_id: str | None = None) -> dict[str, Any]:

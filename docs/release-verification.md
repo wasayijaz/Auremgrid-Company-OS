@@ -21,9 +21,9 @@ This matrix maps the product definition of complete to authoritative implementat
 | 15. Agents have scoped permissions and auditable runs | AgentAutomationTests and automatic ledger audit tests |
 | 16. Automations trigger safely | training checkpoint, approved execution, outcome, and activation tests |
 | 17. MCP/API cover major domains | ExpandedApiTests and namespaced MCP discovery test |
-| 18. Dashboard surfaces major operations | 18 destinations including workflows, 8 metrics, Client HQ operational tabs, bearer-authenticated data fetches, operational Brain proposal/conflict/current-truth board, workflow stage board, degraded/loading/empty states, and dashboard/API behavior tests |
+| 18. Dashboard surfaces major operations | 18 destinations including workflows, 8 metrics, Client HQ operational tabs, bearer-authenticated data fetches, operational Brain proposal/conflict/current-truth board, workflow stage board, capability-gated descriptor actions with idempotency/expected-version payloads, historical zero-action behavior, degraded/loading/empty states, and dashboard/API behavior tests |
 | 19. Projections rebuild after restart | ProjectionRestartTests, durable schema-16 embedding projection, and live rebuild report |
-| 20. Tests prove isolation, persistence, permissions, and workflows | 314 offline behavior tests |
+| 20. Tests prove isolation, persistence, permissions, and workflows | 320 offline behavior tests |
 | 21. README accurately describes reality | implemented/local fallback/optional/experimental/planned status sections |
 | 22. Existing data migrates forward | legacy-v1 migration test and schema 18 migration chain, including durable provider task identity, embedding projection, graph generations, entity resolution, and knowledge states |
 | 23. Wings coordinate through executable operating contracts | eight neutral templates, immutable definition versions/run snapshots, dependency and rework behavior, evidence/approval/handoff gates, REST/MCP parity, dashboard status, and workflow isolation tests |

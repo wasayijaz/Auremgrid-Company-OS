@@ -143,30 +143,46 @@ class DashboardService(_ExistingDashboardService):
             if state not in {"stale", "conflicted", "proposed"} and not fact.superseded_by:
                 truth_rows.append(item)
 
+        all_conflict_ids: dict[str,set[str]] = defaultdict(set)
+        if conflict_rows:
+            group_ids=sorted(conflict_rows); marks=','.join('?' for _ in group_ids)
+            for row in self.conn.execute(
+                f"SELECT id,conflict_group FROM facts WHERE workspace_id=? AND conflict_group IN ({marks}) AND superseded_by IS NULL",
+                (workspace_id,*group_ids),
+            ).fetchall():
+                all_conflict_ids[str(row["conflict_group"])].add(str(row["id"]))
         conflicts = []
         for group_id, alternatives in sorted(conflict_rows.items()):
+            if all_conflict_ids[group_id] != {str(item["id"]) for item in alternatives}:
+                # A partial ACL must not reveal that additional alternatives,
+                # or even the conflict group itself, exist.
+                continue
             live = [item for item in alternatives if item["state"] != "stale"]
             winner = next((item["id"] for item in alternatives if item["state"] == "verified"), None)
+            actions = []
+            if as_of is None and identity.can("brain_promote") and winner is None:
+                actions = [
+                    _action(
+                        "resolve_conflict", "/brain/conflicts/resolve",
+                        {"workspace_id":workspace_id,"conflict_group":group_id,"winner_fact_id":item["id"]},
+                    )
+                    for item in alternatives
+                ]
             conflicts.append(
                 {
                     "id": group_id,
                     "state": "resolved" if winner and len(live) == 1 else "conflicted",
                     "winner_fact_id": winner,
                     "alternatives": sorted(alternatives, key=lambda item: (item["recorded_at"], item["id"])),
+                    "allowed_actions": actions,
                 }
             )
 
-        proposals = []
-        for proposal in self.os.brain_ops.list_memory_proposals(
-            organization_id, workspace_id, person_id, as_of=as_of
-        ):
-            if proposal.get("source_id") and proposal["source_id"] not in source_ids:
-                continue
-            item = dict(proposal)
-            item["structured_payload"] = _json_object(item.get("structured_payload"))
-            proposals.append(item)
-
         entities = self._entities(organization_id, workspace_id, moment, source_ids)
+        proposals = self._proposal_rows(
+            identity,organization_id,workspace_id,person_id,moment,as_of,source_ids,
+            self._visible_proposal_entity_ids(organization_id,workspace_id,moment,source_ids),
+        )
         workspace = self.os.store.get_workspace(workspace_id)
         graph = self.os.store.graph_generation_state(workspace_id)
         semantic = dict(getattr(self.os, "embedding_health", {}) or {})
@@ -201,6 +217,104 @@ class DashboardService(_ExistingDashboardService):
             "entities": entities,
             "health": health,
         }
+
+    def _proposal_rows(
+        self, identity: AuthenticatedIdentity, organization_id: str, workspace_id: str,
+        person_id: str, moment: datetime, as_of: datetime | None, allowed_source_ids: set[str],
+        visible_entity_ids: set[str],
+    ) -> list[dict[str, Any]]:
+        cutoff=moment.isoformat(); historical=as_of is not None
+        visible_documents,visible_facts,visible_relations = self._visible_evidence_ids(
+            workspace_id,allowed_source_ids,cutoff
+        )
+        rows: list[dict[str, Any]]=[]
+        for proposal in self.os.brain_ops.list_memory_proposals(
+            organization_id,workspace_id,person_id,as_of=as_of
+        ):
+            if proposal.get("source_id") and str(proposal["source_id"]) not in allowed_source_ids:
+                continue
+            kind=str(proposal["kind"]); status=str(proposal["status"])
+            actions=[]
+            if not historical and status=="pending" and kind=="fact" and identity.can("brain_promote"):
+                actions=[
+                    _action("approve","/brain/promote",{"workspace_id":workspace_id,"proposal_id":proposal["id"],"action":"approve"}),
+                    _action("reject","/brain/promote",{"workspace_id":workspace_id,"proposal_id":proposal["id"],"action":"reject"}),
+                ]
+            rows.append({
+                "id":proposal["id"],"family":"knowledge","kind":kind,"status":status,
+                "content":proposal["content"],"structured_payload":_json_object(proposal.get("structured_payload")),
+                "confidence":proposal["confidence"],"evidence":proposal["evidence"],
+                "created_at":proposal["created_at"],"reviewed_at":proposal.get("reviewed_at"),
+                "allowed_actions":actions,
+            })
+
+        resolution_rows=self.conn.execute("""SELECT p.*,d.action AS decision_action,
+                d.reviewer_person_id AS decision_reviewer,d.created_at AS decision_at
+            FROM entity_resolution_proposals p
+            LEFT JOIN entity_resolution_decisions d ON d.proposal_id=p.id AND d.created_at<=?
+            WHERE p.organization_id=? AND p.workspace_id=? AND p.created_at<=?
+            ORDER BY p.created_at DESC,p.id DESC""",(cutoff,organization_id,workspace_id,cutoff)).fetchall()
+        for raw in resolution_rows:
+            proposal=dict(raw); candidates={str(item) for item in _json_list(proposal["candidate_entity_ids"])}
+            if not candidates or not candidates.issubset(visible_entity_ids):
+                continue
+            if proposal.get("evidence_source_id") and str(proposal["evidence_source_id"]) not in allowed_source_ids:
+                continue
+            refs=_json_object(proposal.get("evidence_refs"))
+            if not _refs_visible(refs,allowed_source_ids,visible_documents,visible_facts,visible_relations):
+                continue
+            action=proposal.get("decision_action")
+            status="approved" if action=="approve" else "rejected" if action=="reject" else "pending"
+            actions=[]
+            if not historical and status=="pending" and identity.can("brain_promote"):
+                actions=[
+                    _action("approve","/brain/promote",{"workspace_id":workspace_id,"proposal_id":proposal["id"],"action":"approve"}),
+                    _action("reject","/brain/promote",{"workspace_id":workspace_id,"proposal_id":proposal["id"],"action":"reject"}),
+                ]
+            rows.append({
+                "id":proposal["id"],"family":"entity_resolution","kind":proposal["kind"],"status":status,
+                "content":proposal["alias"] or proposal["rationale"],
+                "structured_payload":{
+                    "alias":proposal["alias"],"source_entity_id":proposal["source_entity_id"],
+                    "target_entity_id":proposal["target_entity_id"],"candidate_entity_ids":sorted(candidates),
+                },
+                "confidence":proposal["score"],"evidence":proposal["evidence"],
+                "created_at":proposal["created_at"],"reviewed_at":proposal.get("decision_at"),
+                "allowed_actions":actions,
+            })
+        return sorted(rows,key=lambda item:(item["created_at"],item["id"]),reverse=True)
+
+    def _visible_proposal_entity_ids(
+        self, organization_id: str, workspace_id: str, moment: datetime,
+        allowed_source_ids: set[str],
+    ) -> set[str]:
+        rows=self.conn.execute("""SELECT e.id,a.source_id FROM entities e
+            JOIN entity_aliases a ON a.entity_id=e.id
+            WHERE e.organization_id=? AND e.workspace_id=? AND e.created_at<=? AND a.created_at<=?
+              AND a.status='approved'""",
+            (organization_id,workspace_id,moment.isoformat(),moment.isoformat()),
+        ).fetchall()
+        return {
+            str(row["id"]) for row in rows
+            if row["source_id"] is None or str(row["source_id"]) in allowed_source_ids
+        }
+
+    def _visible_evidence_ids(
+        self, workspace_id: str, allowed_source_ids: set[str], cutoff: str,
+    ) -> tuple[set[str],set[str],set[str]]:
+        if not allowed_source_ids:
+            return set(),set(),set()
+        marks=','.join('?' for _ in allowed_source_ids); values=(workspace_id,*sorted(allowed_source_ids),cutoff)
+        documents={str(row["id"]) for row in self.conn.execute(
+            f"SELECT id FROM documents WHERE workspace_id=? AND source_id IN ({marks}) AND observed_at<=?",values
+        ).fetchall()}
+        facts={str(row["id"]) for row in self.conn.execute(
+            f"SELECT id FROM facts WHERE workspace_id=? AND source_id IN ({marks}) AND observed_at<=?",values
+        ).fetchall()}
+        relations={str(row["id"]) for row in self.conn.execute(
+            f"SELECT id FROM relations WHERE workspace_id=? AND source_id IN ({marks}) AND observed_at<=?",values
+        ).fetchall()}
+        return documents,facts,relations
 
     def workflow_board(
         self,
@@ -250,6 +364,12 @@ class DashboardService(_ExistingDashboardService):
             f"SELECT * FROM workflow_handoff_acknowledgements WHERE run_id IN ({marks}) AND created_at<=? ORDER BY created_at,rowid",
             (*run_ids, cutoff),
         ).fetchall()]
+        handoff_contracts: dict[tuple[str,str],str] = {}
+        for run in run_rows:
+            snapshot=_json_object(run["template_snapshot"])
+            for item in snapshot.get("stages",[]) if isinstance(snapshot.get("stages"),list) else []:
+                if isinstance(item,dict) and item.get("key"):
+                    handoff_contracts[(str(run["id"]),str(item["key"]))]=str(item.get("handoff_contract") or "")
 
         history_by_stage: dict[str, list[dict[str, Any]]] = defaultdict(list)
         history_by_run: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -276,6 +396,16 @@ class DashboardService(_ExistingDashboardService):
                 f"WHERE organization_id=? AND workspace_id=? AND id IN ({request_marks}) AND created_at<=?",
                 (organization_id, workspace_id, *request_ids, cutoff),
             ).fetchall()}
+        request_by_stage: dict[str,dict[str,Any]] = {}
+        request_rows=self.conn.execute("""SELECT id,requested_for,approver_person_id,status,created_at
+            FROM approval_requests WHERE organization_id=? AND workspace_id=? AND action_type='workflow_stage_approval'
+              AND created_at<=? ORDER BY created_at,id""",(organization_id,workspace_id,cutoff)).fetchall()
+        stage_id_by_contract_key={
+            f"workflow:{stage['run_id']}:{stage['stage_key']}":str(stage["id"]) for stage in stages
+        }
+        for raw in request_rows:
+            stage_id=stage_id_by_contract_key.get(str(raw["requested_for"]))
+            if stage_id: request_by_stage[stage_id]=dict(raw)
         ack_by_pair = {(str(row["from_stage_run_id"]), str(row["to_stage_run_id"])): row for row in handoffs}
         dependencies_by_stage: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for dependency in dependencies:
@@ -292,6 +422,7 @@ class DashboardService(_ExistingDashboardService):
                 ) if stage["status"] == "blocked" else None
             stage["required_evidence"] = _json_list(stage["required_evidence"])
             stage["requires_approval"] = bool(stage["requires_approval"])
+            stage["handoff_contract"] = handoff_contracts.get((str(stage["run_id"]),str(stage["stage_key"])),"")
             stage_by_id[str(stage["id"])] = stage
 
         rendered_stages: list[dict[str, Any]] = []
@@ -299,6 +430,7 @@ class DashboardService(_ExistingDashboardService):
             stage_id = str(stage["id"])
             deps = dependencies_by_stage.get(stage_id, [])
             dependency_view = []
+            missing_handoffs: list[dict[str,Any]] = []
             dependencies_clear = True
             handoffs_clear = True
             for dependency in deps:
@@ -309,14 +441,20 @@ class DashboardService(_ExistingDashboardService):
                 acknowledged = bool(ack and int(ack["source_stage_version"]) == int(source["version"]))
                 dependencies_clear = dependencies_clear and completed
                 handoffs_clear = handoffs_clear and (not requires_handoff or acknowledged)
+                if requires_handoff and completed and not acknowledged:
+                    missing_handoffs.append({
+                        "from_stage_id":source["stage_key"],"to_stage_id":stage["stage_key"],
+                        "artifact_contract":source["handoff_contract"],
+                    })
                 dependency_view.append({
                     "stage_run_id": source["id"], "stage_key": source["stage_key"], "kind": dependency["kind"],
-                    "status": source["status"], "handoff_required": requires_handoff, "handoff_acknowledged": acknowledged,
+                    "status": source["status"], "handoff_required": requires_handoff,
+                    "handoff_acknowledged": acknowledged,"handoff_contract":source["handoff_contract"],
                 })
             counts = evidence_by_stage.get(stage_id, Counter())
             missing = [kind for kind in stage["required_evidence"] if counts[kind] == 0]
             approval = approval_by_stage.get(stage_id)
-            request = requests_by_id.get(request_id_by_stage.get(stage_id, ""))
+            request = request_by_stage.get(stage_id) or requests_by_id.get(request_id_by_stage.get(stage_id, ""))
             approval_view = None if approval is None else {
                 "decision": approval["decision"], "approval_request_id": approval["approval_request_id"],
                 "approver_person_id": approval["approver_person_id"], "reason": approval["reason"],
@@ -332,8 +470,8 @@ class DashboardService(_ExistingDashboardService):
             }
             ready = stage["status"] in {"pending", "blocked"} and dependencies_clear and handoffs_clear
             actions = [] if historical else self._stage_actions(
-                identity, stage, ready, not missing, approval_view, request_view,
-                dependencies_clear, handoffs_clear
+                identity,workspace_id,stage,ready,not missing,approval_view,request_view,
+                missing_handoffs
             )
             rendered_stages.append({
                 "id": stage_id, "run_id": stage["run_id"], "stage_key": stage["stage_key"], "name": stage["name"],
@@ -343,7 +481,7 @@ class DashboardService(_ExistingDashboardService):
                 "dependencies": dependency_view,
                 "evidence": {"total": sum(counts.values()), "by_kind": dict(sorted(counts.items())), "required": stage["required_evidence"], "missing": missing},
                 "approval": {"required": stage["requires_approval"], "request": request_view, "latest": approval_view},
-                "handoff": {"to_wing": stage["handoff_to_wing"], "to_role": stage["handoff_to_role"], "to_person_id": stage["handoff_to_person_id"]},
+                "handoff": {"to_wing": stage["handoff_to_wing"], "to_role": stage["handoff_to_role"], "to_person_id": stage["handoff_to_person_id"],"contract":stage["handoff_contract"]},
                 "blocker": stage["blocked_reason"],
                 "due": {"at": stage["due_at"], "overdue": bool(stage["due_at"] and stage["due_at"] < cutoff and stage["status"] not in _TERMINAL)},
                 "version": stage["version"], "allowed_actions": actions,
@@ -358,9 +496,13 @@ class DashboardService(_ExistingDashboardService):
             if historical:
                 run["status"] = _derived_run_status(children, history_by_run.get(str(run["id"]), []))
             counts = Counter(stage["status"] for stage in children)
-            actions = []
+            actions: list[dict[str,Any]] = []
             if not historical and identity.can("workflow_run") and run["status"] not in _TERMINAL:
-                actions.append("cancel_run")
+                actions.append(_action(
+                    "cancel_run","/workflows/runs/cancel",
+                    {"workspace_id":workspace_id,"run_id":run["id"],"expected_version":run["version"]},
+                    ["reason"],
+                ))
             runs.append({
                 "id": run["id"], "definition_key": run["definition_key"], "definition_name": run["definition_name"],
                 "definition_version": run["definition_version"], "status": run["status"],
@@ -446,29 +588,47 @@ class DashboardService(_ExistingDashboardService):
 
     @staticmethod
     def _stage_actions(
-        identity: AuthenticatedIdentity, stage: dict[str, Any], ready: bool, evidence_clear: bool,
-        approval: dict[str, Any] | None, request: dict[str, Any] | None,
-        dependencies_clear: bool, handoffs_clear: bool,
-    ) -> list[str]:
-        actions: list[str] = []
+        identity: AuthenticatedIdentity, workspace_id: str, stage: dict[str, Any],
+        ready: bool, evidence_clear: bool, approval: dict[str, Any] | None,
+        request: dict[str, Any] | None, missing_handoffs: list[dict[str,Any]],
+    ) -> list[dict[str,Any]]:
+        actions: list[dict[str,Any]] = []
         status = stage["status"]
+        base={"workspace_id":workspace_id,"run_id":stage["run_id"],"stage_id":stage["stage_key"]}
         if identity.can("workflow_run"):
-            if ready: actions.append("start_stage")
-            if status not in _TERMINAL: actions.append("submit_evidence")
-            if status in {"pending", "in_progress", "waiting_approval"}: actions.append("block_stage")
+            if ready:
+                actions.append(_action("start_stage","/workflows/stages/start",{**base,"expected_version":stage["version"]}))
+            if status not in _TERMINAL:
+                actions.append(_action("submit_evidence","/workflows/evidence",base,["kind","one_of:uri,text,object_type"] ))
+            if status in {"pending", "in_progress", "waiting_approval"}:
+                actions.append(_action("block_stage","/workflows/stages/block",{**base,"expected_version":stage["version"]},["reason"]))
             approval_clear = not stage["requires_approval"] or bool(approval and approval["decision"] == "approve")
             if status in {"in_progress", "waiting_approval"} and evidence_clear and approval_clear:
-                actions.append("complete_stage")
+                actions.append(_action("complete_stage","/workflows/stages/complete",{**base,"expected_version":stage["version"]}))
         if identity.can("workflow_gate"):
-            if stage["requires_approval"] and status == "in_progress" and evidence_clear:
-                actions.append("request_approval")
-            if dependencies_clear and not handoffs_clear:
-                actions.append("acknowledge_handoff")
+            if (
+                stage["requires_approval"] and status == "in_progress" and evidence_clear
+                and request is not None and request["status"]=="pending"
+            ):
+                actions.append(_action(
+                    "request_approval","/workflows/approvals/request",
+                    {**base,"approval_request_id":request["id"],"expected_version":stage["version"]},["reason"],
+                ))
+            for handoff in missing_handoffs:
+                if handoff["artifact_contract"]:
+                    actions.append(_action(
+                        "acknowledge_handoff","/workflows/handoffs/acknowledge",
+                        {"workspace_id":workspace_id,"run_id":stage["run_id"],**handoff},
+                    ))
         if (
             identity.can("approval_decide") and status == "waiting_approval" and request is not None
-            and request["approver_person_id"] == identity.person_id
+            and request["approver_person_id"] == identity.person_id and request["status"] in {"approved","rejected"}
         ):
-            actions.append("decide_approval")
+            decision="approve" if request["status"]=="approved" else "request_changes"
+            actions.append(_action(
+                "decide_approval","/workflows/approvals/decide",
+                {**base,"approval_request_id":request["id"],"decision":decision},["reason"],
+            ))
         return actions
 
     def _authorize(
@@ -544,3 +704,24 @@ def _health_status(value: Any) -> str:
 
 def _safe_scalar(value: Any) -> str | None:
     return str(value)[:120] if isinstance(value, (str, int, float)) else None
+
+
+def _action(
+    action: str, route: str, payload: dict[str,Any], required_fields: list[str] | None = None,
+) -> dict[str,Any]:
+    return {
+        "action":action,"method":"POST","route":route,"payload":payload,
+        "required_fields":required_fields or [],
+    }
+
+
+def _refs_visible(
+    refs: dict[str,Any], sources: set[str], documents: set[str], facts: set[str], relations: set[str],
+) -> bool:
+    allowed={"sources":sources,"documents":documents,"facts":facts,"relations":relations}
+    for kind,values in refs.items():
+        if kind not in allowed or not isinstance(values,list):
+            return False
+        if not {str(value) for value in values}.issubset(allowed[kind]):
+            return False
+    return True

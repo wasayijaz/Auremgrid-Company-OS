@@ -33,10 +33,38 @@ class DashboardSurfaceTests(unittest.TestCase):
 
     def test_final_brain_renderer_writes_directly(self) -> None:
         tail = self.html[self.html.rfind("loadBrainSurface=async function"):]
-        self.assertIn("brainGrid.innerHTML", tail)
-        self.assertNotIn("brainGrid.querySelector", tail)
-        self.assertIn('status===\"pending\"', tail)
-        self.assertIn('state===\"conflicted\"', tail)
+        self.assertIn("proposals.map(row", tail)
+        self.assertIn("conflicts.map(row", tail)
+        self.assertIn("brainGrid.innerHTML", self.html)
+        self.assertIn('status===\"pending\"', self.html)
+        self.assertIn('state===\"conflicted\"', self.html)
+
+    def test_allowed_action_dialog_is_capability_and_history_safe(self) -> None:
+        for marker in ("allowed_actions", "dashboard-action-dialog", "expected_version", "idempotency_key", "historical", "loadBrainSurface"):
+            self.assertIn(marker, self.html)
+        self.assertIn("if(!row||row.historical", self.html)
+
+    def test_descriptor_buttons_are_injected_for_live_rows_only(self) -> None:
+        fixture = {"id":"p1","allowed_actions":[{"action":"approve","method":"POST","route":"/brain/promote","payload":{"proposal_id":"p1"},"required_fields":[]}]}
+        self.assertIn("injectDescriptorButtons(data.proposals", self.html)
+        self.assertIn("renderActionDescriptors(row)", self.html)
+        self.assertIn("historical||!Array.isArray(row.allowed_actions)", self.html)
+        self.assertEqual(fixture["allowed_actions"][0]["route"], "/brain/promote")
+        for marker in ("data-row-id", "data-stage-id", "stages.map(row", "proposals.map(row", "renderActionDescriptors(row)"):
+            self.assertIn(marker, self.html)
+
+    def test_action_dialog_is_lazy_and_supports_descriptor_fields(self) -> None:
+        for marker in ("ensureDashboardActionDialog", "required_fields", "one_of:", "artifact_contract", "idempotency_key", "dashboard-action-dialog"):
+            self.assertIn(marker, self.html)
+        self.assertIn("dialog.showModal()", self.html)
+        self.assertIn("dialog.dataset.intentKey", self.html)
+        self.assertIn("confirm.disabled=true", self.html)
+        fixture_payload={"kind":"fact","text":"evidence"}
+        self.assertIn("data-one-of", self.html)
+        self.assertIn("payload[select.value]=value", self.html)
+        self.assertNotIn("payload['one_of:uri,text,object_type']", self.html)
+        self.assertEqual(fixture_payload.get("kind"), "fact")
+        self.assertNotIn("one_of:uri,text,object_type", fixture_payload)
 
     def test_responsive_layout_and_read_only_controls(self) -> None:
         for width in ("max-width:1000px", "max-width:620px"):

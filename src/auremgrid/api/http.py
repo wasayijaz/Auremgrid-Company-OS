@@ -31,12 +31,15 @@ def _route_capability(path: str, method: str) -> str:
         if path in {"/integrations"}: return "integration_configure"
         if path.startswith("/workflows"): return "workspace_read"
         if path in {"/knowledge-health", "/memory-proposals", "/search", "/entity", "/history", "/neighbors", "/sources", "/recent", "/brief"}: return "brain_read"
+        if path == "/dashboard/brain": return "brain_read"
         return "workspace_read"
     if path in {"/approvals/decide", "/workflows/approvals/decide"}: return "approval_decide"
     if path.startswith("/jobs"): return "job_manage"
     if path in {"/auth/sessions/rotate", "/auth/revoke"}: return "workspace_read"
     if path.startswith("/auth/"): return "auth_manage"
-    if path.startswith("/workflows/approvals") or path.startswith("/workflows/handoffs") or path.startswith("/workflows/stages"): return "workflow_gate"
+    if path.startswith("/workflows/stages") or path == "/workflows/evidence": return "workflow_run"
+    if path.startswith("/workflows/approvals/request") or path.startswith("/workflows/handoffs"): return "workflow_gate"
+    if path.startswith("/workflows/approvals/decide"): return "approval_decide"
     if path.startswith("/workflows"): return "workflow_run"
     if path == "/integrations/credentials": return "secret_bind"
     if path in {"/integrations/verify","/integrations/sync"}: return "integration_sync"
@@ -46,6 +49,7 @@ def _route_capability(path: str, method: str) -> str:
     if path.startswith("/automations/execute") or path == "/automations/trigger": return "automation_execute"
     if path.startswith("/automations"): return "automation_manage"
     if path == "/memory-proposals/review": return "brain_promote"
+    if path in {"/brain/promote", "/brain/conflicts/resolve"}: return "brain_promote"
     if path in {"/memory-proposals", "/remember"}: return "brain_propose"
     if path in {"/people", "/workspace-memberships"}: return "people_manage"
     if path in {"/organizations", "/workspaces"}: return "organization_manage"
@@ -466,6 +470,22 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 # authenticated brain promotion route, which enforces workspace
                 # scope and append-only proposal decisions.
                 raise NotFoundError("legacy proposal review route retired; use brain.promote")
+            if parsed.path == "/brain/promote":
+                assert identity is not None
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                proposal_id, action = _need(payload, "proposal_id"), _need(payload, "action")
+                resolution = self.os.store.conn.execute("SELECT 1 FROM entity_resolution_proposals WHERE organization_id=? AND workspace_id=? AND id=?", (scoped.organization_id,workspace_id,proposal_id)).fetchone()
+                if resolution is not None:
+                    result = self.os.brain_ops.brain_promote(scoped.organization_id, workspace_id, scoped, proposal_id, action)
+                else:
+                    result = self.os.brain_ops.brain_promote_fact(scoped, proposal_id, action)
+                self._json(200, result); return
+            if parsed.path == "/brain/conflicts/resolve":
+                assert identity is not None
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, self.os.brain_ops.resolve_fact_conflict(scoped, _need(payload,"conflict_group"), _need(payload,"winner_fact_id"))); return
             if parsed.path == "/initiatives":
                 self._json(201,self.os.create_initiative(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"project_id"),_need(payload,"name"),str(payload.get("description","")))); return
             if parsed.path == "/deliverables/version":

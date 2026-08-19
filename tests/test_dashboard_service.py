@@ -4,7 +4,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from auremgrid.domain.errors import AuthorizationError
+from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
 from auremgrid.services.brain import CompanyOS
 from tests.auth_support import issue_identity
 
@@ -100,6 +100,88 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertEqual(result["entities"],[])
         self.assertNotIn("Restricted",repr(result))
 
+    def test_brain_normalizes_proposal_families_and_only_exposes_executable_actions(self) -> None:
+        source=self.os.ingest_text(
+            self.ws.id,self.ingest_actor.id,"proposal-source.md","evidence","memory://proposal-source",
+            allowed_actor_ids=[self.visible_actor.id],
+        ).source
+        knowledge=[]
+        for kind in ("memory","fact","decision"):
+            knowledge.append(self.os.brain_ops.create_proposal(
+                self.org.id,self.ws.id,"agent",self.owner_identity,kind,f"{kind} proposal",
+                {"subject":"Plan","predicate":"price","object":"100"} if kind=="fact" else {},
+                "evidence",.9,source.id if kind=="fact" else None,
+            ))
+        first=self.os.brain_ops.create_entity(self.org.id,self.ws.id,self.owner.id,"First Entity","client")
+        second=self.os.brain_ops.create_entity(self.org.id,self.ws.id,self.owner.id,"Second Entity","client")
+        alias=self.os.brain_ops.brain_propose(
+            self.org.id,self.ws.id,self.owner_identity,"alias",[first["id"]],.9,"alias","evidence",alias="First Co"
+        )
+        merge=self.os.brain_ops.brain_propose(
+            self.org.id,self.ws.id,self.owner_identity,"merge",[first["id"],second["id"]],.9,"merge","evidence",target_id=second["id"]
+        )
+        current=self.dashboard.brain(self.owner_identity,self.org.id,self.ws.id,self.owner.id)
+        rows={item["id"]:item for item in current["proposals"]}
+        self.assertEqual({rows[item["id"]]["kind"] for item in knowledge},{"memory","fact","decision"})
+        self.assertEqual({rows[alias["id"]]["family"],rows[merge["id"]]["family"]},{"entity_resolution"})
+        self.assertEqual(rows[knowledge[0]["id"]]["allowed_actions"],[])
+        self.assertEqual(rows[knowledge[2]["id"]]["allowed_actions"],[])
+        self.assertEqual({action["action"] for action in rows[knowledge[1]["id"]]["allowed_actions"]},{"approve","reject"})
+        self.assertEqual({action["route"] for action in rows[alias["id"]]["allowed_actions"]},{"/brain/promote"})
+        before=datetime.now(timezone.utc)
+        self.os.brain_ops.brain_promote(self.org.id,self.ws.id,self.owner_identity,alias["id"],"reject")
+        decided={item["id"]:item for item in self.dashboard.brain(self.owner_identity,self.org.id,self.ws.id,self.owner.id)["proposals"]}
+        historical={item["id"]:item for item in self.dashboard.brain(self.owner_identity,self.org.id,self.ws.id,self.owner.id,as_of=before)["proposals"]}
+        self.assertEqual(decided[alias["id"]]["status"],"rejected"); self.assertEqual(decided[alias["id"]]["allowed_actions"],[])
+        self.assertEqual(historical[alias["id"]]["status"],"pending"); self.assertEqual(historical[alias["id"]]["allowed_actions"],[])
+
+    def test_conflict_actions_require_full_acl_and_resolution_is_idempotent(self) -> None:
+        source=self.os.ingest_text(
+            self.ws.id,self.ingest_actor.id,"full-conflict.md","evidence","memory://full-conflict",
+            allowed_actor_ids=[self.visible_actor.id],
+        ).source
+        proposals=[self.os.brain_ops.create_proposal(
+            self.org.id,self.ws.id,"agent",self.owner_identity,"fact",value,
+            {"subject":"Plan","predicate":"price","object":value},"evidence",.9,source.id,
+        ) for value in ("100","200")]
+        for proposal in proposals: self.os.brain_ops.brain_promote_fact(self.owner_identity,proposal["id"],"approve")
+        facts=self.os.store.conn.execute("SELECT id,conflict_group FROM facts WHERE source_id=? ORDER BY id",(source.id,)).fetchall()
+        group=facts[0]["conflict_group"]
+        card=next(item for item in self.dashboard.brain(self.owner_identity,self.org.id,self.ws.id,self.owner.id)["conflicts"] if item["id"]==group)
+        self.assertEqual({action["payload"]["winner_fact_id"] for action in card["allowed_actions"]},{row["id"] for row in facts})
+        before_count=self.os.store.conn.execute("SELECT COUNT(*) FROM knowledge_state_events").fetchone()[0]
+        first=self.os.brain_ops.resolve_fact_conflict(self.owner_identity,group,facts[0]["id"])
+        after_count=self.os.store.conn.execute("SELECT COUNT(*) FROM knowledge_state_events").fetchone()[0]
+        replay=self.os.brain_ops.resolve_fact_conflict(self.owner_identity,group,facts[0]["id"])
+        self.assertTrue(first["changed"]); self.assertFalse(replay["changed"])
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM knowledge_state_events").fetchone()[0],after_count)
+        self.assertEqual(after_count-before_count,len(facts))
+        with self.assertRaises(ValidationError):
+            self.os.brain_ops.resolve_fact_conflict(self.owner_identity,group,facts[1]["id"])
+
+        visible=self.os.ingest_text(
+            self.ws.id,self.ingest_actor.id,"partial-visible.md","evidence","memory://partial-visible",
+            allowed_actor_ids=[self.visible_actor.id],
+        ).source
+        hidden=self.os.ingest_text(
+            self.ws.id,self.ingest_actor.id,"partial-hidden.md","evidence","memory://partial-hidden",
+            allowed_actor_ids=[self.hidden_actor.id],
+        ).source
+        partial=[]
+        for value,evidence_source in (("one",visible),("two",hidden)):
+            proposal=self.os.brain_ops.create_proposal(
+                self.org.id,self.ws.id,"agent",self.owner_identity,"fact",value,
+                {"subject":"Partial","predicate":"price","object":value},"evidence",.9,evidence_source.id,
+            )
+            self.os.brain_ops.brain_promote_fact(self.owner_identity,proposal["id"],"approve")
+        partial_facts=self.os.store.conn.execute("SELECT id,conflict_group FROM facts WHERE subject='Partial' ORDER BY id").fetchall()
+        partial_group=partial_facts[0]["conflict_group"]
+        self.assertNotIn(partial_group,{item["id"] for item in self.dashboard.brain(self.owner_identity,self.org.id,self.ws.id,self.owner.id)["conflicts"]})
+        with self.assertRaises(NotFoundError):
+            self.os.brain_ops.resolve_fact_conflict(self.owner_identity,partial_group,partial_facts[0]["id"])
+        with self.assertRaises(NotFoundError):
+            self.os.brain_ops.resolve_fact_conflict(self.owner_identity,"forged",partial_facts[0]["id"])
+
     def test_brain_as_of_and_workspace_scope_do_not_leak_future_or_other_workspace(self) -> None:
         old = datetime.now(timezone.utc) - timedelta(days=2)
         future = datetime.now(timezone.utc) + timedelta(days=2)
@@ -154,7 +236,7 @@ class DashboardServiceTests(unittest.TestCase):
         )
         stages = {stage["stage_key"]: stage for stage in owner_board["stages"]}
         self.assertTrue(stages["brief"]["readiness"]["ready"])
-        self.assertIn("start_stage", stages["brief"]["allowed_actions"])
+        self.assertIn("start_stage", {action["action"] for action in stages["brief"]["allowed_actions"]})
         self.assertFalse(stages["deliver"]["readiness"]["ready"])
         self.assertEqual(stages["deliver"]["dependencies"][0]["status"], "pending")
 
@@ -203,6 +285,51 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertEqual(old_brief["allowed_actions"], [])
         self.assertEqual(historical["runs"][0]["status"], "pending")
         self.assertEqual(current["runs"][0]["status"], "in_progress")
+
+    def test_workflow_actions_carry_versions_gate_context_and_handoff_contract(self) -> None:
+        run=self.os.workflow_ops.create_run(self.org.id,self.ws.id,self.owner.id,workflow_template("action_contract"))
+        board=self.dashboard.workflow_board(self.owner_identity,self.org.id,self.ws.id,self.owner.id)
+        brief=next(stage for stage in board["stages"] if stage["stage_key"]=="brief")
+        start=next(action for action in brief["allowed_actions"] if action["action"]=="start_stage")
+        self.assertEqual(start["route"],"/workflows/stages/start")
+        self.assertEqual(start["payload"],{
+            "workspace_id":self.ws.id,"run_id":run["id"],"stage_id":"brief","expected_version":1,
+        })
+        cancel=board["runs"][0]["allowed_actions"][0]
+        self.assertEqual(cancel["payload"]["expected_version"],run["version"])
+
+        self.os.workflow_ops.start_stage(self.org.id,self.ws.id,self.owner.id,run["id"],"brief")
+        self.os.workflow_ops.submit_evidence(self.org.id,self.ws.id,self.owner.id,run["id"],"brief","brief",text="brief")
+        self.os.workflow_ops.complete_stage(self.org.id,self.ws.id,self.owner.id,run["id"],"brief")
+        board=self.dashboard.workflow_board(self.owner_identity,self.org.id,self.ws.id,self.owner.id)
+        deliver=next(stage for stage in board["stages"] if stage["stage_key"]=="deliver")
+        handoff=next(action for action in deliver["allowed_actions"] if action["action"]=="acknowledge_handoff")
+        self.assertEqual(handoff["payload"]["artifact_contract"],"approved brief")
+        self.assertEqual(handoff["payload"]["from_stage_id"],"brief")
+        self.assertEqual(handoff["payload"]["to_stage_id"],"deliver")
+        self.os.workflow_ops.acknowledge_handoff(
+            self.org.id,self.ws.id,self.owner.id,run["id"],"brief","deliver",handoff["payload"]["artifact_contract"]
+        )
+        self.os.workflow_ops.start_stage(self.org.id,self.ws.id,self.owner.id,run["id"],"deliver")
+        self.os.workflow_ops.submit_evidence(self.org.id,self.ws.id,self.owner.id,run["id"],"deliver","deliverable",text="done")
+        approval=self.os.agency_ops.request_approval(
+            self.org.id,"person",self.owner.id,f"workflow:{run['id']}:deliver","workflow_stage_approval",
+            {"run_id":run["id"],"stage_key":"deliver"},"workflow gate","human",self.ws.id,self.owner.id,
+        )
+        board=self.dashboard.workflow_board(self.owner_identity,self.org.id,self.ws.id,self.owner.id)
+        deliver=next(stage for stage in board["stages"] if stage["stage_key"]=="deliver")
+        request=next(action for action in deliver["allowed_actions"] if action["action"]=="request_approval")
+        self.assertEqual(request["payload"]["approval_request_id"],approval["id"])
+        self.assertEqual(request["payload"]["expected_version"],deliver["version"])
+        self.os.workflow_ops.request_approval(
+            self.org.id,self.ws.id,self.owner.id,run["id"],"deliver","ready",approval["id"]
+        )
+        self.os.agency_ops.decide_approval(self.org.id,self.owner.id,approval["id"],True,"approved")
+        board=self.dashboard.workflow_board(self.owner_identity,self.org.id,self.ws.id,self.owner.id)
+        deliver=next(stage for stage in board["stages"] if stage["stage_key"]=="deliver")
+        decide=next(action for action in deliver["allowed_actions"] if action["action"]=="decide_approval")
+        self.assertEqual(decide["payload"]["decision"],"approve")
+        self.assertEqual(decide["payload"]["approval_request_id"],approval["id"])
 
     def test_workflow_board_rejects_identity_person_or_workspace_mismatch(self) -> None:
         with self.assertRaises(AuthorizationError):
