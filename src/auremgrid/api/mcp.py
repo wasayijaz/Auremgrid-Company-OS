@@ -3,15 +3,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from auremgrid.domain.errors import AuremgridError
+from auremgrid.domain.errors import AuremgridError, AuthorizationError
+from auremgrid.domain.security import AuthenticatedIdentity
 from auremgrid.services.brain import CompanyOS
 
 
 class McpToolRouter:
     """Protocol-neutral handlers that can sit behind MCP or any other agent transport."""
 
-    def __init__(self, os: CompanyOS) -> None:
+    def __init__(self, os: CompanyOS, identity: AuthenticatedIdentity) -> None:
         self.os = os
+        self.identity = identity
 
     def list_tools(self) -> list[dict[str, Any]]:
         tools = [
@@ -77,6 +79,7 @@ class McpToolRouter:
                 "brain.sources":"sources","brain.recent":"recent","clients.brief":"brief","work.list":"work",
                 "work.create":"capture_work","work.assign":"assign_work","work.update":"start_work","work.review":"submit_review"}
             name=aliases.get(name,name)
+            arguments = self._trusted_arguments(name, arguments)
             company_tools={"projects.list","projects.get","decisions.list","decisions.create","people.list","clients.list",
                 "clients.health","meetings.list","meetings.get","campaigns.list","campaigns.get","campaigns.performance",
                 "people.capacity","risks.list","opportunities.list","agents.list","agents.runs","notifications.list","reports.generate",
@@ -208,6 +211,32 @@ class McpToolRouter:
         except (AuremgridError, ValueError, TypeError) as exc:
             return {"error": exc.__class__.__name__, "message": str(exc)}
 
+    def _trusted_arguments(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        result = dict(arguments)
+        supplied_org = _optional_str(result.get("organization_id"))
+        if supplied_org and supplied_org != self.identity.organization_id:
+            raise AuthorizationError("identity organization mismatch")
+        supplied_person = _optional_str(result.get("person_id"))
+        if supplied_person and supplied_person != self.identity.person_id:
+            raise AuthorizationError("identity person mismatch")
+        result["organization_id"] = self.identity.organization_id
+        result["person_id"] = self.identity.person_id
+        workspace_id = _optional_str(result.get("workspace_id"))
+        if workspace_id:
+            if self.identity.workspace_id != workspace_id:
+                raise AuthorizationError("identity workspace mismatch")
+        capability = _mcp_capability(name)
+        self.identity.require(capability)
+        if name in {"search","entity","history","neighbors","sources","recent","remember","brief","work",
+            "capture_work","assign_work","start_work","mark_dod","submit_review","close_review","ship_work"}:
+            workspace = _required(result, "workspace_id")
+            actor_id = self.os.auth.actor_for_identity(self.identity, workspace)
+            supplied_actor = _optional_str(result.get("actor_id"))
+            if supplied_actor and supplied_actor != actor_id:
+                raise AuthorizationError("identity actor mismatch")
+            result["actor_id"] = actor_id
+        return result
+
     def _call_company_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         organization_id = _required(arguments, "organization_id")
         person_id = _required(arguments, "person_id")
@@ -331,6 +360,23 @@ def _optional_str(value: Any) -> str | None:
 
 def _optional_int(value: Any) -> int | None:
     return int(value) if value is not None else None
+
+
+def _mcp_capability(name: str) -> str:
+    if name in {"search","entity","history","neighbors","sources","recent","brief","engines"} or name.startswith("brain."):
+        return "brain_read"
+    if name == "remember": return "brain_propose"
+    if name in {"decisions.create"}: return "brain_promote"
+    if name in {"agents.list","agents.runs"}: return "agent_run"
+    if name == "reports.generate": return "workspace_write"
+    if name.startswith("workflows.approvals") or name.startswith("workflows.handoffs") or name.startswith("workflows.stages"):
+        return "workflow_gate"
+    if name == "workflows.runs.create": return "workflow_run"
+    if name.startswith("workflows."): return "workspace_read"
+    if name in {"capture_work","assign_work","start_work","mark_dod","submit_review","close_review","ship_work",
+        "work.create","work.assign","work.update","work.review"}:
+        return "workspace_write"
+    return "workspace_read"
 
 
 def _bool(value: Any, key: str) -> bool:

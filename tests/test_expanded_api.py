@@ -9,6 +9,7 @@ from pathlib import Path
 from auremgrid.api.http import serve
 from auremgrid.api.mcp import McpToolRouter
 from auremgrid.services.brain import CompanyOS
+from tests.auth_support import issue_identity
 
 
 FIXTURES=Path(__file__).resolve().parents[1]/"fixtures"
@@ -17,17 +18,18 @@ FIXTURES=Path(__file__).resolve().parents[1]/"fixtures"
 class ExpandedApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.os=CompanyOS(":memory:"); self.os.seed_demo(FIXTURES)
+        self.token,self.identity=issue_identity(self.os,"org_demo","person_demo_owner","ws_alpha","act_alpha_admin")
         self.server=serve(self.os,"127.0.0.1",0); self.thread=threading.Thread(target=self.server.serve_forever,daemon=True); self.thread.start()
         self.host,self.port=self.server.server_address
 
     def tearDown(self) -> None:
         self.server.shutdown();self.server.server_close();self.os.close()
 
-    def get(self,path:str)->tuple[int,dict]:
-        c=HTTPConnection(self.host,self.port,timeout=5);c.request("GET",path);r=c.getresponse();body=json.loads(r.read());c.close();return r.status,body
+    def get(self,path:str,token:str|None=None)->tuple[int,dict]:
+        c=HTTPConnection(self.host,self.port,timeout=5);c.request("GET",path,headers={"Authorization":f"Bearer {token or self.token}"});r=c.getresponse();body=json.loads(r.read());c.close();return r.status,body
 
     def post(self,path:str,payload:dict)->tuple[int,dict]:
-        c=HTTPConnection(self.host,self.port,timeout=5);c.request("POST",path,json.dumps(payload),{"Content-Type":"application/json"});r=c.getresponse();body=json.loads(r.read());c.close();return r.status,body
+        c=HTTPConnection(self.host,self.port,timeout=5);c.request("POST",path,json.dumps(payload),{"Content-Type":"application/json","Authorization":f"Bearer {self.token}"});r=c.getresponse();body=json.loads(r.read());c.close();return r.status,body
 
     def test_dashboard_payload_is_real_and_finance_is_not_connected(self) -> None:
         status,body=self.get("/dashboard/data?organization_id=org_demo&person_id=person_demo_owner")
@@ -46,7 +48,7 @@ class ExpandedApiTests(unittest.TestCase):
         self.assertEqual(status,201);self.assertIn("open risks",health["explanation"])
 
     def test_expanded_mcp_names_share_permissioned_domains(self) -> None:
-        router=McpToolRouter(self.os); common={"organization_id":"org_demo","person_id":"person_demo_owner"}
+        router=McpToolRouter(self.os,self.identity); common={"organization_id":"org_demo","person_id":"person_demo_owner"}
         advertised={tool["name"] for tool in router.list_tools()}
         self.assertTrue({"brain.search","clients.list","projects.list","work.create","decisions.create","meetings.list","campaigns.performance","people.capacity","risks.list","agents.runs","reports.generate"}<=advertised)
         clients=router.call("clients.list",common);self.assertEqual(len(clients["clients"]),2)
@@ -69,7 +71,8 @@ class ExpandedApiTests(unittest.TestCase):
     def test_cross_workspace_rest_lookup_returns_no_records(self) -> None:
         outsider=self.os.create_person("org_demo","Prime only")
         self.os.add_person_to_workspace("org_demo","ws_alpha",outsider.id,"viewer")
-        status,body=self.get(f"/campaigns?organization_id=org_demo&workspace_id=ws_beta&person_id={outsider.id}")
+        outsider_token,_=issue_identity(self.os,"org_demo",outsider.id,"ws_alpha")
+        status,body=self.get(f"/campaigns?organization_id=org_demo&workspace_id=ws_beta&person_id={outsider.id}",outsider_token)
         self.assertEqual(status,403);self.assertEqual(body["error"],"authorization_error")
 
 

@@ -10,7 +10,7 @@ The canonical ledger is authoritative. Search indexes, graph projections, embedd
 
 - Organizations with internal and client workspaces
 - Organization-level people who can belong to multiple client workspaces
-- Organization, workspace, actor, agent, and source-level permission checks
+- Opaque bearer sessions and API tokens, hash-only credential storage, principal-to-actor bindings, and deny-by-default capability checks across HTTP and MCP
 - Projects, expanded work items, subtasks, dependencies, comments, files, watchers, versions, time entries, and forced delivery stages
 - Versioned cross-wing workflow definitions and immutable runs with dependency readiness, rework routes, evidence gates, approvals, handoff contracts, SLAs, escalation, idempotency, cancellation, and append-only transition history
 - Deliverables, internal/client reviews, timestamped comments, decisions, and temporal decision fields
@@ -23,9 +23,13 @@ The canonical ledger is authoritative. Search indexes, graph projections, embedd
 - Sol, Terra, Luna, and extensible agent records; tasks, queues, runs, tool calls, outputs, errors, tokens, costs, and traces
 - Training-mode automations with conditions, actions, and approval checkpoints
 - Integration and sync-run state
+- External secret bindings that persist references/fingerprints only, resolve values at use time, and centrally redact credential-shaped data
+- Durable organization/workspace/principal-scoped jobs with atomic claims, leases, fencing tokens, progress, retry/backoff, dead-letter state, cancellation, idempotency, and append-only events
+- At-least-once outbox state with leased publishing, retry, idempotency, and stale-worker fencing
+- Online SQLite backup manifests plus checksum/integrity/foreign-key verification and recovery-mode restore fencing
 - Cited report runs
 - Entity aliases, high-confidence merges with history, memory/fact/decision proposals, and knowledge-health checks
-- Versioned SQLite migrations through schema version 10
+- Versioned SQLite migrations through schema version 11
 - Restart-safe rebuilding of local graph, memory, vector, and summary projections
 - REST APIs, protocol-neutral MCP-style tools, CLI, and a dark multi-page command-center dashboard
 
@@ -82,6 +86,19 @@ Start the synthetic demo:
 
 Open http://127.0.0.1:8791/.
 
+Create the first local owner session and bind it to a legacy evidence actor:
+
+    auremgrid bootstrap-auth --db auremgrid-demo.sqlite --organization org_demo --person person_demo_owner --email owner@demo.invalid --workspace ws_alpha --actor act_alpha_admin
+
+The command prints the opaque session token once. The dashboard asks for that token and stores it in browser-local storage. Run one durable background job in a separate process with:
+
+    auremgrid worker-once --db auremgrid-demo.sqlite --organization org_demo --workspace ws_alpha --worker-id local-worker-1
+
+Back up and verify without copying a live WAL file:
+
+    auremgrid backup --db auremgrid-demo.sqlite --output backups/company.sqlite
+    auremgrid verify-backup --backup backups/company.sqlite
+
 See [local deployment](docs/local-deployment.md) and the [upgrade guide](docs/upgrade-guide.md).
 
 ## Operating invariants
@@ -89,6 +106,10 @@ See [local deployment](docs/local-deployment.md) and the [upgrade guide](docs/up
 - Auremgrid owns organizations, permissions, canonical facts, temporal history, work state, approvals, finance truth, and audit.
 - People are organization-level identities; workspace membership grants client access.
 - Permission filters run before ranking or aggregation.
+- Public JSON APIs derive organization, person, workspace role, and legacy actor from the bearer principal; request IDs cannot impersonate another caller.
+- Secret values are resolved from an external store only inside authorized execution and are never written to the canonical ledger, jobs, or outbox.
+- Web requests are serialized over the local SQLite connection; durable workers use separate processes, WAL, leases, and fencing tokens.
+- Restores revoke sessions, recover in-flight jobs, and disable outbound dispatch until a human exits recovery mode.
 - Source evidence is untrusted data and cannot issue instructions.
 - Uncertain extracted information becomes a proposal or signal.
 - Direct work follows its intake and review contract; executable workflows apply their own validated checklist, approval, handoff, and completion policies instead of a universal creative checklist.
@@ -103,6 +124,8 @@ See [local deployment](docs/local-deployment.md) and the [upgrade guide](docs/up
 - [Domain model](docs/domain-model.md)
 - [Operating model](docs/operating-model.md)
 - [Wing workflow catalog](docs/wing-workflows.md)
+- [Authentication and capabilities](docs/authentication.md)
+- [Jobs, outbox, and recovery](docs/jobs-and-recovery.md)
 - [Data lifecycle](docs/data-lifecycle.md)
 - [Permission model](docs/permission-model.md)
 - [Threat model](docs/threat-model.md)

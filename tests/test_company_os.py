@@ -12,6 +12,7 @@ from auremgrid.api.http import serve
 from auremgrid.api.mcp import McpToolRouter
 from auremgrid.domain.errors import AuthorizationError
 from auremgrid.services.brain import CompanyOS
+from tests.auth_support import issue_identity
 
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -21,6 +22,12 @@ class CompanyOSTests(unittest.TestCase):
     def setUp(self) -> None:
         self.os = CompanyOS(":memory:")
         self.os.seed_demo(FIXTURES)
+        self.alpha_token, self.alpha_identity = issue_identity(
+            self.os, "org_demo", "person_demo_owner", "ws_alpha", "act_alpha_admin"
+        )
+        self.beta_token, self.beta_identity = issue_identity(
+            self.os, "org_demo", "person_demo_owner", "ws_beta", "act_beta_admin"
+        )
 
     def tearDown(self) -> None:
         self.os.close()
@@ -100,12 +107,12 @@ class CompanyOSTests(unittest.TestCase):
             self.os.remember("ws_alpha", "act_alpha_agent", "Client Alpha hates gradients")
 
     def test_mcp_and_http_search(self) -> None:
-        router = McpToolRouter(self.os)
+        router = McpToolRouter(self.os, self.alpha_identity)
         payload = router.call(
             "search",
             {
                 "workspace_id": "ws_alpha",
-                "actor_id": "act_alpha_operator",
+                "actor_id": "act_alpha_admin",
                 "query": "visual rule",
             },
         )
@@ -118,7 +125,8 @@ class CompanyOSTests(unittest.TestCase):
         try:
             host, port = server.server_address
             conn = HTTPConnection(host, port, timeout=5)
-            conn.request("GET", "/search?workspace_id=ws_alpha&actor_id=act_alpha_operator&query=visual%20rule")
+            conn.request("GET", "/search?workspace_id=ws_alpha&actor_id=act_alpha_admin&query=visual%20rule",
+                headers={"Authorization": f"Bearer {self.alpha_token}"})
             response = conn.getresponse()
             body = json.loads(response.read().decode("utf-8"))
             conn.close()
@@ -129,7 +137,7 @@ class CompanyOSTests(unittest.TestCase):
             server.server_close()
 
     def test_mcp_work_lifecycle_tools(self) -> None:
-        router = McpToolRouter(self.os)
+        router = McpToolRouter(self.os, self.beta_identity)
         common = {"workspace_id": "ws_beta", "actor_id": "act_beta_admin"}
         item = router.call(
             "capture_work",
@@ -204,7 +212,8 @@ class CompanyOSTests(unittest.TestCase):
                     "requested_by": "Studio lead",
                 }
             )
-            conn.request("POST", "/work/capture", body=body, headers={"Content-Type": "application/json"})
+            auth_headers={"Content-Type":"application/json","Authorization":f"Bearer {self.beta_token}"}
+            conn.request("POST", "/work/capture", body=body, headers=auth_headers)
             response = conn.getresponse()
             item = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
@@ -218,13 +227,13 @@ class CompanyOSTests(unittest.TestCase):
                     "assignee_id": "act_alpha_operator",
                 }
             )
-            conn.request("POST", "/work/assign", body=cross_workspace, headers={"Content-Type": "application/json"})
+            conn.request("POST", "/work/assign", body=cross_workspace, headers=auth_headers)
             response = conn.getresponse()
             error = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 404)
             self.assertEqual(error["error"], "not_found")
 
-            conn.request("POST", "/work/close-review", body="not-json", headers={"Content-Type": "application/json"})
+            conn.request("POST", "/work/close-review", body="not-json", headers=auth_headers)
             response = conn.getresponse()
             self.assertEqual(response.status, 400)
             conn.close()

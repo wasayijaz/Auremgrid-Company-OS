@@ -1,6 +1,9 @@
 # MCP-style tools
 
-McpToolRouter is transport-neutral. It exposes:
+McpToolRouter is transport-neutral and requires a trusted
+`AuthenticatedIdentity` from its transport. Organization, person, workspace,
+and legacy actor arguments are checked against that identity before any service
+lookup. It exposes:
 
 - brain.search, brain.entity, brain.history, brain.neighbors, brain.sources, brain.recent
 - clients.list, clients.brief, clients.health

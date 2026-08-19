@@ -240,6 +240,11 @@ class SqliteStore:
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA busy_timeout = 5000")
+        if self.path != ":memory:":
+            self.conn.execute("PRAGMA journal_mode = WAL")
+            self.conn.execute("PRAGMA synchronous = NORMAL")
+            self.conn.execute("PRAGMA wal_autocheckpoint = 1000")
         self.conn.executescript(SCHEMA)
         migrate(self.conn)
         self._lock = threading.RLock()

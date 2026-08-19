@@ -52,6 +52,9 @@ from auremgrid.services.dashboard import DashboardService
 from auremgrid.services.work_ops import WorkOperations
 from auremgrid.services.workflow_catalog import load_workflow_catalog
 from auremgrid.services.workflow_ops import WorkflowOperations
+from auremgrid.services.auth import AuthService
+from auremgrid.services.job_ops import JobOperations
+from auremgrid.services.secrets import EnvironmentSecretStore, SecretBindingService
 from auremgrid.adapters.semantic import DeterministicFallbackEmbeddingProvider, LocalVectorIndex
 
 
@@ -89,6 +92,9 @@ class CompanyOS:
         self.work_ops = WorkOperations(self.store,self.company,new_id,self._require_person_access)
         self.workflow_catalog = load_workflow_catalog()
         self.workflow_ops = WorkflowOperations(self.store.conn, new_id, self._require_person_access)
+        self.auth = AuthService(self.store.conn, new_id)
+        self.jobs = JobOperations(self.store.conn, new_id)
+        self.secrets = SecretBindingService(self.store.conn, new_id, EnvironmentSecretStore())
         self.rebuild_projections()
 
     def close(self) -> None:

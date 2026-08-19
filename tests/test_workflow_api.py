@@ -8,6 +8,7 @@ from http.client import HTTPConnection
 from auremgrid.api.http import serve
 from auremgrid.api.mcp import McpToolRouter
 from auremgrid.services.brain import CompanyOS
+from tests.auth_support import issue_identity
 
 
 class WorkflowApiTests(unittest.TestCase):
@@ -18,6 +19,9 @@ class WorkflowApiTests(unittest.TestCase):
         self.os.create_organization_workspace("org_workflow", "Restricted", "client", "ws_restricted")
         self.os.create_person("org_workflow", "Workflow Owner", role="owner", person_id="person_workflow")
         self.os.add_person_to_workspace("org_workflow", "ws_workflow", "person_workflow", "admin")
+        self.token, self.identity = issue_identity(
+            self.os, "org_workflow", "person_workflow", "ws_workflow"
+        )
         self.server = serve(self.os, "127.0.0.1", 0)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -32,7 +36,8 @@ class WorkflowApiTests(unittest.TestCase):
     def request(self, method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
         connection = HTTPConnection(self.host, self.port, timeout=5)
         body = json.dumps(payload) if payload is not None else None
-        headers = {"Content-Type": "application/json"} if payload is not None else {}
+        headers = {"Authorization": f"Bearer {self.token}"}
+        if payload is not None: headers["Content-Type"] = "application/json"
         connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
         result = json.loads(response.read())
@@ -74,7 +79,7 @@ class WorkflowApiTests(unittest.TestCase):
         self.assertEqual(body["error"], "authorization_error")
 
     def test_mcp_workflow_tools_share_the_same_engine(self) -> None:
-        router = McpToolRouter(self.os)
+        router = McpToolRouter(self.os, self.identity)
         common = {
             "organization_id": "org_workflow",
             "workspace_id": "ws_workflow",

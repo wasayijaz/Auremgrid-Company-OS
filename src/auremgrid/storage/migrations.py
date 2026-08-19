@@ -803,6 +803,205 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        11,
+        "auth_jobs_and_outbox",
+        """
+        CREATE TABLE IF NOT EXISTS auth_principals (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            person_id TEXT,
+            email TEXT,
+            status TEXT NOT NULL CHECK(status IN ('active','disabled','revoked')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(person_id) REFERENCES people(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_principals_person
+            ON auth_principals(organization_id, person_id)
+            WHERE person_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_principals_email
+            ON auth_principals(organization_id, email)
+            WHERE email IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_auth_principals_org_status
+            ON auth_principals(organization_id, status);
+
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            id TEXT PRIMARY KEY,
+            principal_id TEXT NOT NULL,
+            token_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT,
+            last_seen_at TEXT,
+            FOREIGN KEY(principal_id) REFERENCES auth_principals(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_sessions_token_hash
+            ON auth_sessions(token_hash);
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_principal_active
+            ON auth_sessions(principal_id, revoked_at, expires_at);
+
+        CREATE TABLE IF NOT EXISTS api_tokens (
+            id TEXT PRIMARY KEY,
+            principal_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            token_hash TEXT NOT NULL,
+            scopes TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            revoked_at TEXT,
+            last_used_at TEXT,
+            FOREIGN KEY(principal_id) REFERENCES auth_principals(id),
+            UNIQUE(principal_id, name)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_api_tokens_token_hash
+            ON api_tokens(token_hash);
+        CREATE INDEX IF NOT EXISTS idx_api_tokens_principal_active
+            ON api_tokens(principal_id, revoked_at, expires_at);
+
+        CREATE TABLE IF NOT EXISTS principal_actor_bindings (
+            principal_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(principal_id, workspace_id),
+            FOREIGN KEY(principal_id) REFERENCES auth_principals(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(actor_id) REFERENCES actors(id),
+            UNIQUE(actor_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_principal_actor_bindings_actor
+            ON principal_actor_bindings(actor_id);
+
+        CREATE TABLE IF NOT EXISTS system_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS secret_bindings (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            integration_id TEXT,
+            name TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            reference TEXT NOT NULL,
+            scopes TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('active','unverified','revoked')),
+            last_verified_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            revoked_at TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(integration_id) REFERENCES integrations(id),
+            UNIQUE(organization_id, reference)
+        );
+        CREATE INDEX IF NOT EXISTS idx_secret_bindings_scope
+            ON secret_bindings(organization_id, workspace_id, status);
+
+        CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            principal_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('queued','leased','running','succeeded','failed','retry_wait','dead_letter','cancelled')),
+            priority INTEGER NOT NULL,
+            attempts INTEGER NOT NULL,
+            max_attempts INTEGER NOT NULL,
+            available_at TEXT NOT NULL,
+            lease_owner TEXT,
+            lease_expires_at TEXT,
+            progress REAL NOT NULL CHECK(progress >= 0 AND progress <= 1),
+            idempotency_key TEXT,
+            payload_hash TEXT NOT NULL,
+            result TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            cancelled_at TEXT,
+            lease_token TEXT,
+            version INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(principal_id) REFERENCES auth_principals(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idempotency
+            ON jobs(organization_id, idempotency_key)
+            WHERE idempotency_key IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_jobs_queue
+            ON jobs(status, available_at, priority DESC, created_at);
+        CREATE INDEX IF NOT EXISTS idx_jobs_scope
+            ON jobs(organization_id, workspace_id, status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_jobs_lease
+            ON jobs(status, lease_expires_at);
+
+        CREATE TABLE IF NOT EXISTS job_events (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            actor TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            from_status TEXT,
+            to_status TEXT,
+            detail TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(job_id) REFERENCES jobs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_job_events_job
+            ON job_events(job_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS outbox_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            aggregate_type TEXT NOT NULL,
+            aggregate_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            idempotency_key TEXT,
+            status TEXT NOT NULL CHECK(status IN ('pending','published','failed')),
+            attempts INTEGER NOT NULL,
+            max_attempts INTEGER NOT NULL,
+            next_attempt_at TEXT NOT NULL,
+            lease_owner TEXT,
+            lease_expires_at TEXT,
+            lease_token TEXT,
+            published_at TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_idempotency
+            ON outbox_events(organization_id, idempotency_key)
+            WHERE idempotency_key IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_outbox_claim
+            ON outbox_events(status, next_attempt_at, lease_expires_at, created_at);
+        CREATE INDEX IF NOT EXISTS idx_outbox_scope
+            ON outbox_events(organization_id, workspace_id, status, updated_at);
+
+        CREATE TRIGGER IF NOT EXISTS job_events_no_update BEFORE UPDATE ON job_events
+        BEGIN
+            SELECT RAISE(ABORT, 'job events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS job_events_no_delete BEFORE DELETE ON job_events
+        BEGIN
+            SELECT RAISE(ABORT, 'job events are append-only');
+        END;
+        """,
+    ),
 )
 
 

@@ -5,8 +5,9 @@ import json
 from pathlib import Path
 
 from auremgrid.api.http import serve
-from auremgrid.api.mcp import McpToolRouter
 from auremgrid.services.brain import CompanyOS
+from auremgrid.storage.backup import create_backup, restore_backup, verify_backup
+from auremgrid.services.worker import run_one_job
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,19 +42,37 @@ def main(argv: list[str] | None = None) -> int:
     onboard.add_argument("--source-dir")
     onboard.add_argument("--db", default="auremgrid.sqlite")
 
+    backup = sub.add_parser("backup", help="create and verify an online SQLite backup")
+    backup.add_argument("--db", required=True)
+    backup.add_argument("--output", required=True)
+
+    verify = sub.add_parser("verify-backup", help="verify a backup checksum and SQLite integrity")
+    verify.add_argument("--backup", required=True)
+
+    restore = sub.add_parser("restore", help="restore a verified backup while the service is offline")
+    restore.add_argument("--backup", required=True)
+    restore.add_argument("--db", required=True)
+    restore.add_argument("--overwrite", action="store_true")
+
+    bootstrap_auth = sub.add_parser("bootstrap-auth", help="create the first local principal and session token")
+    bootstrap_auth.add_argument("--db", required=True)
+    bootstrap_auth.add_argument("--organization", required=True)
+    bootstrap_auth.add_argument("--person", required=True)
+    bootstrap_auth.add_argument("--email", required=True)
+    bootstrap_auth.add_argument("--workspace")
+    bootstrap_auth.add_argument("--actor")
+
+    worker = sub.add_parser("worker-once", help="claim and execute one durable job, then exit")
+    worker.add_argument("--db", required=True)
+    worker.add_argument("--organization", required=True)
+    worker.add_argument("--workspace")
+    worker.add_argument("--worker-id", required=True)
+
     args = parser.parse_args(argv)
     if args.command == "demo":
         os = CompanyOS(args.db)
         os.seed_demo()
-        router = McpToolRouter(os)
-        result = router.call(
-            "search",
-            {
-                "workspace_id": "ws_alpha",
-                "actor_id": "act_alpha_operator",
-                "query": "consultation price",
-            },
-        )
+        result = os.search("ws_alpha", "act_alpha_operator", "consultation price").to_dict()
         print(json.dumps(result, indent=2))
         os.close()
         return 0
@@ -98,6 +117,42 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(result, indent=2))
         os.close()
+        return 0
+    if args.command == "backup":
+        os = CompanyOS(args.db)
+        try:
+            result = create_backup(os.store.conn, args.output)
+        finally:
+            os.close()
+        print(json.dumps(result, indent=2))
+        return 0
+    if args.command == "verify-backup":
+        print(json.dumps(verify_backup(args.backup), indent=2))
+        return 0
+    if args.command == "restore":
+        print(json.dumps(restore_backup(args.backup, args.db, overwrite=args.overwrite), indent=2))
+        return 0
+    if args.command == "bootstrap-auth":
+        if bool(args.workspace) != bool(args.actor):
+            parser.error("--workspace and --actor must be provided together")
+        os = CompanyOS(args.db)
+        try:
+            principal = os.auth.create_principal(args.organization, args.person, args.email)
+            session = os.auth.create_session(principal["id"])
+            identity = os.auth.authenticate_session(session["token"])
+            identity.require("auth_manage")
+            binding = os.auth.bind_actor(identity, args.workspace, args.actor) if args.workspace else None
+            print(json.dumps({"principal":principal,"session":{"id":session["id"],"token":session["token"],"expires_at":session["expires_at"]},"actor_binding":binding}, indent=2))
+        finally:
+            os.close()
+        return 0
+    if args.command == "worker-once":
+        os = CompanyOS(args.db)
+        try:
+            result = run_one_job(os, args.organization, args.workspace, args.worker_id)
+            print(json.dumps(result, indent=2))
+        finally:
+            os.close()
         return 0
     return 1
 

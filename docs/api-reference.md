@@ -8,6 +8,17 @@ Write/action routes include /organizations, /workspaces, /people, /workspace-mem
 
 Organization-domain routes require organization_id and person_id. Evidence/legacy work routes require workspace_id and actor_id.
 
+All JSON routes except `/health` require a bearer session or API token. Caller
+identity is derived from the credential; organization, person, and legacy actor
+arguments cannot override it. `/auth/me`, `/auth/api-tokens`,
+`/auth/sessions/rotate`, `/auth/revoke`, and `/auth/actor-bindings` expose the
+authenticated lifecycle without returning stored token hashes.
+
+`GET /jobs` and `/jobs/get` inspect scoped durable work. `POST /jobs` accepts an
+allowlisted job type and idempotency key; `/jobs/cancel` cancels only queued or
+retry-wait work. Claim/lease operations are worker-only and are not public HTTP
+endpoints.
+
 ## Cross-wing workflows
 
 Read routes:

@@ -1,19 +1,58 @@
 from __future__ import annotations
 
 import json
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from auremgrid.api.mcp import McpToolRouter
-from auremgrid.domain.errors import AuremgridError, AuthorizationError, NotFoundError, ValidationError
+from auremgrid.api.mcp import McpToolRouter, _mcp_capability
+from auremgrid.domain.errors import AuthenticationError, AuremgridError, AuthorizationError, NotFoundError, ValidationError
+from auremgrid.domain.security import AuthenticatedIdentity
 from auremgrid.services.brain import CompanyOS
 from pathlib import Path
 
 
+LEGACY_ACTOR_PATHS = {
+    "/search", "/entity", "/history", "/neighbors", "/sources", "/recent", "/brief", "/work",
+    "/remember", "/work/capture", "/work/capture_work", "/work/assign", "/work/assign_work",
+    "/work/start", "/work/start_work", "/work/dod", "/work/mark-dod", "/work/mark_dod",
+    "/work/submit-review", "/work/submit_review", "/work/close-review", "/work/close_review",
+    "/work/ship", "/work/ship_work",
+}
+JOB_TYPES = {"connector.sync", "report.generate", "projection.rebuild", "agent.run", "automation.execute", "outbox.dispatch", "backup.create"}
+
+
+def _route_capability(path: str, method: str) -> str:
+    if method == "GET":
+        if path.startswith("/jobs"): return "job_manage"
+        if path == "/auth/me": return "workspace_read"
+        if path == "/finance": return "finance_read"
+        if path in {"/agents"}: return "agent_run"
+        if path in {"/integrations"}: return "integration_configure"
+        if path.startswith("/workflows"): return "workspace_read"
+        if path in {"/knowledge-health", "/memory-proposals", "/search", "/entity", "/history", "/neighbors", "/sources", "/recent", "/brief"}: return "brain_read"
+        return "workspace_read"
+    if path in {"/approvals/decide", "/workflows/approvals/decide"}: return "approval_decide"
+    if path.startswith("/jobs"): return "job_manage"
+    if path in {"/auth/sessions/rotate", "/auth/revoke"}: return "workspace_read"
+    if path.startswith("/auth/"): return "auth_manage"
+    if path.startswith("/workflows/approvals") or path.startswith("/workflows/handoffs") or path.startswith("/workflows/stages"): return "workflow_gate"
+    if path.startswith("/workflows"): return "workflow_run"
+    if path.startswith("/integrations/sync"): return "integration_sync"
+    if path == "/integrations": return "integration_configure"
+    if path.startswith("/agents/runs") or path == "/agents/tasks": return "agent_run"
+    if path.startswith("/agents"): return "agent_configure"
+    if path.startswith("/automations/execute") or path == "/automations/trigger": return "automation_execute"
+    if path.startswith("/automations"): return "automation_manage"
+    if path == "/memory-proposals/review": return "brain_promote"
+    if path in {"/memory-proposals", "/remember"}: return "brain_propose"
+    if path in {"/people", "/workspace-memberships"}: return "people_manage"
+    if path in {"/organizations", "/workspaces"}: return "organization_manage"
+    return "workspace_write"
+
+
 class CompanyOSRequestHandler(BaseHTTPRequestHandler):
     os: CompanyOS
-    router: McpToolRouter
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -22,9 +61,15 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         params = {key: values[0] for key, values in parse_qs(parsed.query).items()}
         try:
+            identity = None
+            if parsed.path not in {"/", "/dashboard", "/health"}:
+                identity = self._authenticate_request(parsed.path, "GET", params)
             if parsed.path == "/health":
                 self._json(200, {"ok": True, "schema_version": self.os.store.schema_version})
                 return
+            if parsed.path == "/auth/me":
+                assert identity is not None
+                self._json(200, identity.to_dict()); return
             if parsed.path in {"/", "/dashboard"}:
                 self._html(200, _dashboard_html())
                 return
@@ -197,6 +242,13 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/workflows/escalations":
                 self._json(200,self.os.workflow_ops.overdue_escalations(_need(params,"organization_id"),_need(params,"workspace_id"),
                     _need(params,"person_id"),params.get("as_of"))); return
+            if parsed.path == "/jobs":
+                items=self.os.jobs.list_jobs(_need(params,"organization_id"),_optional_str(params.get("workspace_id")),params.get("status"))
+                self._json(200,{"jobs":items}); return
+            if parsed.path == "/jobs/get":
+                organization_id,workspace_id=_need(params,"organization_id"),_optional_str(params.get("workspace_id")); job_id=_need(params,"job_id")
+                self._json(200,{"job":self.os.jobs.get_job(organization_id,workspace_id,job_id),
+                    "events":self.os.jobs.job_events(organization_id,workspace_id,job_id)}); return
             self._json(404, {"error": "not_found"})
         except Exception as exc:
             self._handle_error(exc)
@@ -206,10 +258,40 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             if parsed.path == "/tools/call":
-                result = self.router.call(str(payload.get("name", "")), payload.get("arguments") or {})
+                arguments = payload.get("arguments") or {}
+                if not isinstance(arguments, dict): raise ValidationError("arguments must be an object")
+                tool_name=str(payload.get("name", ""))
+                identity = self._authenticate_request(parsed.path, "POST", arguments, _mcp_capability(tool_name))
+                result = McpToolRouter(self.os, identity).call(tool_name, arguments)
                 status = 400 if "error" in result else 200
                 self._json(status, result)
                 return
+            identity = self._authenticate_request(parsed.path, "POST", payload)
+            if parsed.path == "/auth/api-tokens":
+                item=self.os.auth.create_api_token(identity.principal_id,_need(payload,"name"),
+                    [str(value) for value in payload.get("scopes",[])])
+                self._json(201,{"id":item["id"],"name":item["name"],"token":item["token"],"scopes":item["scopes"],"expires_at":item["expires_at"]}); return
+            if parsed.path == "/auth/sessions/rotate":
+                token=self.headers.get("Authorization","")[7:].strip(); item=self.os.auth.rotate_session(token)
+                self._json(200,{"id":item["id"],"token":item["token"],"expires_at":item["expires_at"]}); return
+            if parsed.path == "/auth/revoke":
+                token=self.headers.get("Authorization","")[7:].strip()
+                if identity.is_api_token:self.os.auth.revoke_api_token(token)
+                else:self.os.auth.revoke_session(token)
+                self._json(200,{"revoked":True}); return
+            if parsed.path == "/auth/actor-bindings":
+                self._json(201,self.os.auth.bind_actor(identity,_need(payload,"workspace_id"),_need(payload,"actor_id"))); return
+            if parsed.path == "/jobs":
+                job_type=_need(payload,"type")
+                if job_type not in JOB_TYPES: raise ValidationError("unsupported job type")
+                item=self.os.jobs.enqueue_job(identity.organization_id,_optional_str(payload.get("workspace_id")),identity.principal_id,job_type,
+                    payload.get("payload") or {},int(payload.get("priority",0)),int(payload.get("max_attempts",3)),
+                    _optional_str(payload.get("available_at")),_optional_str(payload.get("idempotency_key")))
+                self._json(201,item); return
+            if parsed.path == "/jobs/cancel":
+                item=self.os.jobs.cancel_job(identity.organization_id,_optional_str(payload.get("workspace_id")),_need(payload,"job_id"),
+                    _need(payload,"reason"),identity.principal_id,_optional_int(payload.get("expected_version")))
+                self._json(200,item); return
             if parsed.path == "/search":
                 bundle = self.os.search(
                     _need(payload, "workspace_id"),
@@ -507,6 +589,35 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             raise ValidationError("request body must be a JSON object")
         return payload
 
+    def _authenticate_request(
+        self, path: str, method: str, payload: dict[str, Any], required_capability: str | None = None
+    ) -> AuthenticatedIdentity:
+        header = self.headers.get("Authorization", "")
+        if not header.startswith("Bearer "):
+            raise AuthenticationError("authentication required")
+        token = header[7:].strip()
+        organization_id = _optional_str(payload.get("organization_id"))
+        workspace_id = _optional_str(payload.get("workspace_id"))
+        identity = self.os.auth.authenticate_bearer(token, organization_id)
+        if workspace_id:
+            identity = self.os.auth.scope_identity(identity, workspace_id)
+        capability = required_capability or _route_capability(path, method)
+        identity.require(capability)
+        supplied_person = _optional_str(payload.get("person_id"))
+        if supplied_person and supplied_person != identity.person_id:
+            raise AuthorizationError("caller identity does not match person_id")
+        payload["organization_id"] = identity.organization_id
+        payload["person_id"] = identity.person_id
+        if path in LEGACY_ACTOR_PATHS:
+            if not workspace_id:
+                raise ValidationError("workspace_id is required")
+            actor_id = self.os.auth.actor_for_identity(identity, workspace_id)
+            supplied_actor = _optional_str(payload.get("actor_id"))
+            if supplied_actor and supplied_actor != actor_id:
+                raise AuthorizationError("caller identity does not match actor_id")
+            payload["actor_id"] = actor_id
+        return identity
+
     def _json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -524,6 +635,9 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _handle_error(self, exc: Exception) -> None:
+        if isinstance(exc, AuthenticationError):
+            self._json(401, {"error": "authentication_error", "message": "authentication failed"})
+            return
         if isinstance(exc, ValidationError):
             self._json(400, {"error": "validation_error", "message": str(exc)})
             return
@@ -588,13 +702,15 @@ def _required_dt(value: Any, key: str) -> Any:
     return result
 
 
-def serve(os: CompanyOS, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHTTPServer:
+def serve(os: CompanyOS, host: str = "127.0.0.1", port: int = 8787) -> HTTPServer:
     handler = type(
         "BoundHandler",
         (CompanyOSRequestHandler,),
-        {"os": os, "router": McpToolRouter(os)},
+        {"os": os},
     )
-    return ThreadingHTTPServer((host, port), handler)
+    # A single request loop deliberately serializes the shared SQLite connection.
+    # Durable workers use their own connections and leases rather than HTTP threads.
+    return HTTPServer((host, port), handler)
 
 
 def _dashboard_html() -> str:
