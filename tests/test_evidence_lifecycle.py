@@ -33,7 +33,7 @@ class EvidenceLifecycleTests(unittest.TestCase):
         ).source
 
     def test_schema_13_has_durable_lifecycle_route_and_queue_tables(self) -> None:
-        self.assertEqual(self.os.store.schema_version, 15)
+        self.assertEqual(self.os.store.schema_version, 16)
         names = {row["name"] for row in self.os.store.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({
             "source_lifecycle_intervals", "provider_object_routes", "provider_object_route_events",
@@ -170,7 +170,9 @@ class EvidenceLifecycleTests(unittest.TestCase):
             "SELECT id FROM documents WHERE source_id=?", (active.id,)
         )))[0], self.os._embeddings)
         retired_doc = self.os.store.conn.execute("SELECT id FROM documents WHERE source_id=?", (retired.id,)).fetchone()[0]
-        self.assertNotIn(retired_doc, self.os._embeddings)
+        # Historical as-of queries still need the retired document's durable
+        # vector; current retrieval excludes it through lifecycle authorization.
+        self.assertIn(retired_doc, self.os._embeddings)
 
     def test_generation_seen_markers_retire_only_unseen_route_objects(self) -> None:
         first = self._ingest("drive/files/first", "First generation object")

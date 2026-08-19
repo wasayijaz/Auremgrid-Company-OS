@@ -265,6 +265,10 @@ class SqliteStore:
     def schema_version(self) -> int:
         return schema_version(self.conn)
 
+    @staticmethod
+    def now_iso() -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
@@ -2077,6 +2081,7 @@ class SqliteStore:
         allowed_source_ids: Iterable[str],
         query: str,
         limit: int,
+        as_of: datetime | None = None,
     ) -> list[tuple[Document, SourceArtifact, float]]:
         source_ids = list(allowed_source_ids)
         if not source_ids:
@@ -2085,6 +2090,11 @@ class SqliteStore:
         match = " OR ".join(token for token in _fts_tokens(query))
         if not match:
             return []
+        observed_clause = ""
+        observed_params: tuple[object, ...] = ()
+        if as_of is not None:
+            observed_clause = " AND d.observed_at <= ?"
+            observed_params = (as_of.astimezone(timezone.utc).isoformat(),)
         rows = self.conn.execute(
             f"""
             SELECT
@@ -2112,10 +2122,11 @@ class SqliteStore:
               AND d.workspace_id = ?
               AND d.source_id IN ({placeholders})
               AND documents_fts MATCH ?
+              {observed_clause}
             ORDER BY rank ASC
             LIMIT ?
             """,
-            (workspace_id, workspace_id, *source_ids, match, limit),
+            (workspace_id, workspace_id, *source_ids, match, *observed_params, limit),
         ).fetchall()
         results: list[tuple[Document, SourceArtifact, float]] = []
         for row in rows:
@@ -2144,6 +2155,27 @@ class SqliteStore:
             score = 1.0 / (1.0 + max(float(row["rank"]), 0.0))
             results.append((document, source, score))
         return results
+
+    def allowed_document_ids(
+        self,
+        workspace_id: str,
+        allowed_source_ids: Iterable[str],
+        as_of: datetime,
+    ) -> list[str]:
+        """Return canonical document ids after ACL/source/temporal filtering."""
+        source_ids = list(allowed_source_ids)
+        if not source_ids:
+            return []
+        placeholders = ",".join("?" for _ in source_ids)
+        moment = as_of.astimezone(timezone.utc).isoformat()
+        rows = self.conn.execute(
+            f"""SELECT d.id FROM documents d
+                WHERE d.workspace_id=? AND d.source_id IN ({placeholders})
+                  AND d.observed_at <= ?
+                ORDER BY d.recorded_at ASC, d.id ASC""",
+            (workspace_id, *source_ids, moment),
+        ).fetchall()
+        return [str(row["id"]) for row in rows]
 
     def list_facts(
         self,

@@ -267,6 +267,7 @@ class EvidenceBundle:
     unknown: bool
     message: str
     items: tuple[EvidenceItem, ...] = field(default_factory=tuple)
+    retrieval: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -275,6 +276,7 @@ class EvidenceBundle:
             "as_of": iso(self.as_of),
             "unknown": self.unknown,
             "message": self.message,
+            "retrieval": self.retrieval,
             "items": [item.to_dict() for item in self.items],
         }
 

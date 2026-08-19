@@ -62,7 +62,7 @@ class GoogleConnectorTests(unittest.TestCase):
         self.os.close()
 
     def test_v12_schema_has_connector_inbox_without_token_value_columns(self) -> None:
-        self.assertEqual(self.os.store.schema_version, 15)
+        self.assertEqual(self.os.store.schema_version, 16)
         self.assertTrue(
             {
                 "connector_cursors",

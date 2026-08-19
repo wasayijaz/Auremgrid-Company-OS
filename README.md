@@ -117,6 +117,24 @@ flowchart TD
 
 Source text is evidence, not executable instruction. AI-generated output is not silently promoted into canonical truth.
 
+### Semantic retrieval (schema 16)
+
+```mermaid
+flowchart LR
+    Query[Authorized query] --> ACL[Active sources + document IDs]
+    ACL --> FTS[Independent SQLite FTS]
+    ACL --> VEC[Scoped vector index]
+    VEC --> Provider[Configured embedding provider]
+    FTS --> Rehydrate[Canonical document rehydrate]
+    VEC --> Rehydrate
+    Rehydrate --> Rank[Hybrid rank + citations]
+    Provider -. outage .-> Degraded[Semantic degraded; FTS continues]
+```
+
+The default provider is a deterministic, offline lexical fallback so a new installation works without model files or network access. Schema 16 stores rebuildable float32 vectors in `document_embedding_projection`, scoped by workspace, document, provider, model, version, and dimensions. Retrieval authorizes active source/document IDs before either channel runs; semantic candidates are never gated by an FTS hit and are rehydrated from canonical SQLite rows before ranking. A provider outage is reported as `semantic=degraded` with `fallback_used=false` while cited FTS evidence remains available.
+
+For a local open-source model, pass a local SentenceTransformers model directory to `SentenceTransformerEmbeddingProvider`. Model loading is lazy and local-files-only; no download is attempted. Rebuild projections after changing model/version and verify the projection health before enabling semantic traffic.
+
 ### Authentication, jobs, connectors, and recovery
 
 ```mermaid
@@ -305,7 +323,7 @@ The offline suite must not require Docker, provider credentials, a private vault
 - No in-product OAuth installation/callback flow, webhook ingestion, or refresh-token rotation; credential binding is manual and environment-backed.
 - Google Drive bootstraps from a captured changes token, walks mapped folders/shared drives through durable continuation tasks, reconciles parent chains and descendants after moves, and retires objects only after ancestry is resolved. Gmail captures a history baseline before label backfill and maintains label membership lifecycle. Objects that match mappings owned by different workspaces create an organization-level redacted quarantine, block cursor promotion, and write no workspace evidence.
 - Figma, GitHub, Fireflies, advertising, and accounting systems are catalog contracts only and do not report connected.
-- Unattended automations, external semantic providers, upstream OSS engines, and externally visible sends remain experimental or future gates.
+- Unattended automations, remote semantic providers, upstream OSS engines, and externally visible sends remain experimental or future gates. Local semantic retrieval and its deterministic fallback are available behind the provider/index boundary described above.
 - SQLite is local-first, not a multi-region distributed database. External binary assets require a separate backup policy.
 - The standard-library HTTP server is appropriate for local/private operation; hardened public deployment needs an explicit reverse proxy, TLS, and access review.
 

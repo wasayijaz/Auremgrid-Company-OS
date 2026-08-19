@@ -28,7 +28,7 @@ class JobOperationTests(unittest.TestCase):
         self.os.close()
 
     def test_schema_v11_auth_control_tables_exist_without_secret_values(self) -> None:
-        self.assertEqual(self.os.store.schema_version, 15)
+        self.assertEqual(self.os.store.schema_version, 16)
         secret_columns = [
             row["name"]
             for row in self.os.store.conn.execute("PRAGMA table_info(secret_bindings)").fetchall()
@@ -81,7 +81,7 @@ class JobOperationTests(unittest.TestCase):
             connection.close()
 
             upgraded = CompanyOS(path)
-            self.assertEqual(upgraded.store.schema_version, 15)
+            self.assertEqual(upgraded.store.schema_version, 16)
             restored = upgraded.workflow_ops.summary(org.id, ws.id, person.id, run["id"])
             self.assertEqual(restored["run"]["definition_key"], "client_request")
             upgraded.close()

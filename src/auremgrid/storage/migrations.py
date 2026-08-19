@@ -1552,6 +1552,30 @@ MIGRATIONS = (
             ON provider_sync_quarantines(organization_id,integration_id,status,created_at);
         """,
     ),
+    Migration(
+        16,
+        "durable_semantic_embedding_projection",
+        """
+        CREATE TABLE IF NOT EXISTS document_embedding_projection (
+            workspace_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            provider_version TEXT NOT NULL,
+            dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+            vector BLOB NOT NULL,
+            health TEXT NOT NULL CHECK(health IN ('healthy','degraded')),
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(workspace_id, document_id, provider, model),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(document_id) REFERENCES documents(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_document_embedding_scope
+            ON document_embedding_projection(workspace_id, provider, model, provider_version);
+        """,
+    ),
 )
 
 

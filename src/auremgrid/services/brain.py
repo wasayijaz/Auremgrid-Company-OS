@@ -42,7 +42,7 @@ from auremgrid.domain.company import (
     Review, ReviewComment, WorkspaceMembership,
 )
 from auremgrid.adapters.graphiti_local import LocalTemporalGraph
-from auremgrid.adapters.hybrid import HybridRanker, RankedHit, cosine, hashed_embedding
+from auremgrid.adapters.hybrid import HybridRanker, RankedHit
 from auremgrid.adapters.stack import OpenSourceStack
 from auremgrid.services.client_ops import ClientOperations
 from auremgrid.services.agency_ops import AgencyOperations
@@ -56,7 +56,12 @@ from auremgrid.services.auth import AuthService
 from auremgrid.services.job_ops import JobOperations
 from auremgrid.services.secrets import EnvironmentSecretStore, SecretBindingService
 from auremgrid.services.integration_ops import IntegrationOperations
-from auremgrid.adapters.semantic import DeterministicFallbackEmbeddingProvider, LocalVectorIndex
+from auremgrid.adapters.semantic import (
+    DeterministicFallbackEmbeddingProvider,
+    EmbeddingProvider,
+    EmbeddingProviderError,
+    SqliteVectorIndex,
+)
 
 
 def utcnow() -> datetime:
@@ -76,7 +81,13 @@ def normalize_text(value: str) -> str:
 
 
 class CompanyOS:
-    def __init__(self, db_path: str | Path = ":memory:") -> None:
+    def __init__(
+        self,
+        db_path: str | Path = ":memory:",
+        *,
+        embedding_provider: EmbeddingProvider | None = None,
+        vector_index: Any | None = None,
+    ) -> None:
         self.store = SqliteStore(db_path)
         self.company = CompanyRepository(self.store.conn)
         self.client_ops = ClientOperations(self.store.conn, new_id, self._require_person_access)
@@ -85,8 +96,9 @@ class CompanyOS:
         self.graph = LocalTemporalGraph()
         self.ranker = HybridRanker()
         self._embeddings: dict[str, tuple[float, ...]] = {}
-        self.embedding_provider = DeterministicFallbackEmbeddingProvider()
-        self.vector_index = LocalVectorIndex()
+        self.embedding_provider = embedding_provider or DeterministicFallbackEmbeddingProvider()
+        self.vector_index = vector_index or SqliteVectorIndex(self.store, self.embedding_provider)
+        self.embedding_health = self.embedding_provider.health().to_dict()
         self.stack = OpenSourceStack()
         self.brain_ops = BrainOperations(self)
         self.dashboard = DashboardService(self)
@@ -131,26 +143,16 @@ class CompanyOS:
         """
         self.graph = LocalTemporalGraph()
         self.stack = OpenSourceStack()
-        self._embeddings.clear()
-        self.vector_index = LocalVectorIndex()
         workspaces = self.store.conn.execute("SELECT id FROM workspaces").fetchall()
         total_documents = total_facts = 0
+        embedding_documents: list[tuple[str, Document]] = []
         for ws_row in workspaces:
             ws = ws_row["id"]
             documents = self.store.conn.execute(
                 """SELECT documents.* FROM documents
-                   JOIN source_lifecycle_intervals lifecycle
-                     ON lifecycle.workspace_id=documents.workspace_id AND lifecycle.source_id=documents.source_id
-                   WHERE documents.workspace_id=? AND lifecycle.retired_at IS NULL""",
+                   WHERE documents.workspace_id=?""",
                 (ws,),
             ).fetchall()
-            for row in documents:
-                document = self.store._document_from_row(row)
-                self.graph.upsert_episode(ws, document.source_id, document.content, document.observed_at.isoformat())
-                self.stack.ingest_document(document, document.content, document.observed_at)
-                vector = self.embedding_provider.embed([document.content])[0]
-                self._embeddings[document.id] = vector
-                self.vector_index.upsert(ws, document.id, vector)
             source_ids = [
                 row["id"] for row in self.store.conn.execute(
                     """SELECT sources.id FROM sources
@@ -160,6 +162,14 @@ class CompanyOS:
                     (ws,),
                 ).fetchall()
             ]
+            current_documents: list[Document] = []
+            for row in documents:
+                document = self.store._document_from_row(row)
+                embedding_documents.append((ws, document))
+                if document.source_id in source_ids:
+                    current_documents.append(document)
+                    self.graph.upsert_episode(ws, document.source_id, document.content, document.observed_at.isoformat())
+                    self.stack.ingest_document(document, document.content, document.observed_at)
             facts = self.store.list_facts(ws, source_ids, include_superseded=True) if source_ids else []
             for fact in facts: self.stack.ingest_fact(fact)
             memories = self.store.conn.execute("SELECT * FROM memories WHERE workspace_id=?",(ws,)).fetchall()
@@ -167,11 +177,47 @@ class CompanyOS:
             self.store.conn.execute("""INSERT INTO projection_state VALUES ('local_projections',?,?,?,?,?,?)
                 ON CONFLICT(name,workspace_id) DO UPDATE SET status=excluded.status,document_count=excluded.document_count,
                 fact_count=excluded.fact_count,last_rebuilt_at=excluded.last_rebuilt_at,last_error=NULL""",
-                (ws,"healthy",len(documents),len(facts),utcnow().isoformat(),None))
-            total_documents += len(documents); total_facts += len(facts)
+                (ws,"healthy",len(current_documents),len(facts),utcnow().isoformat(),None))
+            total_documents += len(current_documents); total_facts += len(facts)
+        # Projection-health rows above are independent of the vector generation;
+        # close that write before the atomic vector replacement begins.
+        self.store.conn.commit()
+        try:
+            vectors = self.embedding_provider.embed([document.content for _, document in embedding_documents])
+            if len(vectors) != len(embedding_documents):
+                raise EmbeddingProviderError("embedding provider returned the wrong vector count")
+            for vector in vectors:
+                if len(vector) != self.embedding_provider.dimensions:
+                    raise EmbeddingProviderError("embedding provider returned the wrong vector dimensions")
+            with self.store.atomic(immediate=True):
+                # A provider/model/version is one projection generation.  Never
+                # leave old-version rows available to a new index after rebuild.
+                self.store.conn.execute(
+                    "DELETE FROM document_embedding_projection WHERE provider=?",
+                    (self.embedding_provider.name,),
+                )
+                for (ws, document), vector in zip(embedding_documents, vectors):
+                    self.vector_index.upsert(ws, document.id, tuple(float(value) for value in vector))
+            self._embeddings = {
+                document.id: tuple(float(value) for value in vector)
+                for (_, document), vector in zip(embedding_documents, vectors)
+            }
+            self.embedding_health = self.embedding_provider.health().to_dict()
+        except Exception as exc:
+            # Keep any prior durable generation intact.  A provider outage is
+            # visible as degraded semantic retrieval; it is never relabeled as
+            # the deterministic fallback.
+            health = self.embedding_provider.health()
+            self.embedding_health = {
+                **health.to_dict(),
+                "status": "degraded",
+                "detail": str(exc),
+                "fallback_used": False,
+            }
         self.store.conn.commit()
         return {"status":"healthy","workspaces":len(workspaces),"documents":total_documents,"facts":total_facts,
-            "embedding_provider":self.embedding_provider.name}
+            "embedding_provider":self.embedding_provider.name,
+            "embedding_status":self.embedding_health["status"]}
 
     def create_organization(self, name: str, organization_id: str | None = None) -> Organization:
         if not name.strip():
@@ -414,9 +460,21 @@ class CompanyOS:
             actor, source, document, extraction, lifecycle_at
         )
         self.graph.upsert_episode(workspace_id, source.id, content, observed.isoformat())
-        vector = self.embedding_provider.embed([content])[0]
-        self._embeddings[document.id] = vector
-        self.vector_index.upsert(workspace_id, document.id, vector)
+        try:
+            vector = tuple(self.embedding_provider.embed([content])[0])
+            if len(vector) != self.embedding_provider.dimensions:
+                raise EmbeddingProviderError("embedding provider returned the wrong vector dimensions")
+            self._embeddings[document.id] = vector
+            with self.store.atomic(immediate=True):
+                self.vector_index.upsert(workspace_id, document.id, vector)
+            self.embedding_health = self.embedding_provider.health().to_dict()
+        except Exception as exc:
+            self.embedding_health = {
+                **self.embedding_provider.health().to_dict(),
+                "status": "degraded",
+                "detail": str(exc),
+                "fallback_used": False,
+            }
         self.stack.ingest_document(document, content, observed)
         for fact in facts:
             self.stack.ingest_fact(fact)
@@ -540,17 +598,48 @@ class CompanyOS:
         if not query.strip():
             raise ValidationError("query is required")
         query_norm = normalize_text(query)
-        query_embedding = hashed_embedding(query)
         fused_hits: list[RankedHit] = []
         documents_by_id: dict[str, tuple[Document, SourceArtifact]] = {}
         facts_by_id: dict[str, Fact] = {}
-        for document, source, score in self.store.search_documents(workspace_id, source_ids, query, limit):
+        fts_hits = self.store.search_documents(workspace_id, source_ids, query, limit, as_of=as_of)
+        for document, source, score in fts_hits:
             documents_by_id[document.id] = (document, source)
             fused_hits.append(RankedHit("document", document.id, score, ("keyword",)))
-            embedding = self._embeddings.get(document.id) or hashed_embedding(document.content)
-            vector_score = cosine(query_embedding, embedding)
-            if vector_score > 0:
+        semantic_status = "healthy"
+        semantic_detail: str | None = None
+        semantic_hits = 0
+        allowed_document_ids = self.store.allowed_document_ids(workspace_id, source_ids, as_of)
+        try:
+            query_embedding = self.embedding_provider.embed([query])[0]
+            for document_id, vector_score in self.vector_index.search(
+                workspace_id,
+                tuple(query_embedding),
+                allowed_document_ids,
+                max(limit, len(allowed_document_ids)),
+            ):
+                document = self.store.get_document(workspace_id, document_id)
+                if document is None or document.source_id not in source_ids:
+                    continue
+                source = next((candidate for candidate in sources if candidate.id == document.source_id), None)
+                if source is None:
+                    continue
+                # The offline hash provider is a lexical safety net, not a
+                # semantic model. Reject hash-bucket collisions using a local
+                # candidate-quality check, while still searching the complete
+                # authorized vector candidate set independently of FTS.
+                if (
+                    self.embedding_provider.name == "deterministic_lexical_fallback"
+                    and not _token_overlap(query_norm, normalize_text(document.content))
+                ):
+                    continue
+                documents_by_id[document.id] = (document, source)
                 fused_hits.append(RankedHit("document", document.id, vector_score, ("vector",)))
+                semantic_hits += 1
+        except Exception as exc:
+            # Do not substitute the deterministic provider here.  Operators and
+            # callers must be able to distinguish an outage from a real fallback.
+            semantic_status = "degraded"
+            semantic_detail = str(exc)
         for fact in self.store.list_facts(workspace_id, source_ids, as_of=as_of, include_superseded=True):
             haystack = normalize_text(f"{fact.subject} {fact.predicate} {fact.object}")
             keyword_hit = _token_overlap(query_norm, haystack)
@@ -603,6 +692,19 @@ class CompanyOS:
         bounded = tuple(items[:limit])
         unknown = len(bounded) == 0
         message = "insufficient evidence" if unknown else "evidence retrieved"
+        retrieval = {
+            "fts": "healthy",
+            "semantic": semantic_status,
+            "semantic_hits": semantic_hits,
+            "fallback_used": self.embedding_provider.name == "deterministic_lexical_fallback",
+            "provider": self.embedding_provider.name,
+            "model": self.embedding_provider.model,
+            "version": self.embedding_provider.version,
+        }
+        if semantic_detail:
+            retrieval["semantic_detail"] = semantic_detail
+        if semantic_status == "degraded":
+            message = f"{message} (semantic channel degraded)"
         self._audit(workspace_id, actor_id, "search", query, "ok" if not unknown else "unknown", message)
         return EvidenceBundle(
             workspace_id=workspace_id,
@@ -611,6 +713,7 @@ class CompanyOS:
             unknown=unknown,
             message=message,
             items=bounded,
+            retrieval=retrieval,
         )
 
     def entity(

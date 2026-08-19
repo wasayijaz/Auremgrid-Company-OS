@@ -115,7 +115,7 @@ class AuthFileStorageTests(unittest.TestCase):
                         "PRAGMA table_info(secret_bindings)"
                     ).fetchall()
                 }
-                self.assertEqual(upgraded.store.schema_version, 15)
+                self.assertEqual(upgraded.store.schema_version, 16)
                 self.assertIn("generation", columns)
             finally:
                 upgraded.close()

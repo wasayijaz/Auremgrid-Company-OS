@@ -4,7 +4,7 @@
 
 Organization is the tenant boundary. Internal and client workspaces sit beneath it; people are organization-level identities joined to any number of workspaces. The SQLite ledger uses ordered migrations. Delivery, client operations, agency systems, agents, automations, integrations, and reports all share that boundary.
 
-Disposable projections rebuild at process start from canonical documents, facts, and memories. The offline embedding implementation is explicitly a deterministic lexical fallback; external semantic providers implement the EmbeddingProvider port.
+Disposable projections rebuild at process start from canonical documents, facts, and memories. Schema 16 adds a durable, rebuildable float32 document embedding projection and workspace-scoped vector index. The offline embedding implementation is explicitly a deterministic lexical fallback; local semantic providers implement the EmbeddingProvider port and report degraded health without silently switching providers.
 
 Auremgrid is built around an evidence ledger. Documents enter from sources, facts and relations are extracted into append-only observations, and query results return evidence bundles with citations.
 
@@ -33,7 +33,7 @@ Retrieval answers questions. The operating layer makes work move.
 
 ## First Slice
 
-The local slice uses SQLite tables for workspaces, actors, permissions, sources, documents, facts, relations, memories, work items, playbooks, client brains, touchpoints, status posts, and audit events. Retrieval uses SQLite FTS5.
+The local slice uses SQLite tables for workspaces, actors, permissions, sources, documents, facts, relations, memories, work items, playbooks, client brains, touchpoints, status posts, and audit events. Retrieval authorizes active source/document IDs first, then independently runs SQLite FTS5 and the semantic index before canonical rehydration and hybrid ranking.
 
 ## Adapter Boundary
 
