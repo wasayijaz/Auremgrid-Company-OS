@@ -102,20 +102,48 @@ class CompanyOS:
     def close(self) -> None:
         self.store.close()
 
+    def apply_provider_lifecycle_batch(self, batch_id: str) -> dict[str, Any]:
+        """Apply staged provider memberships, then refresh disposable projections."""
+
+        workspaces = {
+            row["workspace_id"]
+            for row in self.store.conn.execute(
+                """SELECT DISTINCT workspace_id FROM provider_route_mutation_staging
+                   WHERE batch_id=? AND status='staged'""",
+                (batch_id,),
+            ).fetchall()
+        }
+        applied = self.store.apply_staged_provider_route_mutations(batch_id)
+        projection = self.rebuild_projections() if applied else None
+        return {
+            "batch_id": batch_id,
+            "applied": len(applied),
+            "workspace_ids": sorted(workspaces),
+            "projection": projection,
+        }
+
     def rebuild_projections(self, workspace_id: str | None = None) -> dict[str, Any]:
-        """Rebuild every disposable local projection from the canonical SQLite ledger."""
+        """Rebuild disposable projections from current canonical evidence.
+
+        The in-memory adapters are shared across workspaces, so a requested
+        workspace acts as the trigger rather than a destructive partial filter.
+        Rebuilding the full active set preserves isolation for every other workspace.
+        """
         self.graph = LocalTemporalGraph()
         self.stack = OpenSourceStack()
         self._embeddings.clear()
         self.vector_index = LocalVectorIndex()
-        workspaces = self.store.conn.execute(
-            "SELECT id FROM workspaces" + (" WHERE id=?" if workspace_id else ""),
-            (workspace_id,) if workspace_id else (),
-        ).fetchall()
+        workspaces = self.store.conn.execute("SELECT id FROM workspaces").fetchall()
         total_documents = total_facts = 0
         for ws_row in workspaces:
             ws = ws_row["id"]
-            documents = self.store.conn.execute("SELECT * FROM documents WHERE workspace_id=?", (ws,)).fetchall()
+            documents = self.store.conn.execute(
+                """SELECT documents.* FROM documents
+                   JOIN source_lifecycle_intervals lifecycle
+                     ON lifecycle.workspace_id=documents.workspace_id AND lifecycle.source_id=documents.source_id
+                   WHERE documents.workspace_id=? AND lifecycle.retired_at IS NULL""",
+                (ws,),
+            ).fetchall()
             for row in documents:
                 document = self.store._document_from_row(row)
                 self.graph.upsert_episode(ws, document.source_id, document.content, document.observed_at.isoformat())
@@ -123,7 +151,15 @@ class CompanyOS:
                 vector = self.embedding_provider.embed([document.content])[0]
                 self._embeddings[document.id] = vector
                 self.vector_index.upsert(ws, document.id, vector)
-            source_ids = [row["id"] for row in self.store.conn.execute("SELECT id FROM sources WHERE workspace_id=?", (ws,)).fetchall()]
+            source_ids = [
+                row["id"] for row in self.store.conn.execute(
+                    """SELECT sources.id FROM sources
+                       JOIN source_lifecycle_intervals lifecycle
+                         ON lifecycle.workspace_id=sources.workspace_id AND lifecycle.source_id=sources.id
+                       WHERE sources.workspace_id=? AND lifecycle.retired_at IS NULL""",
+                    (ws,),
+                ).fetchall()
+            ]
             facts = self.store.list_facts(ws, source_ids, include_superseded=True) if source_ids else []
             for fact in facts: self.stack.ingest_fact(fact)
             memories = self.store.conn.execute("SELECT * FROM memories WHERE workspace_id=?",(ws,)).fetchall()
@@ -337,6 +373,9 @@ class CompanyOS:
         digest = content_hash(content)
         existing = self.store.find_source(workspace_id, source_key, digest)
         if existing:
+            if not self.store.source_is_active(workspace_id, existing.id):
+                self.store.activate_source(workspace_id, existing.id, reason="identical_source_reactivated")
+                self.rebuild_projections(workspace_id)
             self._audit(workspace_id, actor_id, "ingest", source_key, "noop", "identical content hash")
             return IngestResult(
                 created=False,
@@ -346,6 +385,9 @@ class CompanyOS:
             )
         latest = self.store.latest_source(workspace_id, source_key)
         version = 1 if latest is None else latest.version + 1
+        extraction = extract_claims(content, observed)
+        lifecycle_candidates = [item.valid_from for item in (*extraction.facts, *extraction.relations)]
+        lifecycle_at = min(lifecycle_candidates, default=observed)
         source = SourceArtifact(
             id=new_id("src"),
             workspace_id=workspace_id,
@@ -359,7 +401,6 @@ class CompanyOS:
             recorded_at=utcnow(),
             version=version,
         )
-        self.store.create_source(source)
         document = Document(
             id=new_id("doc"),
             workspace_id=workspace_id,
@@ -369,80 +410,18 @@ class CompanyOS:
             observed_at=observed,
             recorded_at=utcnow(),
         )
-        self.store.create_document(document)
-        extraction = extract_claims(content, observed)
-        self.graph.upsert_episode(
-            workspace_id,
-            source.id,
-            content,
-            observed.isoformat(),
+        facts, relations = self._persist_ingestion(
+            actor, source, document, extraction, lifecycle_at
         )
+        self.graph.upsert_episode(workspace_id, source.id, content, observed.isoformat())
         vector = self.embedding_provider.embed([content])[0]
         self._embeddings[document.id] = vector
         self.vector_index.upsert(workspace_id, document.id, vector)
         self.stack.ingest_document(document, content, observed)
-        fact_ids: list[str] = []
-        relation_ids: list[str] = []
-        for extracted in extraction.facts:
-            fact = Fact(
-                id=new_id("fact"),
-                workspace_id=workspace_id,
-                source_id=source.id,
-                document_id=document.id,
-                subject=extracted.subject,
-                predicate=extracted.predicate,
-                object=extracted.object,
-                valid_from=extracted.valid_from,
-                valid_until=extracted.valid_until,
-                observed_at=observed,
-                recorded_at=utcnow(),
-                confidence=extracted.confidence,
-                superseded_by=None,
-                conflict_group=extracted.conflict_group,
-                citation=Citation(
-                    source_id=source.id,
-                    source_key=source.source_key,
-                    locator=source.locator,
-                    content_hash=source.content_hash,
-                    evidence_span=extracted.evidence_span,
-                    observed_at=observed,
-                    valid_from=extracted.valid_from,
-                    valid_until=extracted.valid_until,
-                    confidence=extracted.confidence,
-                ),
-            )
-            self._supersede_matching(actor, fact)
-            self.store.create_fact(fact)
-            fact_ids.append(fact.id)
+        for fact in facts:
             self.stack.ingest_fact(fact)
-        for extracted in extraction.relations:
-            relation = Relation(
-                id=new_id("rel"),
-                workspace_id=workspace_id,
-                source_id=source.id,
-                document_id=document.id,
-                from_entity=extracted.from_entity,
-                relation=extracted.relation,
-                to_entity=extracted.to_entity,
-                valid_from=extracted.valid_from,
-                valid_until=extracted.valid_until,
-                observed_at=observed,
-                recorded_at=utcnow(),
-                confidence=extracted.confidence,
-                citation=Citation(
-                    source_id=source.id,
-                    source_key=source.source_key,
-                    locator=source.locator,
-                    content_hash=source.content_hash,
-                    evidence_span=extracted.evidence_span,
-                    observed_at=observed,
-                    valid_from=extracted.valid_from,
-                    valid_until=extracted.valid_until,
-                    confidence=extracted.confidence,
-                ),
-            )
-            self.store.create_relation(relation)
-            relation_ids.append(relation.id)
+        fact_ids = [fact.id for fact in facts]
+        relation_ids = [relation.id for relation in relations]
         self._audit(
             workspace_id,
             actor_id,
@@ -459,6 +438,70 @@ class CompanyOS:
             relation_ids=tuple(relation_ids),
             message="ingested",
         )
+
+    def _persist_ingestion(
+        self,
+        actor: Actor,
+        source: SourceArtifact,
+        document: Document,
+        extraction: Any,
+        lifecycle_at: datetime,
+    ) -> tuple[list[Fact], list[Relation]]:
+        """Persist a complete version before atomically making it current."""
+
+        facts: list[Fact] = []
+        relations: list[Relation] = []
+        with self.store.atomic(immediate=True):
+            self.store.create_source(source, lifecycle_at=lifecycle_at, activate=False)
+            self.store.create_document(document)
+            for extracted in extraction.facts:
+                fact = Fact(
+                    id=new_id("fact"), workspace_id=source.workspace_id,
+                    source_id=source.id, document_id=document.id,
+                    subject=extracted.subject, predicate=extracted.predicate, object=extracted.object,
+                    valid_from=extracted.valid_from, valid_until=extracted.valid_until,
+                    observed_at=source.observed_at, recorded_at=utcnow(),
+                    confidence=extracted.confidence, superseded_by=None,
+                    conflict_group=extracted.conflict_group,
+                    citation=Citation(
+                        source_id=source.id, source_key=source.source_key,
+                        locator=source.locator, content_hash=source.content_hash,
+                        evidence_span=extracted.evidence_span, observed_at=source.observed_at,
+                        valid_from=extracted.valid_from, valid_until=extracted.valid_until,
+                        confidence=extracted.confidence,
+                    ),
+                )
+                # The old source remains current until every downstream row exists,
+                # so supersession still sees and updates the prior current facts.
+                self._supersede_matching(actor, fact)
+                self.store.create_fact(fact)
+                facts.append(fact)
+            for extracted in extraction.relations:
+                relation = Relation(
+                    id=new_id("rel"), workspace_id=source.workspace_id,
+                    source_id=source.id, document_id=document.id,
+                    from_entity=extracted.from_entity, relation=extracted.relation,
+                    to_entity=extracted.to_entity, valid_from=extracted.valid_from,
+                    valid_until=extracted.valid_until, observed_at=source.observed_at,
+                    recorded_at=utcnow(), confidence=extracted.confidence,
+                    citation=Citation(
+                        source_id=source.id, source_key=source.source_key,
+                        locator=source.locator, content_hash=source.content_hash,
+                        evidence_span=extracted.evidence_span, observed_at=source.observed_at,
+                        valid_from=extracted.valid_from, valid_until=extracted.valid_until,
+                        confidence=extracted.confidence,
+                    ),
+                )
+                self.store.create_relation(relation)
+                relations.append(relation)
+            self.store.activate_source(
+                source.workspace_id,
+                source.id,
+                activated_at=source.recorded_at,
+                reason="source_ingest_committed",
+                effective_from=lifecycle_at,
+            )
+        return facts, relations
 
     def ingest_path(
         self,
@@ -490,8 +533,9 @@ class CompanyOS:
         limit: int = 8,
     ) -> EvidenceBundle:
         actor = self._require_actor(workspace_id, actor_id)
-        as_of = as_of or utcnow()
-        sources = self.store.allowed_sources(workspace_id, actor)
+        requested_as_of = as_of
+        as_of = requested_as_of or utcnow()
+        sources = self.store.allowed_sources(workspace_id, actor, as_of=requested_as_of)
         source_ids = [source.id for source in sources]
         if not query.strip():
             raise ValidationError("query is required")
@@ -577,8 +621,11 @@ class CompanyOS:
         as_of: datetime | None = None,
     ) -> dict[str, Any]:
         actor = self._require_actor(workspace_id, actor_id)
-        as_of = as_of or utcnow()
-        source_ids = [source.id for source in self.store.allowed_sources(workspace_id, actor)]
+        requested_as_of = as_of
+        as_of = requested_as_of or utcnow()
+        source_ids = [
+            source.id for source in self.store.allowed_sources(workspace_id, actor, as_of=requested_as_of)
+        ]
         target = normalize_text(name)
         facts = [
             fact
@@ -606,7 +653,7 @@ class CompanyOS:
         predicate: str | None = None,
     ) -> dict[str, Any]:
         actor = self._require_actor(workspace_id, actor_id)
-        source_ids = [source.id for source in self.store.allowed_sources(workspace_id, actor)]
+        source_ids = [source.id for source in self.store.allowed_sources(workspace_id, actor, include_retired=True)]
         subject_norm = normalize_text(subject)
         facts = []
         for fact in self.store.list_facts(workspace_id, source_ids, include_superseded=True):
@@ -630,8 +677,11 @@ class CompanyOS:
         as_of: datetime | None = None,
     ) -> dict[str, Any]:
         actor = self._require_actor(workspace_id, actor_id)
-        as_of = as_of or utcnow()
-        source_ids = [source.id for source in self.store.allowed_sources(workspace_id, actor)]
+        requested_as_of = as_of
+        as_of = requested_as_of or utcnow()
+        source_ids = [
+            source.id for source in self.store.allowed_sources(workspace_id, actor, as_of=requested_as_of)
+        ]
         target = normalize_text(entity)
         relations = [
             relation

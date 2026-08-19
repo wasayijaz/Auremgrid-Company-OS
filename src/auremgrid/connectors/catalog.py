@@ -17,13 +17,14 @@ class ConnectorDefinition:
     object_types: tuple[str, ...]
     permission_scopes: tuple[str, ...]
     default_status: str = "not_connected"
+    live_enabled: bool = False
 
 
 TARGET_CONNECTORS = (
-    ConnectorDefinition("slack","Slack",("messages","threads","participants"),("channels:read","channels:history")),
+    ConnectorDefinition("slack","Slack",("messages","threads","participants"),("channels:read","channels:history"),live_enabled=True),
     ConnectorDefinition("google_drive","Google Drive",("files","documents","permissions"),("https://www.googleapis.com/auth/drive.readonly",)),
-    ConnectorDefinition("gmail","Gmail",("threads","messages","participants"),("https://www.googleapis.com/auth/gmail.metadata",)),
-    ConnectorDefinition("clickup","ClickUp",("projects","tasks","comments"),("authorized_team",)),
+    ConnectorDefinition("gmail","Gmail",("threads","messages","participants"),("https://www.googleapis.com/auth/gmail.readonly",)),
+    ConnectorDefinition("clickup","ClickUp",("projects","tasks","comments"),("authorized_team",),live_enabled=True),
     ConnectorDefinition("figma","Figma",("files","versions","comments"),("file_content:read",)),
     ConnectorDefinition("github","GitHub",("repositories","issues","pull_requests"),("repo:read",)),
     ConnectorDefinition("fireflies","Fireflies",("meetings","transcripts","participants"),("transcripts:read",)),
@@ -56,4 +57,5 @@ class ConfiguredConnector:
 
 def connector_catalog() -> list[dict[str,object]]:
     return [{"source":item.source,"label":item.label,"object_types":list(item.object_types),
-        "permission_scopes":list(item.permission_scopes),"status":item.default_status} for item in TARGET_CONNECTORS]
+        "permission_scopes":list(item.permission_scopes),"status":item.default_status,
+        "live_enabled":item.live_enabled} for item in TARGET_CONNECTORS]

@@ -28,3 +28,9 @@ The original short tool names remain internal aliases for the same handlers. Per
 Connector sync enqueues a durable job. Credential binding accepts only an
 external `env:` reference; resolved credential material never enters MCP
 arguments, results, jobs, or the ledger.
+
+`integrations.list` returns sanitized provider identity, credential metadata,
+health, and `live_enabled`. Google mapping contracts use `folder:<id>` or
+`drive:<id>` for Drive and `label:<id>` for Gmail; configuration does not imply
+live sync or historical ingestion, and `integrations.sync` refuses sources
+whose live gate is false.

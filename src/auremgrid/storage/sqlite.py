@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import threading
 from collections.abc import Iterable
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
+from auremgrid.domain.errors import ValidationError
 from auremgrid.domain.models import (
     Actor,
     AuditEvent,
@@ -362,29 +364,44 @@ class SqliteStore:
         ).fetchone()
         return self._source_from_row(row) if row else None
 
-    def create_source(self, source: SourceArtifact) -> SourceArtifact:
-        self.conn.execute(
-            """
-            INSERT INTO sources(
-                id, workspace_id, source_key, locator, content_hash, media_type,
-                trust_level, allowed_actor_ids, observed_at, recorded_at, version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                source.id,
-                source.workspace_id,
-                source.source_key,
-                source.locator,
-                source.content_hash,
-                source.media_type,
-                source.trust_level,
-                json.dumps(list(source.allowed_actor_ids)),
-                source.observed_at.isoformat(),
-                source.recorded_at.isoformat(),
-                source.version,
-            ),
-        )
-        self._commit()
+    def create_source(
+        self,
+        source: SourceArtifact,
+        replaces_source_id: str | None = None,
+        lifecycle_at: datetime | None = None,
+        activate: bool = True,
+    ) -> SourceArtifact:
+        effective_time = (lifecycle_at or source.observed_at).isoformat()
+        with self.atomic(immediate=True):
+            self.conn.execute(
+                """
+                INSERT INTO sources(
+                    id, workspace_id, source_key, locator, content_hash, media_type,
+                    trust_level, allowed_actor_ids, observed_at, recorded_at, version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source.id,
+                    source.workspace_id,
+                    source.source_key,
+                    source.locator,
+                    source.content_hash,
+                    source.media_type,
+                    source.trust_level,
+                    json.dumps(list(source.allowed_actor_ids)),
+                    source.observed_at.isoformat(),
+                    source.recorded_at.isoformat(),
+                    source.version,
+                ),
+            )
+            if activate:
+                self._activate_source_tx(
+                    source.workspace_id,
+                    source.id,
+                    source.recorded_at.isoformat(),
+                    "source_created",
+                    effective_time,
+                )
         return source
 
     def get_source(self, workspace_id: str, source_id: str) -> SourceArtifact | None:
@@ -393,6 +410,803 @@ class SqliteStore:
             (workspace_id, source_id),
         ).fetchone()
         return self._source_from_row(row) if row else None
+
+    def activate_source(
+        self,
+        workspace_id: str,
+        source_id: str,
+        activated_at: datetime | None = None,
+        reason: str = "explicit_activation",
+        effective_from: datetime | None = None,
+    ) -> bool:
+        """Open a source visibility interval, returning False for an idempotent no-op."""
+
+        when = (activated_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0)
+        with self.atomic(immediate=True):
+            source = self._require_scoped_source(workspace_id, source_id)
+            return self._activate_source_tx(
+                workspace_id,
+                source_id,
+                when.isoformat(),
+                reason,
+                (effective_from.isoformat() if effective_from else source["observed_at"]),
+            )
+
+    def retire_source(
+        self,
+        workspace_id: str,
+        source_id: str,
+        retired_at: datetime | None = None,
+        reason: str = "explicit_retirement",
+    ) -> bool:
+        """Close current visibility without deleting historical evidence."""
+
+        when = (retired_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0)
+        with self.atomic(immediate=True):
+            self._require_scoped_source(workspace_id, source_id)
+            return self._retire_source_tx(workspace_id, source_id, when.isoformat(), reason)
+
+    def source_is_active(
+        self,
+        workspace_id: str,
+        source_id: str,
+        as_of: datetime | None = None,
+    ) -> bool:
+        params: tuple[object, ...]
+        if as_of is None:
+            sql = """
+                SELECT 1 FROM source_lifecycle_intervals
+                WHERE workspace_id=? AND source_id=? AND retired_at IS NULL
+                LIMIT 1
+            """
+            params = (workspace_id, source_id)
+        else:
+            moment = as_of.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+            sql = """
+                SELECT 1 FROM source_lifecycle_intervals lifecycle
+                JOIN sources source ON source.id=lifecycle.source_id
+                WHERE lifecycle.workspace_id=? AND lifecycle.source_id=?
+                  AND lifecycle.effective_from <= ?
+                  AND (lifecycle.effective_until IS NULL OR lifecycle.effective_until > ?)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM source_lifecycle_intervals candidate
+                      JOIN sources candidate_source ON candidate_source.id=candidate.source_id
+                      WHERE candidate.workspace_id=lifecycle.workspace_id
+                        AND candidate.source_key=lifecycle.source_key
+                        AND candidate.effective_from <= ?
+                        AND (candidate.effective_until IS NULL OR candidate.effective_until > ?)
+                        AND (
+                            candidate.effective_from > lifecycle.effective_from
+                            OR (candidate.effective_from=lifecycle.effective_from
+                                AND candidate_source.version > source.version)
+                        )
+                  )
+                LIMIT 1
+            """
+            params = (workspace_id, source_id, moment, moment, moment, moment)
+        return self.conn.execute(sql, params).fetchone() is not None
+
+    def activate_provider_route(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        external_id: str,
+        route_key: str,
+        source_key: str,
+        source_id: str,
+        provider_version: str,
+        occurred_at: datetime | None = None,
+    ) -> dict[str, object]:
+        """Atomically activate a provider membership and its current evidence."""
+
+        self._validate_route_identity(connector, account_key, external_id, route_key, source_key, provider_version)
+        when = (occurred_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0).isoformat()
+        with self.atomic(immediate=True):
+            source = self._require_scoped_source(workspace_id, source_id)
+            if source["source_key"] != source_key:
+                raise ValueError("provider route source_key does not match source")
+            duplicate = self._provider_route_event(
+                workspace_id, connector, account_key, external_id, route_key, provider_version, "activate"
+            )
+            if duplicate is not None:
+                return {**self._get_provider_route(workspace_id, connector, account_key, external_id, route_key), "idempotent": True}
+            previous = self.conn.execute(
+                """SELECT * FROM provider_object_routes
+                   WHERE workspace_id=? AND connector=? AND account_key=? AND external_id=? AND route_key=?""",
+                (workspace_id, connector, account_key, external_id, route_key),
+            ).fetchone()
+            if previous is not None and previous["source_key"] != source_key:
+                raise ValidationError("provider route source_key is immutable")
+            previous_source_id = previous["active_source_id"] if previous and previous["status"] == "active" else None
+            self._activate_source_tx(
+                workspace_id, source_id, when, "provider_route_activation", source["observed_at"]
+            )
+            related_previous = {
+                row["active_source_id"]
+                for row in self.conn.execute(
+                    """SELECT active_source_id FROM provider_object_routes
+                       WHERE workspace_id=? AND connector=? AND account_key=? AND external_id=?
+                         AND source_key=? AND status='active' AND active_source_id IS NOT NULL""",
+                    (workspace_id, connector, account_key, external_id, source_key),
+                ).fetchall()
+            }
+            # All active memberships for one immutable provider object represent
+            # the same current evidence version. Repoint them together so retiring
+            # one label/root never resurrects an older version.
+            self.conn.execute(
+                """UPDATE provider_object_routes SET active_source_id=?, updated_at=?
+                   WHERE workspace_id=? AND connector=? AND account_key=? AND external_id=?
+                     AND source_key=? AND status='active'""",
+                (source_id, when, workspace_id, connector, account_key, external_id, source_key),
+            )
+            self.conn.execute(
+                """INSERT INTO provider_object_routes(
+                       workspace_id,connector,account_key,external_id,route_key,source_key,
+                       active_source_id,provider_version,status,activated_at,retired_at,updated_at
+                   ) VALUES (?,?,?,?,?,?,?,?, 'active', ?,NULL,?)
+                   ON CONFLICT(workspace_id,connector,account_key,external_id,route_key) DO UPDATE SET
+                       active_source_id=excluded.active_source_id,
+                       provider_version=excluded.provider_version, status='active',
+                       activated_at=excluded.activated_at, retired_at=NULL, updated_at=excluded.updated_at""",
+                (workspace_id, connector, account_key, external_id, route_key, source_key,
+                 source_id, provider_version, when, when),
+            )
+            self._insert_provider_route_event(
+                workspace_id, connector, account_key, external_id, route_key, source_key,
+                source_id, provider_version, "activate", when,
+            )
+            if previous_source_id:
+                related_previous.add(previous_source_id)
+            for old_source_id in related_previous.difference({source_id}):
+                self._retire_source_if_unrouted_tx(workspace_id, old_source_id, when, "provider_version_replaced")
+            return {**self._get_provider_route(workspace_id, connector, account_key, external_id, route_key), "idempotent": False}
+
+    def retire_provider_route(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        external_id: str,
+        route_key: str,
+        source_key: str,
+        provider_version: str,
+        occurred_at: datetime | None = None,
+    ) -> dict[str, object]:
+        """Atomically retire a membership and hide evidence once no route references it."""
+
+        self._validate_route_identity(connector, account_key, external_id, route_key, source_key, provider_version)
+        when = (occurred_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0).isoformat()
+        with self.atomic(immediate=True):
+            if connector == "google_drive":
+                ancestry = self.conn.execute(
+                    """SELECT reconciliation_status FROM provider_object_ancestry
+                       WHERE workspace_id=? AND connector=? AND account_key=? AND external_id=?""",
+                    (workspace_id, connector, account_key, external_id),
+                ).fetchone()
+                if ancestry is not None and ancestry["reconciliation_status"] == "required":
+                    raise ValidationError("Google Drive ancestry requires reconciliation before retirement")
+            duplicate = self._provider_route_event(
+                workspace_id, connector, account_key, external_id, route_key, provider_version, "retire"
+            )
+            if duplicate is not None:
+                return {**self._get_provider_route(workspace_id, connector, account_key, external_id, route_key), "idempotent": True}
+            previous = self.conn.execute(
+                """SELECT * FROM provider_object_routes
+                   WHERE workspace_id=? AND connector=? AND account_key=? AND external_id=? AND route_key=?""",
+                (workspace_id, connector, account_key, external_id, route_key),
+            ).fetchone()
+            if previous is not None and previous["source_key"] != source_key:
+                raise ValidationError("provider route source_key is immutable")
+            previous_source_id = previous["active_source_id"] if previous and previous["status"] == "active" else None
+            self.conn.execute(
+                """INSERT INTO provider_object_routes(
+                       workspace_id,connector,account_key,external_id,route_key,source_key,
+                       active_source_id,provider_version,status,activated_at,retired_at,updated_at
+                   ) VALUES (?,?,?,?,?,?,NULL,?,'retired',NULL,?,?)
+                   ON CONFLICT(workspace_id,connector,account_key,external_id,route_key) DO UPDATE SET
+                       active_source_id=NULL,
+                       provider_version=excluded.provider_version, status='retired',
+                       retired_at=excluded.retired_at, updated_at=excluded.updated_at""",
+                (workspace_id, connector, account_key, external_id, route_key, source_key,
+                 provider_version, when, when),
+            )
+            self._insert_provider_route_event(
+                workspace_id, connector, account_key, external_id, route_key, source_key,
+                previous_source_id, provider_version, "retire", when,
+            )
+            if previous_source_id:
+                self._retire_source_if_unrouted_tx(workspace_id, previous_source_id, when, "provider_route_retired")
+            return {**self._get_provider_route(workspace_id, connector, account_key, external_id, route_key), "idempotent": False}
+
+    def provider_route_state(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+    ) -> dict[str, tuple[str, ...]]:
+        rows = self.conn.execute(
+            """SELECT external_id, route_key FROM provider_object_routes
+               WHERE workspace_id=? AND connector=? AND account_key=? AND status='active'
+               ORDER BY external_id, route_key""",
+            (workspace_id, connector, account_key),
+        ).fetchall()
+        state: dict[str, list[str]] = {}
+        for row in rows:
+            state.setdefault(row["external_id"], []).append(row["route_key"])
+        return {key: tuple(value) for key, value in state.items()}
+
+    def resolve_provider_object_routes(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        external_id: str,
+        provider_version: str,
+        *,
+        direct_route_keys: Iterable[str] = (),
+        parent_ids: Iterable[str] = (),
+        is_container: bool = False,
+        occurred_at: datetime | None = None,
+    ) -> dict[str, object]:
+        """Resolve durable root membership without guessing through missing ancestry.
+
+        Unknown parents preserve the object's last resolved roots and set
+        ``may_retire`` false. A container move additionally requests descendant
+        reconciliation because every child inherits its roots.
+        """
+
+        values = (connector, account_key, external_id, provider_version)
+        if any(not str(value).strip() for value in values):
+            raise ValidationError("provider ancestry identity fields are required")
+        direct = {str(route) for route in direct_route_keys if str(route)}
+        parents = tuple(sorted({str(parent) for parent in parent_ids if str(parent)}))
+        when = (occurred_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0).isoformat()
+        with self.atomic(immediate=True):
+            previous = self.conn.execute(
+                """SELECT * FROM provider_object_ancestry
+                   WHERE workspace_id=? AND connector=? AND account_key=? AND external_id=?""",
+                (workspace_id, connector, account_key, external_id),
+            ).fetchone()
+            previous_roots = set(json.loads(previous["root_route_keys"])) if previous else set()
+            previous_parents = tuple(json.loads(previous["parent_ids"])) if previous else ()
+            roots = set(direct)
+            unknown_parents: list[str] = []
+            for parent_id in parents:
+                parent = self.conn.execute(
+                    """SELECT root_route_keys,reconciliation_status FROM provider_object_ancestry
+                       WHERE workspace_id=? AND connector=? AND account_key=? AND external_id=?""",
+                    (workspace_id, connector, account_key, parent_id),
+                ).fetchone()
+                if parent is None or parent["reconciliation_status"] == "required":
+                    unknown_parents.append(parent_id)
+                    continue
+                roots.update(json.loads(parent["root_route_keys"]))
+            moved_container = bool(previous and is_container and tuple(parents) != tuple(previous_parents))
+            if unknown_parents:
+                roots.update(previous_roots)
+                status = "required"
+            elif moved_container:
+                status = "descendants_required"
+            else:
+                status = "resolved"
+            self.conn.execute(
+                """INSERT INTO provider_object_ancestry(
+                       workspace_id,connector,account_key,external_id,parent_ids,root_route_keys,
+                       is_container,provider_version,reconciliation_status,updated_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(workspace_id,connector,account_key,external_id) DO UPDATE SET
+                       parent_ids=excluded.parent_ids, root_route_keys=excluded.root_route_keys,
+                       is_container=excluded.is_container, provider_version=excluded.provider_version,
+                       reconciliation_status=excluded.reconciliation_status, updated_at=excluded.updated_at""",
+                (workspace_id, connector, account_key, external_id, json.dumps(parents),
+                 json.dumps(sorted(roots)), int(is_container), provider_version, status, when),
+            )
+            return {
+                "external_id": external_id,
+                "route_keys": tuple(sorted(roots)),
+                "unknown_parent_ids": tuple(unknown_parents),
+                "reconciliation_required": status == "required",
+                "descendant_reconciliation_required": status == "descendants_required",
+                "may_retire": status == "resolved",
+            }
+
+    def acknowledge_descendant_reconciliation(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        external_id: str,
+    ) -> bool:
+        with self.atomic(immediate=True):
+            cursor = self.conn.execute(
+                """UPDATE provider_object_ancestry
+                   SET reconciliation_status='resolved', updated_at=?
+                   WHERE workspace_id=? AND connector=? AND account_key=? AND external_id=?
+                     AND reconciliation_status='descendants_required'""",
+                (datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                 workspace_id, connector, account_key, external_id),
+            )
+            return cursor.rowcount == 1
+
+    def objects_requiring_reconciliation(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+    ) -> list[dict[str, object]]:
+        return [
+            dict(row)
+            for row in self.conn.execute(
+                """SELECT * FROM provider_object_ancestry
+                   WHERE workspace_id=? AND connector=? AND account_key=?
+                     AND reconciliation_status != 'resolved'
+                   ORDER BY updated_at, external_id""",
+                (workspace_id, connector, account_key),
+            ).fetchall()
+        ]
+
+    def stage_provider_route_mutation(
+        self,
+        batch_id: str,
+        event_id: str,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        external_id: str,
+        route_key: str,
+        source_key: str,
+        source_id: str | None,
+        provider_version: str,
+        operation: str,
+        occurred_at: datetime,
+    ) -> dict[str, object]:
+        if operation not in {"activate", "retire"}:
+            raise ValidationError("provider route operation is invalid")
+        self._validate_route_identity(connector, account_key, external_id, route_key, source_key, provider_version)
+        with self.atomic(immediate=True):
+            event = self.conn.execute(
+                """SELECT event.id,event.external_id,event.source_key FROM connector_source_events event
+                   JOIN connector_batch_events link ON link.event_id=event.id
+                   JOIN connector_ingest_batches batch ON batch.id=link.batch_id
+                   WHERE event.id=? AND link.batch_id=? AND event.workspace_id=?
+                     AND event.connector=? AND event.account_key=?""",
+                (event_id, batch_id, workspace_id, connector, account_key),
+            ).fetchone()
+            if event is None:
+                raise ValidationError("provider mutation is not linked to the scoped connector event")
+            if event["external_id"] != external_id or event["source_key"] != source_key:
+                raise ValidationError("provider mutation identity does not match connector event")
+            if source_id is not None:
+                self._require_scoped_source(workspace_id, source_id)
+            mutation_id = _stable_id("pmut", event_id, route_key, provider_version, operation)
+            self.conn.execute(
+                """INSERT OR IGNORE INTO provider_route_mutation_staging(
+                       id,batch_id,event_id,workspace_id,connector,account_key,external_id,
+                       route_key,source_key,source_id,provider_version,operation,occurred_at,
+                       status,created_at,applied_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'staged',?,NULL)""",
+                (mutation_id, batch_id, event_id, workspace_id, connector, account_key,
+                 external_id, route_key, source_key, source_id, provider_version, operation,
+                 occurred_at.astimezone(timezone.utc).isoformat(),
+                 datetime.now(timezone.utc).replace(microsecond=0).isoformat()),
+            )
+            return dict(self.conn.execute(
+                "SELECT * FROM provider_route_mutation_staging WHERE id=?", (mutation_id,)
+            ).fetchone())
+
+    def apply_staged_provider_route_mutations(self, batch_id: str) -> list[dict[str, object]]:
+        """Apply an ingested batch's staged memberships in one local transaction."""
+
+        applied: list[dict[str, object]] = []
+        with self.atomic(immediate=True):
+            rows = self.conn.execute(
+                """SELECT mutation.* FROM provider_route_mutation_staging mutation
+                   JOIN connector_source_events event ON event.id=mutation.event_id
+                   WHERE mutation.batch_id=? AND mutation.status='staged'
+                     AND event.status IN ('ingested','skipped')
+                   ORDER BY mutation.created_at, mutation.id""",
+                (batch_id,),
+            ).fetchall()
+            for row in rows:
+                occurred = parse_dt(row["occurred_at"])
+                if row["operation"] == "activate":
+                    if row["source_id"] is None:
+                        raise ValidationError("activation mutation requires source_id")
+                    result = self.activate_provider_route(
+                        row["workspace_id"], row["connector"], row["account_key"],
+                        row["external_id"], row["route_key"], row["source_key"],
+                        row["source_id"], row["provider_version"], occurred,
+                    )
+                else:
+                    result = self.retire_provider_route(
+                        row["workspace_id"], row["connector"], row["account_key"],
+                        row["external_id"], row["route_key"], row["source_key"],
+                        row["provider_version"], occurred,
+                    )
+                self.conn.execute(
+                    """UPDATE provider_route_mutation_staging
+                       SET status='applied', applied_at=? WHERE id=? AND status='staged'""",
+                    (datetime.now(timezone.utc).replace(microsecond=0).isoformat(), row["id"]),
+                )
+                applied.append(result)
+        return applied
+
+    def enqueue_provider_sync_task(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        stream_key: str,
+        task_type: str,
+        *,
+        generation_id: str | None = None,
+        external_id: str | None = None,
+        route_key: str | None = None,
+        page_token: str | None = None,
+        payload: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        if task_type not in {"backfill", "reconcile", "descendants"}:
+            raise ValidationError("provider sync task type is invalid")
+        identity = tuple(value or "" for value in (workspace_id, connector, account_key, stream_key, task_type,
+                                                     external_id, route_key, page_token, generation_id))
+        task_id = _stable_id("ptask", *identity)
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with self.atomic(immediate=True):
+            self.conn.execute(
+                """INSERT OR IGNORE INTO provider_sync_tasks(
+                       id,workspace_id,connector,account_key,stream_key,generation_id,task_type,
+                       external_id,route_key,page_token,payload,status,lease_owner,lease_token,
+                       lease_expires_at,created_at,updated_at,completed_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending',NULL,NULL,NULL,?,?,NULL)""",
+                (task_id, workspace_id, connector, account_key, stream_key, generation_id,
+                 task_type, external_id, route_key, page_token,
+                 json.dumps(payload or {}, sort_keys=True), now, now),
+            )
+            return dict(self.conn.execute("SELECT * FROM provider_sync_tasks WHERE id=?", (task_id,)).fetchone())
+
+    def claim_provider_sync_task(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        stream_key: str,
+        lease_owner: str,
+        lease_seconds: int = 60,
+        now: datetime | None = None,
+    ) -> dict[str, object] | None:
+        if lease_seconds <= 0 or not lease_owner:
+            raise ValidationError("provider task lease is invalid")
+        now_dt = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0)
+        now_text = now_dt.isoformat()
+        expires = (now_dt + timedelta(seconds=lease_seconds)).isoformat()
+        with self.atomic(immediate=True):
+            row = self.conn.execute(
+                """SELECT * FROM provider_sync_tasks
+                   WHERE workspace_id=? AND connector=? AND account_key=? AND stream_key=?
+                     AND (status='pending' OR (status='leased' AND lease_expires_at <= ?))
+                   ORDER BY created_at,id LIMIT 1""",
+                (workspace_id, connector, account_key, stream_key, now_text),
+            ).fetchone()
+            if row is None:
+                return None
+            token = _stable_id("please", row["id"], lease_owner, now_text, str(row["updated_at"]))
+            cursor = self.conn.execute(
+                """UPDATE provider_sync_tasks SET status='leased',lease_owner=?,lease_token=?,
+                       lease_expires_at=?,updated_at=?
+                   WHERE id=? AND (status='pending' OR (status='leased' AND lease_expires_at <= ?))""",
+                (lease_owner, token, expires, now_text, row["id"], now_text),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return dict(self.conn.execute("SELECT * FROM provider_sync_tasks WHERE id=?", (row["id"],)).fetchone())
+
+    def complete_provider_sync_task(self, task_id: str, lease_token: str) -> bool:
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with self.atomic(immediate=True):
+            cursor = self.conn.execute(
+                """UPDATE provider_sync_tasks SET status='completed', completed_at=?, updated_at=?,
+                       lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
+                   WHERE id=? AND status='leased' AND lease_token=? AND lease_expires_at > ?""",
+                (now, now, task_id, lease_token, now),
+            )
+            return cursor.rowcount == 1
+
+    def start_provider_sync_generation(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        stream_key: str,
+        route_key: str,
+        baseline_cursor: str | None,
+        started_at: datetime | None = None,
+    ) -> dict[str, object]:
+        when = (started_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0).isoformat()
+        with self.atomic(immediate=True):
+            running = self.conn.execute(
+                """SELECT * FROM provider_sync_generations
+                   WHERE workspace_id=? AND connector=? AND account_key=? AND stream_key=?
+                     AND route_key=? AND status='running'""",
+                (workspace_id, connector, account_key, stream_key, route_key),
+            ).fetchone()
+            if running is not None:
+                return {**dict(running), "idempotent": True}
+            count = self.conn.execute(
+                """SELECT COUNT(*) FROM provider_sync_generations
+                   WHERE workspace_id=? AND connector=? AND account_key=? AND stream_key=? AND route_key=?""",
+                (workspace_id, connector, account_key, stream_key, route_key),
+            ).fetchone()[0]
+            generation_id = _stable_id(
+                "pgen", workspace_id, connector, account_key, stream_key, route_key, when, str(count)
+            )
+            self.conn.execute(
+                """INSERT INTO provider_sync_generations(
+                       id,workspace_id,connector,account_key,stream_key,route_key,status,
+                       baseline_cursor,started_at,completed_at
+                   ) VALUES (?,?,?,?,?,?,'running',?,?,NULL)""",
+                (generation_id, workspace_id, connector, account_key, stream_key,
+                 route_key, baseline_cursor, when),
+            )
+            return {**dict(self.conn.execute(
+                "SELECT * FROM provider_sync_generations WHERE id=?", (generation_id,)
+            ).fetchone()), "idempotent": False}
+
+    def mark_provider_object_seen(
+        self,
+        generation_id: str,
+        external_id: str,
+        route_key: str,
+        seen_at: datetime | None = None,
+    ) -> bool:
+        when = (seen_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0).isoformat()
+        with self.atomic(immediate=True):
+            generation = self.conn.execute(
+                "SELECT * FROM provider_sync_generations WHERE id=? AND status='running'",
+                (generation_id,),
+            ).fetchone()
+            if generation is None or generation["route_key"] != route_key:
+                raise ValidationError("provider sync generation does not own route")
+            cursor = self.conn.execute(
+                """INSERT OR IGNORE INTO provider_object_generation_seen(
+                       generation_id,workspace_id,connector,account_key,external_id,route_key,seen_at
+                   ) VALUES (?,?,?,?,?,?,?)""",
+                (generation_id, generation["workspace_id"], generation["connector"],
+                 generation["account_key"], external_id, route_key, when),
+            )
+            return cursor.rowcount == 1
+
+    def complete_provider_sync_generation(
+        self,
+        generation_id: str,
+        completed_at: datetime | None = None,
+    ) -> dict[str, object]:
+        """Retire only unseen objects after every generation task is durable and complete."""
+
+        when_dt = (completed_at or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0)
+        when = when_dt.isoformat()
+        with self.atomic(immediate=True):
+            generation = self.conn.execute(
+                "SELECT * FROM provider_sync_generations WHERE id=?",
+                (generation_id,),
+            ).fetchone()
+            if generation is None:
+                raise ValidationError("provider sync generation not found")
+            if generation["status"] == "completed":
+                return {"generation_id": generation_id, "retired": 0, "idempotent": True}
+            pending = self.conn.execute(
+                """SELECT COUNT(*) FROM provider_sync_tasks
+                   WHERE generation_id=? AND status NOT IN ('completed','cancelled')""",
+                (generation_id,),
+            ).fetchone()[0]
+            if pending:
+                raise ValidationError("provider sync generation still has pending tasks")
+            unseen = self.conn.execute(
+                """SELECT route.* FROM provider_object_routes route
+                   WHERE route.workspace_id=? AND route.connector=? AND route.account_key=?
+                     AND route.route_key=? AND route.status='active'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM provider_object_generation_seen seen
+                         WHERE seen.generation_id=? AND seen.external_id=route.external_id
+                           AND seen.route_key=route.route_key
+                     )""",
+                (generation["workspace_id"], generation["connector"], generation["account_key"],
+                 generation["route_key"], generation_id),
+            ).fetchall()
+            for route in unseen:
+                self.retire_provider_route(
+                    route["workspace_id"], route["connector"], route["account_key"],
+                    route["external_id"], route["route_key"], route["source_key"],
+                    f"generation:{generation_id}", when_dt,
+                )
+            self.conn.execute(
+                """UPDATE provider_sync_generations SET status='completed', completed_at=?
+                   WHERE id=? AND status='running'""",
+                (when, generation_id),
+            )
+            return {"generation_id": generation_id, "retired": len(unseen), "idempotent": False}
+
+    def _require_scoped_source(self, workspace_id: str, source_id: str) -> sqlite3.Row:
+        row = self.conn.execute(
+            "SELECT * FROM sources WHERE workspace_id=? AND id=?",
+            (workspace_id, source_id),
+        ).fetchone()
+        if row is None:
+            raise ValidationError("source does not belong to workspace")
+        return row
+
+    def _activate_source_tx(
+        self,
+        workspace_id: str,
+        source_id: str,
+        when: str,
+        reason: str,
+        effective_from: str,
+    ) -> bool:
+        source = self._require_scoped_source(workspace_id, source_id)
+        current = self.conn.execute(
+            """SELECT 1 FROM source_lifecycle_intervals
+               WHERE workspace_id=? AND source_id=? AND retired_at IS NULL""",
+            (workspace_id, source_id),
+        ).fetchone()
+        if current is not None:
+            return False
+        active = self.conn.execute(
+            """SELECT * FROM source_lifecycle_intervals
+               WHERE workspace_id=? AND source_key=? AND retired_at IS NULL""",
+            (workspace_id, source["source_key"]),
+        ).fetchone()
+        if active is not None:
+            self._retire_source_tx(
+                workspace_id,
+                active["source_id"],
+                when,
+                "source_version_replaced",
+                close_semantic=False,
+            )
+        prior = self.conn.execute(
+            """SELECT MAX(retired_at) AS retired_at, COUNT(*) AS count
+               FROM source_lifecycle_intervals WHERE workspace_id=? AND source_id=?""",
+            (workspace_id, source_id),
+        ).fetchone()
+        if prior["retired_at"] is not None and when < prior["retired_at"]:
+            raise ValidationError("source activation precedes its prior retirement")
+        interval_id = _stable_id("slife", workspace_id, source_id, when, str(prior["count"]))
+        self.conn.execute(
+            """INSERT INTO source_lifecycle_intervals(
+                   id,workspace_id,source_id,source_key,activated_at,retired_at,
+                   effective_from,effective_until,activation_reason,retirement_reason
+               ) VALUES (?,?,?,?,?,NULL,?,NULL,?,NULL)""",
+            (interval_id, workspace_id, source_id, source["source_key"], when, effective_from, reason),
+        )
+        return True
+
+    def _retire_source_tx(
+        self,
+        workspace_id: str,
+        source_id: str,
+        when: str,
+        reason: str,
+        *,
+        close_semantic: bool = True,
+    ) -> bool:
+        current = self.conn.execute(
+            """SELECT * FROM source_lifecycle_intervals
+               WHERE workspace_id=? AND source_id=? AND retired_at IS NULL""",
+            (workspace_id, source_id),
+        ).fetchone()
+        if current is None:
+            return False
+        if when < current["activated_at"]:
+            raise ValidationError("source retirement precedes activation")
+        cursor = self.conn.execute(
+            """UPDATE source_lifecycle_intervals
+               SET retired_at=?, retirement_reason=?
+               WHERE id=? AND retired_at IS NULL""",
+            (when, reason, current["id"]),
+        )
+        if cursor.rowcount == 1 and close_semantic:
+            self.conn.execute(
+                """UPDATE source_lifecycle_intervals
+                   SET effective_until=CASE
+                       WHEN effective_from > ? THEN effective_from ELSE ? END
+                   WHERE workspace_id=? AND source_key=?
+                     AND effective_until IS NULL""",
+                (when, when, workspace_id, current["source_key"]),
+            )
+        return cursor.rowcount == 1
+
+    def _retire_source_if_unrouted_tx(
+        self, workspace_id: str, source_id: str, when: str, reason: str
+    ) -> bool:
+        still_routed = self.conn.execute(
+            """SELECT 1 FROM provider_object_routes
+               WHERE workspace_id=? AND active_source_id=? AND status='active' LIMIT 1""",
+            (workspace_id, source_id),
+        ).fetchone()
+        if still_routed is not None:
+            return False
+        return self._retire_source_tx(
+            workspace_id,
+            source_id,
+            when,
+            reason,
+            close_semantic=reason != "provider_version_replaced",
+        )
+
+    @staticmethod
+    def _validate_route_identity(
+        connector: str,
+        account_key: str,
+        external_id: str,
+        route_key: str,
+        source_key: str,
+        provider_version: str,
+    ) -> None:
+        values = (connector, account_key, external_id, route_key, source_key, provider_version)
+        if any(not str(value).strip() for value in values):
+            raise ValidationError("provider route identity fields are required")
+
+    def _provider_route_event(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        external_id: str,
+        route_key: str,
+        provider_version: str,
+        operation: str,
+    ) -> sqlite3.Row | None:
+        return self.conn.execute(
+            """SELECT * FROM provider_object_route_events
+               WHERE workspace_id=? AND connector=? AND account_key=? AND external_id=?
+                 AND route_key=? AND provider_version=? AND operation=?""",
+            (workspace_id, connector, account_key, external_id, route_key, provider_version, operation),
+        ).fetchone()
+
+    def _insert_provider_route_event(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        external_id: str,
+        route_key: str,
+        source_key: str,
+        source_id: str | None,
+        provider_version: str,
+        operation: str,
+        when: str,
+    ) -> None:
+        event_id = _stable_id(
+            "proute", workspace_id, connector, account_key, external_id,
+            route_key, provider_version, operation,
+        )
+        self.conn.execute(
+            """INSERT INTO provider_object_route_events(
+                   id,workspace_id,connector,account_key,external_id,route_key,source_key,
+                   source_id,provider_version,operation,occurred_at,created_at
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (event_id, workspace_id, connector, account_key, external_id, route_key,
+             source_key, source_id, provider_version, operation, when,
+             datetime.now(timezone.utc).replace(microsecond=0).isoformat()),
+        )
+
+    def _get_provider_route(
+        self,
+        workspace_id: str,
+        connector: str,
+        account_key: str,
+        external_id: str,
+        route_key: str,
+    ) -> dict[str, object]:
+        row = self.conn.execute(
+            """SELECT * FROM provider_object_routes
+               WHERE workspace_id=? AND connector=? AND account_key=? AND external_id=? AND route_key=?""",
+            (workspace_id, connector, account_key, external_id, route_key),
+        ).fetchone()
+        if row is None:
+            raise ValidationError("provider route state is unavailable")
+        return dict(row)
 
     def create_document(self, document: Document) -> Document:
         self.conn.execute(
@@ -841,11 +1655,48 @@ class SqliteStore:
             created_at=parse_dt(row["created_at"]),
         )
 
-    def allowed_sources(self, workspace_id: str, actor: Actor) -> list[SourceArtifact]:
-        rows = self.conn.execute(
-            "SELECT * FROM sources WHERE workspace_id = ? ORDER BY recorded_at ASC",
-            (workspace_id,),
-        ).fetchall()
+    def allowed_sources(
+        self,
+        workspace_id: str,
+        actor: Actor,
+        as_of: datetime | None = None,
+        include_retired: bool = False,
+    ) -> list[SourceArtifact]:
+        if include_retired:
+            rows = self.conn.execute(
+                "SELECT * FROM sources WHERE workspace_id=? ORDER BY recorded_at ASC",
+                (workspace_id,),
+            ).fetchall()
+        elif as_of is None:
+            lifecycle_clause = "lifecycle.retired_at IS NULL"
+            params: tuple[object, ...] = (workspace_id,)
+        else:
+            moment = as_of.astimezone(timezone.utc).isoformat()
+            lifecycle_clause = """lifecycle.effective_from <= ?
+                AND (lifecycle.effective_until IS NULL OR lifecycle.effective_until > ?)
+                AND NOT EXISTS (
+                    SELECT 1 FROM source_lifecycle_intervals candidate
+                    JOIN sources candidate_source ON candidate_source.id=candidate.source_id
+                    WHERE candidate.workspace_id=lifecycle.workspace_id
+                      AND candidate.source_key=lifecycle.source_key
+                      AND candidate.effective_from <= ?
+                      AND (candidate.effective_until IS NULL OR candidate.effective_until > ?)
+                      AND (
+                          candidate.effective_from > lifecycle.effective_from
+                          OR (candidate.effective_from=lifecycle.effective_from
+                              AND candidate_source.version > sources.version)
+                      )
+                )"""
+            params = (workspace_id, moment, moment, moment, moment)
+        if not include_retired:
+            rows = self.conn.execute(
+                f"""SELECT DISTINCT sources.* FROM sources
+                    JOIN source_lifecycle_intervals lifecycle
+                      ON lifecycle.workspace_id=sources.workspace_id AND lifecycle.source_id=sources.id
+                    WHERE sources.workspace_id=? AND {lifecycle_clause}
+                    ORDER BY sources.recorded_at ASC""",
+                params,
+            ).fetchall()
         sources = [self._source_from_row(row) for row in rows]
         if actor.is_admin:
             return sources
@@ -1169,7 +2020,7 @@ def _fts_tokens(query: str) -> list[str]:
     tokens: list[str] = []
     current: list[str] = []
     for char in query.lower():
-        if char.isalnum() or char in {"-", "_"}:
+        if char.isalnum() or char == "_":
             current.append(char)
         elif current:
             tokens.append("".join(current))
@@ -1177,3 +2028,8 @@ def _fts_tokens(query: str) -> list[str]:
     if current:
         tokens.append("".join(current))
     return [token for token in tokens if token not in FTS_STOPWORDS]
+
+
+def _stable_id(prefix: str, *parts: str) -> str:
+    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:32]
+    return f"{prefix}_{digest}"

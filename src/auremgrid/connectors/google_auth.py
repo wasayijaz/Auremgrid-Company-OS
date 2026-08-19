@@ -7,13 +7,26 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 from auremgrid.domain.errors import NotFoundError, ValidationError
 from auremgrid.services.secrets import redact
 
 
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+DRIVE_READ_SCOPES = frozenset(
+    {
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive",
+    }
+)
+GMAIL_READ_SCOPES = frozenset(
+    {
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://mail.google.com/",
+    }
+)
 EVENT_TERMINAL_STATUSES = {"ingested", "skipped", "quarantined"}
 JOB_TERMINAL_STATUSES = {"succeeded", "failed", "dead_letter", "cancelled"}
 
@@ -45,6 +58,8 @@ class OAuthRefreshResult:
     rate_limited: bool = False
     retry_after_seconds: int | None = None
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool = False
 
 
 @dataclass(frozen=True)
@@ -58,6 +73,138 @@ class ConnectorSourceEvent:
     payload: dict[str, Any]
     observed_at: str | None = None
     media_type: str = "text/markdown"
+
+
+@dataclass(frozen=True)
+class GoogleApiFailure:
+    """Sanitized, provider-independent classification for a Google API failure."""
+
+    code: str
+    status: int
+    retryable: bool
+    retry_after_seconds: int | None
+    message: str
+
+
+@dataclass(frozen=True)
+class RouteLifecycleMutation:
+    """A durable route-state change the integration layer must commit with a batch."""
+
+    external_id: str
+    route_key: str
+    workspace_id: str
+    operation: str  # upsert | tombstone
+    provider_version: str
+
+
+_QUOTA_REASONS = frozenset(
+    {
+        "dailylimitexceeded",
+        "downloadserviceforbidden",
+        "quotaexceeded",
+        "ratelimitexceeded",
+        "resourcerate-limitexceeded",
+        "resourceexhausted",
+        "userratelimitexceeded",
+    }
+)
+_SENSITIVE_KEYS = frozenset(
+    {
+        "access_token",
+        "authorization",
+        "client_secret",
+        "credentials",
+        "raw",
+        "refresh_token",
+        "token",
+    }
+)
+
+
+def normalize_scopes(scopes: Iterable[str]) -> frozenset[str]:
+    return frozenset(str(scope).strip() for scope in scopes if str(scope).strip())
+
+
+def require_any_scope(granted: Iterable[str], accepted: frozenset[str], provider: str) -> frozenset[str]:
+    normalized = normalize_scopes(granted)
+    if not normalized.intersection(accepted):
+        raise ValidationError(f"{provider} credential lacks the required read-only scope")
+    return normalized
+
+
+def classify_google_failure(response: HttpResponse, provider: str) -> GoogleApiFailure | None:
+    """Classify errors without leaking response bodies or credentials.
+
+    Google uses HTTP 403 for both permanent permission failures and transient quota
+    exhaustion.  The structured reason, rather than the status alone, decides which
+    behavior callers should use.
+    """
+
+    if 200 <= response.status < 300:
+        return None
+    reasons = _google_error_reasons(response)
+    reason = next(iter(reasons), "")
+    retry_after = retry_after_seconds(response)
+    if response.status == 401:
+        code, retryable = "authorization_required", False
+    elif response.status == 403 and reasons.intersection(_QUOTA_REASONS):
+        code, retryable = "quota_exhausted", True
+    elif response.status == 403:
+        code, retryable = "permission_denied", False
+    elif response.status == 429:
+        code, retryable = "rate_limited", True
+    elif 500 <= response.status <= 599:
+        code, retryable = "provider_unavailable", True
+    elif response.status == 404:
+        code, retryable = "not_found", False
+    else:
+        code, retryable = "provider_error", False
+    suffix = f" ({reason})" if reason else ""
+    return GoogleApiFailure(
+        code=code,
+        status=response.status,
+        retryable=retryable,
+        retry_after_seconds=retry_after,
+        message=f"{provider} request failed with HTTP {response.status}{suffix}",
+    )
+
+
+def sanitize_google_payload(value: Any, known_secrets: Iterable[str] = ()) -> Any:
+    """Return JSON-safe provider evidence with secrets and raw message bodies removed."""
+
+    secrets = tuple(str(item) for item in known_secrets if item)
+    if isinstance(value, dict):
+        return {
+            str(key): sanitize_google_payload(item, secrets)
+            for key, item in value.items()
+            if str(key).lower() not in _SENSITIVE_KEYS
+        }
+    if isinstance(value, (list, tuple)):
+        return [sanitize_google_payload(item, secrets) for item in value]
+    if isinstance(value, str):
+        safe = value
+        for secret in secrets:
+            safe = safe.replace(secret, "[REDACTED]")
+        return redact(safe)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(redact(str(value)))
+
+
+def _google_error_reasons(response: HttpResponse) -> frozenset[str]:
+    payload = response.json_body if isinstance(response.json_body, dict) else {}
+    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    reasons: set[str] = set()
+    for item in error.get("errors") or []:
+        if isinstance(item, dict) and item.get("reason"):
+            reasons.add(str(item["reason"]).strip().lower())
+    details = error.get("details") or []
+    for item in details:
+        if isinstance(item, dict):
+            reason = item.get("reason")
+            if reason:
+                reasons.add(str(reason).strip().lower())
+    return frozenset(reasons)
 
 
 def utcnow() -> datetime:
@@ -148,24 +295,28 @@ class GoogleOAuthClient:
             {"Content-Type": "application/x-www-form-urlencoded"},
             body,
         )
-        if response.status in {403, 429}:
+        failure = classify_google_failure(response, "Google OAuth")
+        if failure is not None:
+            error_code = "authorization_required" if response.status == 400 else failure.code
             return OAuthRefreshResult(
                 None,
                 None,
                 (),
-                rate_limited=True,
-                retry_after_seconds=retry_after_seconds(response),
-                error=_google_error(response),
+                rate_limited=failure.code in {"quota_exhausted", "rate_limited"},
+                retry_after_seconds=failure.retry_after_seconds,
+                error=failure.message,
+                error_code=error_code,
+                retryable=failure.retryable if response.status != 400 else False,
             )
-        if response.status < 200 or response.status >= 300:
-            return OAuthRefreshResult(None, None, (), error=_google_error(response))
         data = response.json_body if isinstance(response.json_body, dict) else {}
         token = data.get("access_token")
         if not isinstance(token, str) or not token:
             raise ValidationError("Google token response did not include access_token")
         expires_in = int(data.get("expires_in") or 3600)
         issued_at = now or utcnow()
-        scope_text = str(data.get("scope") or " ".join(scopes))
+        # The token endpoint's response is authoritative. Requested scopes are
+        # never treated as granted scopes when Google omits `scope`.
+        scope_text = str(data.get("scope") or "")
         return OAuthRefreshResult(
             access_token=token,
             expires_at=(issued_at + timedelta(seconds=expires_in)).isoformat(),

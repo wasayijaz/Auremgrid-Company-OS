@@ -59,7 +59,7 @@ This is an operating control plane, not a replacement for every specialist tool.
 | People and capacity | Skills, availability, leave, capacity snapshots, utilization contracts | Implemented |
 | Finance | Connection state, invoices, revenue, costs, budgets, software/AI cost records, client economics | Implemented schema and sourced records; never fabricates values |
 | Agents and automations | Agent records, scoped roles, tasks, queues, runs, tool calls, outputs, costs, traces, training-mode automations | Implemented; unattended automation remains experimental |
-| Integrations | Explicit mappings, external secret references, verification, sync runs, connector inbox/dedupe | Slack and ClickUp live read sync; Google Drive/Gmail disabled live; other providers catalog-only |
+| Integrations | Explicit mappings, external secret references, verification, sync runs, connector inbox/dedupe | Slack and ClickUp live read sync; Google Drive/Gmail have strict configuration contracts but remain disabled live and ingest no historical content; other providers catalog-only |
 | Jobs, outbox, recovery | Atomic claims, leases, fencing, progress, retry/backoff, dead letters, cancellation, idempotency, append-only events, recovery mode | Implemented; outbound sends remain a future gate |
 | Interfaces | Local dashboard, REST API, MCP-style router, CLI | Implemented; all policy remains service-side |
 | Storage and projections | Versioned SQLite migrations, online backups, checksums, integrity/FK verification, restart-safe rebuilds | Implemented; external binary assets require separate backup |

@@ -17,6 +17,14 @@ from auremgrid.domain.security import AuthenticatedIdentity
 from auremgrid.services.secrets import redact
 
 
+GOOGLE_DRIVE_READ_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+
+# Google sources are configurable so an operator can establish and inspect the
+# account/mapping contract, but they are not advertised as live until their
+# adapters pass the same routing, backfill, identity, and retry gates as the
+# existing providers.
+CONFIGURABLE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail"})
 LIVE_SOURCES = frozenset({"slack", "clickup"})
 
 
@@ -42,21 +50,16 @@ class IntegrationOperations:
         permissions: list[str],
     ) -> dict[str, Any]:
         identity.require("integration_configure")
-        source = source.strip()
-        if source not in LIVE_SOURCES:
-            raise ValidationError("unsupported live connector")
-        expected_account_id = expected_account_id.strip()
+        source = source.strip().lower()
+        if source not in CONFIGURABLE_SOURCES:
+            raise ValidationError("unsupported connector")
+        expected_account_id = self._normalize_expected_account_id(source, expected_account_id)
         if not expected_account_id:
             raise ValidationError("expected provider account ID is required")
-        if not workspace_mappings or any(not str(key).strip() or not str(value).strip() for key, value in workspace_mappings.items()):
-            raise ValidationError("at least one external-container to workspace mapping is required")
-        requested_permissions=set(permissions)
-        if source=="slack" and not requested_permissions.intersection(
-            {"channels:history","groups:history","im:history","mpim:history"}
-        ):
-            raise ValidationError("Slack synchronization requires an explicit conversation history permission")
-        if source=="clickup" and requested_permissions != {"authorized_team"}:
-            raise ValidationError("ClickUp synchronization requires authorized_team permission")
+        workspace_mappings = self._canonicalize_mappings(workspace_mappings)
+        requested_permissions = self._canonicalize_permissions(permissions)
+        self._validate_permissions(source, requested_permissions)
+        self._validate_mapping_keys(source, workspace_mappings)
         for workspace_id in workspace_mappings.values():
             scope = self.os.company.workspace_scope(workspace_id)
             if scope is None or scope["organization_id"] != identity.organization_id:
@@ -77,7 +80,7 @@ class IntegrationOperations:
             source,
             "not_connected",
             json.dumps(workspace_mappings, sort_keys=True, separators=(",", ":")),
-            json.dumps(sorted(set(permissions)), separators=(",", ":")),
+            json.dumps(sorted(requested_permissions), separators=(",", ":")),
             None,
             None,
             None,
@@ -113,6 +116,7 @@ class IntegrationOperations:
         item["workspace_mappings"] = json.loads(item["workspace_mappings"])
         item["permissions"] = json.loads(item["permissions"])
         item["granted_permissions"] = json.loads(item.get("granted_permissions") or "[]")
+        item["live_enabled"] = item["source"] in LIVE_SOURCES
         if identity.workspace_id is not None and set(item["workspace_mappings"].values()) != {identity.workspace_id}:
             raise AuthorizationError("integration is outside the credential workspace scope")
         item["credential"] = self._credential_metadata(integration_id)
@@ -151,12 +155,14 @@ class IntegrationOperations:
     def verify(self, identity: AuthenticatedIdentity, integration_id: str) -> dict[str, Any]:
         identity.require("integration_sync")
         integration = self.get(identity, integration_id)
+        if integration["source"] not in LIVE_SOURCES:
+            raise ValidationError("connector provider verification is not enabled")
         secret = self._resolve(identity, integration)
         verified = self._provider_verify(integration,secret)
         account_id, account_name, granted = self._verified_account(integration["source"], verified)
-        if account_id != integration["expected_account_id"]:
+        if not self._account_ids_match(integration["source"], account_id, integration["expected_account_id"]):
             raise AuthorizationError("provider account identity mismatch")
-        missing = set(integration["permissions"]) - set(granted)
+        missing = self._missing_permissions(integration["source"], set(integration["permissions"]), set(granted))
         if missing:
             raise AuthorizationError("provider credential is missing required permissions")
         now = _now()
@@ -180,6 +186,8 @@ class IntegrationOperations:
     ) -> list[dict[str, Any]]:
         identity.require("integration_sync")
         integration = self.get(identity, integration_id)
+        if integration["source"] not in LIVE_SOURCES:
+            raise ValidationError("connector adapter is not enabled for live synchronization")
         if integration["status"] not in {"authorized","connected"}:
             raise ValidationError("integration credentials must be verified before enqueueing sync")
         jobs: list[dict[str, Any]] = []
@@ -259,9 +267,11 @@ class IntegrationOperations:
         try:
             current_identity=self._provider_verify({**integration,"workspace_mappings":selected_mappings},secret)
             current_account_id,_,current_granted=self._verified_account(integration["source"],current_identity)
-            if current_account_id != integration["provider_account_id"] or current_account_id != integration["expected_account_id"]:
+            if not self._account_ids_match(integration["source"], current_account_id, integration["provider_account_id"]) or not self._account_ids_match(
+                integration["source"], current_account_id, integration["expected_account_id"]
+            ):
                 raise ConnectorTransportError("provider account identity changed",status=401,retryable=False)
-            if set(integration["permissions"]) - set(current_granted):
+            if self._missing_permissions(integration["source"], set(integration["permissions"]), set(current_granted)):
                 raise ConnectorTransportError("provider permission grant changed",status=403,retryable=False)
             for external_key, workspace_id in selected_mappings.items():
                 if identity.workspace_id not in {None, workspace_id}:
@@ -619,7 +629,99 @@ class IntegrationOperations:
             return value.team_id,value.team_name,tuple(value.granted_scopes)
         if source == "clickup":
             return value.team_id,value.team_name,("authorized_team",)
+        if source == "google_drive":
+            return value.account_id,value.display_name,tuple(
+                getattr(value, "granted_scopes", getattr(value, "scopes", ()))
+            )
+        if source == "gmail":
+            return value.email_address,value.email_address,tuple(
+                getattr(value, "granted_scopes", getattr(value, "scopes", ()))
+            )
         raise ValidationError("unsupported provider identity")
+
+    @staticmethod
+    def _validate_permissions(source: str, permissions: set[str]) -> None:
+        if source == "slack" and not permissions.intersection(
+            {"channels:history", "groups:history", "im:history", "mpim:history"}
+        ):
+            raise ValidationError("Slack synchronization requires an explicit conversation history permission")
+        if source == "clickup" and permissions != {"authorized_team"}:
+            raise ValidationError("ClickUp synchronization requires authorized_team permission")
+        if source == "google_drive" and GOOGLE_DRIVE_READ_SCOPE not in permissions:
+            raise ValidationError("Google Drive synchronization requires drive.readonly permission")
+        if source == "gmail" and GMAIL_READ_SCOPE not in permissions:
+            raise ValidationError("Gmail synchronization requires gmail.readonly permission")
+
+    @staticmethod
+    def _validate_mapping_keys(source: str, workspace_mappings: dict[str, str]) -> None:
+        keys = {str(key).strip() for key in workspace_mappings}
+        if source == "google_drive":
+            invalid = [key for key in keys if not (
+                key.startswith("folder:") and key[7:].strip()
+                or key.startswith("drive:") and key[6:].strip()
+            )]
+            if invalid:
+                raise ValidationError("Google Drive mappings must use folder:<id> or drive:<id>")
+        if source == "gmail" and any(not key.startswith("label:") or not key[6:].strip() for key in keys):
+            raise ValidationError("Gmail mappings must use label:<id>")
+
+    @staticmethod
+    def _canonicalize_mappings(workspace_mappings: dict[str, str]) -> dict[str, str]:
+        if not isinstance(workspace_mappings, dict) or not workspace_mappings:
+            raise ValidationError("at least one external-container to workspace mapping is required")
+        canonical: dict[str, str] = {}
+        for raw_key, raw_workspace_id in workspace_mappings.items():
+            if not isinstance(raw_key, str) or not isinstance(raw_workspace_id, str):
+                raise ValidationError("mapping keys and workspace IDs must be strings")
+            key = raw_key.strip()
+            workspace_id = raw_workspace_id.strip()
+            if not key or not workspace_id:
+                raise ValidationError("mapping keys and workspace IDs must be non-empty")
+            if key in canonical:
+                raise ValidationError("mapping keys must be unique after normalization")
+            canonical[key] = workspace_id
+        return canonical
+
+    @staticmethod
+    def _canonicalize_permissions(permissions: list[str]) -> set[str]:
+        if not isinstance(permissions, list):
+            raise ValidationError("permissions must be a list of non-empty strings")
+        canonical: set[str] = set()
+        for value in permissions:
+            if not isinstance(value, str) or not value.strip():
+                raise ValidationError("permissions must contain only non-empty strings")
+            canonical.add(value.strip())
+        return canonical
+
+    @staticmethod
+    def _normalize_expected_account_id(source: str, expected_account_id: str) -> str:
+        if not isinstance(expected_account_id, str):
+            return ""
+        value = expected_account_id.strip()
+        if source == "google_drive" and "@" in value:
+            raise ValidationError("Google Drive expected account ID must be the stable permissionId, not an email")
+        return value.casefold() if source == "gmail" else value
+
+    @staticmethod
+    def _account_ids_match(source: str, actual: str, expected: str) -> bool:
+        if source == "gmail":
+            return str(actual).strip().casefold() == str(expected).strip().casefold()
+        return str(actual).strip() == str(expected).strip()
+
+    @staticmethod
+    def _missing_permissions(source: str, required: set[str], granted: set[str]) -> set[str]:
+        missing = set(required) - set(granted)
+        if source == "google_drive" and GOOGLE_DRIVE_READ_SCOPE in missing and granted.intersection({
+            GOOGLE_DRIVE_READ_SCOPE, "https://www.googleapis.com/auth/drive"
+        }):
+            missing.remove(GOOGLE_DRIVE_READ_SCOPE)
+        if source == "gmail" and GMAIL_READ_SCOPE in missing and granted.intersection({
+            GMAIL_READ_SCOPE,
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://mail.google.com/",
+        }):
+            missing.remove(GMAIL_READ_SCOPE)
+        return missing
 
     @staticmethod
     def _stable_error(exc: Exception) -> str:

@@ -11,6 +11,16 @@ contain metadata and fingerprints only. Verification earns `authorized`; the
 first successful durable worker sync earns `connected`. Sync requests return a
 workspace-scoped `connector.sync` jobs rather than performing provider I/O in the HTTP process.
 
+Integration responses include `live_enabled`; callers must use this field
+rather than infer availability from catalog presence or an `authorized`
+credential. Google Drive configuration requires a read-only Drive scope and
+mapping keys `folder:<id>` or `drive:<id>`; its expected account ID is the
+stable Drive `permissionId`, not an email address. Gmail requires
+`gmail.readonly`, a normalized expected mailbox address, and `label:<id>`
+mapping keys. Google enqueue is rejected while
+`live_enabled` is false; provider verification and historical ingestion are not
+claimed while that gate is closed.
+
 Organization-domain routes require organization_id and person_id. Evidence/legacy work routes require workspace_id and actor_id.
 
 All JSON routes except `/health` require a bearer session or API token. Caller

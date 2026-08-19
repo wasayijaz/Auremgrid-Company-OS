@@ -1174,6 +1174,258 @@ MIGRATIONS = (
             granted_permissions='[]', credential_verified_at=NULL;
         """,
     ),
+    Migration(
+        13,
+        "durable_provider_routes_and_evidence_lifecycle",
+        """
+        CREATE TABLE IF NOT EXISTS source_lifecycle_intervals (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            activated_at TEXT NOT NULL,
+            retired_at TEXT,
+            effective_from TEXT NOT NULL,
+            effective_until TEXT,
+            activation_reason TEXT NOT NULL,
+            retirement_reason TEXT,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(source_id) REFERENCES sources(id),
+            CHECK(retired_at IS NULL OR retired_at >= activated_at),
+            CHECK(effective_until IS NULL OR effective_until >= effective_from)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_source_lifecycle_current
+            ON source_lifecycle_intervals(workspace_id, source_key)
+            WHERE retired_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_source_lifecycle_as_of
+            ON source_lifecycle_intervals(workspace_id, source_key, effective_from, effective_until, source_id);
+
+        INSERT INTO source_lifecycle_intervals(
+            id, workspace_id, source_id, source_key, activated_at, retired_at,
+            effective_from, effective_until, activation_reason, retirement_reason
+        )
+        SELECT 'slife_' || source.id, source.workspace_id, source.id, source.source_key,
+               source.recorded_at,
+               (
+                   SELECT MIN(newer.recorded_at) FROM sources newer
+                   WHERE newer.workspace_id=source.workspace_id
+                     AND newer.source_key=source.source_key
+                     AND newer.version > source.version
+               ),
+               source.observed_at, NULL,
+               'schema_13_backfill',
+               CASE WHEN EXISTS (
+                   SELECT 1 FROM sources newer
+                   WHERE newer.workspace_id=source.workspace_id
+                     AND newer.source_key=source.source_key
+                     AND newer.version > source.version
+               ) THEN 'schema_13_newer_version' ELSE NULL END
+        FROM sources source
+        WHERE NOT EXISTS (
+            SELECT 1 FROM source_lifecycle_intervals lifecycle
+            WHERE lifecycle.workspace_id=source.workspace_id
+              AND lifecycle.source_id=source.id
+        );
+
+        CREATE TABLE IF NOT EXISTS provider_object_routes (
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            route_key TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            active_source_id TEXT,
+            provider_version TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('active','retired')),
+            activated_at TEXT,
+            retired_at TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(workspace_id, connector, account_key, external_id, route_key),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(active_source_id) REFERENCES sources(id),
+            CHECK(
+                (status='active' AND active_source_id IS NOT NULL AND activated_at IS NOT NULL AND retired_at IS NULL)
+                OR (status='retired' AND active_source_id IS NULL AND retired_at IS NOT NULL)
+            )
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_object_routes_source
+            ON provider_object_routes(workspace_id, active_source_id, status);
+        CREATE INDEX IF NOT EXISTS idx_provider_object_routes_object
+            ON provider_object_routes(workspace_id, connector, account_key, external_id, status);
+
+        CREATE TABLE IF NOT EXISTS provider_object_ancestry (
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            parent_ids TEXT NOT NULL,
+            root_route_keys TEXT NOT NULL,
+            is_container INTEGER NOT NULL CHECK(is_container IN (0,1)),
+            provider_version TEXT NOT NULL,
+            reconciliation_status TEXT NOT NULL
+                CHECK(reconciliation_status IN ('resolved','required','descendants_required')),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(workspace_id, connector, account_key, external_id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_object_ancestry_status
+            ON provider_object_ancestry(workspace_id, connector, account_key, reconciliation_status);
+
+        CREATE TABLE IF NOT EXISTS provider_route_mutation_staging (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            route_key TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_id TEXT,
+            provider_version TEXT NOT NULL,
+            operation TEXT NOT NULL CHECK(operation IN ('activate','retire')),
+            occurred_at TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('staged','applied')),
+            created_at TEXT NOT NULL,
+            applied_at TEXT,
+            FOREIGN KEY(batch_id) REFERENCES connector_ingest_batches(id),
+            FOREIGN KEY(event_id) REFERENCES connector_source_events(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(source_id) REFERENCES sources(id),
+            UNIQUE(event_id, route_key, provider_version, operation)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_route_mutation_batch
+            ON provider_route_mutation_staging(batch_id, status, created_at);
+
+        CREATE TABLE IF NOT EXISTS provider_sync_tasks (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            stream_key TEXT NOT NULL,
+            generation_id TEXT,
+            task_type TEXT NOT NULL CHECK(task_type IN ('backfill','reconcile','descendants')),
+            external_id TEXT,
+            route_key TEXT,
+            page_token TEXT,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','leased','completed','cancelled')),
+            lease_owner TEXT,
+            lease_token TEXT,
+            lease_expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            UNIQUE(workspace_id, connector, account_key, stream_key, task_type, external_id, route_key, page_token, generation_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_sync_tasks_claim
+            ON provider_sync_tasks(workspace_id, connector, account_key, stream_key, status, created_at);
+
+        CREATE TABLE IF NOT EXISTS provider_sync_generations (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            stream_key TEXT NOT NULL,
+            route_key TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('running','completed','cancelled')),
+            baseline_cursor TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_sync_generation_running
+            ON provider_sync_generations(workspace_id, connector, account_key, stream_key, route_key)
+            WHERE status='running';
+        CREATE TABLE IF NOT EXISTS provider_object_generation_seen (
+            generation_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            route_key TEXT NOT NULL,
+            seen_at TEXT NOT NULL,
+            PRIMARY KEY(generation_id, external_id, route_key),
+            FOREIGN KEY(generation_id) REFERENCES provider_sync_generations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS provider_object_route_events (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            route_key TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_id TEXT,
+            provider_version TEXT NOT NULL,
+            operation TEXT NOT NULL CHECK(operation IN ('activate','retire')),
+            occurred_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(source_id) REFERENCES sources(id),
+            UNIQUE(workspace_id, connector, account_key, external_id, route_key, provider_version, operation)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_route_events_object
+            ON provider_object_route_events(workspace_id, connector, account_key, external_id, occurred_at);
+
+        CREATE TRIGGER IF NOT EXISTS source_lifecycle_identity_no_update
+        BEFORE UPDATE OF id, workspace_id, source_id, source_key, activated_at, effective_from, activation_reason
+            ON source_lifecycle_intervals
+        BEGIN
+            SELECT RAISE(ABORT, 'source lifecycle identity is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS source_lifecycle_no_delete
+        BEFORE DELETE ON source_lifecycle_intervals
+        BEGIN
+            SELECT RAISE(ABORT, 'source lifecycle history is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS source_lifecycle_close_once
+        BEFORE UPDATE OF retired_at, retirement_reason ON source_lifecycle_intervals
+        WHEN OLD.retired_at IS NOT NULL OR NEW.retired_at IS NULL OR OLD.retirement_reason IS NOT NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'source lifecycle retirement is immutable once closed');
+        END;
+        CREATE TRIGGER IF NOT EXISTS source_lifecycle_effective_close_once
+        BEFORE UPDATE OF effective_until ON source_lifecycle_intervals
+        WHEN OLD.effective_until IS NOT NULL OR NEW.effective_until IS NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'source lifecycle semantic retirement is immutable once closed');
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_route_events_no_update
+        BEFORE UPDATE ON provider_object_route_events
+        BEGIN
+            SELECT RAISE(ABORT, 'provider route events are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_route_events_no_delete
+        BEFORE DELETE ON provider_object_route_events
+        BEGIN
+            SELECT RAISE(ABORT, 'provider route events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_routes_identity_no_update
+        BEFORE UPDATE OF workspace_id,connector,account_key,external_id,route_key,source_key
+            ON provider_object_routes
+        BEGIN
+            SELECT RAISE(ABORT, 'provider route identity is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_mutation_identity_no_update
+        BEFORE UPDATE OF id,batch_id,event_id,workspace_id,connector,account_key,external_id,
+            route_key,source_key,source_id,provider_version,operation,occurred_at,created_at
+            ON provider_route_mutation_staging
+        BEGIN
+            SELECT RAISE(ABORT, 'provider mutation identity is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_sync_task_identity_no_update
+        BEFORE UPDATE OF id,workspace_id,connector,account_key,stream_key,generation_id,task_type,
+            external_id,route_key,page_token,payload,created_at
+            ON provider_sync_tasks
+        BEGIN
+            SELECT RAISE(ABORT, 'provider sync task identity is immutable');
+        END;
+        """,
+    ),
 )
 
 

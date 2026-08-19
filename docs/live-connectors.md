@@ -1,10 +1,17 @@
 # Live connector synchronization
 
 Auremgrid has credential-backed read synchronization for Slack and ClickUp.
-Google Drive and Gmail change-feed adapters are tested but deliberately not
-enabled as live integrations yet. Enabled connectors use external secret references and durable
+Google Drive and Gmail configuration contracts are available but deliberately
+not enabled as live integrations yet. Their server-side contracts require a
+read-only Google scope and explicit `folder:<id>` / `drive:<id>` or
+`label:<id>` mappings. Integration responses report `live_enabled: false`, and
+the enqueue boundary rejects a Google sync while that gate is closed. Enabled connectors use external secret references and durable
 jobs; access tokens, refresh tokens, authorization headers, and provider
 credentials are never stored in SQLite or job payloads.
+
+Google provider verification and enqueue remain behind the same closed live
+gate. Configuration and credential-reference binding do not ingest historical
+files or messages; no Google content is represented as synchronized evidence.
 
 ## Connection lifecycle
 
@@ -44,11 +51,13 @@ periodically restarts reconciliation from page zero. A worker processes up to 20
 provider pages per run while heartbeating. If more remain, the integration stays
 `authorized/backfilling` rather than claiming healthy completion.
 
-The disabled Drive adapter implements `changes.getStartPageToken` and
-`newStartPageToken`; the disabled Gmail adapter implements mailbox history IDs.
-Neither is represented as live read synchronization because an initial cursor
-does not backfill existing data and the current adapter layer does not yet
-enforce folder/label routing or immutable Google account identity.
+The disabled Google adapters are held to a stricter release gate than a
+successful API call: bounded historical backfill must cut over to Drive changes
+or Gmail history without a gap; moves, removals, label exits, and deletions must
+produce durable route lifecycle state; cursor expiry must rebootstrap safely;
+and provider identity, permission, quota, authorization, and retry states must
+remain explicit. Until those behaviors pass end-to-end integration tests, a
+Google connection cannot enqueue work or report `connected`.
 
 ## Current deployment boundary
 
