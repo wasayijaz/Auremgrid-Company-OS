@@ -1,5 +1,7 @@
 # OSS Evaluation
 
+All named engine implementations in the default repository are local style-compatible projections, not the upstream services. They are rebuildable and hold no unique canonical truth. Networked replacements remain optional and must preserve ACL-before-ranking, provenance, temporal accuracy, rebuildability, and offline degradation.
+
 The default product uses local, deterministic stand-ins for Graphiti, Cognee, Mem0, Onyx, RAGFlow, LightRAG, GraphRAG, and Letta. None of those libraries is a required runtime dependency.
 
 Evaluation order if a networked extra is added:

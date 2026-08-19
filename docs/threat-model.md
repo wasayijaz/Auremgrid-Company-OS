@@ -1,5 +1,7 @@
 # Threat Model
 
+Organization and workspace inference leakage is a security boundary: permissions run before lookup, score, count, aggregation, and error detail. Agent tools and workspaces are allow-listed. One-way automation actions and sensitive writes require approval. Connector secrets are never stored in source evidence or fixtures.
+
 ## Protected Assets
 
 - Client-specific documents, facts, relations, and memories.

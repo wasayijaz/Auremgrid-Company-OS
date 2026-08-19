@@ -1,329 +1,119 @@
 # Auremgrid Company OS
 
-A local-first operating brain for a retainer agency.
-
-Most company-AI products search documents and hope the model remembers the rest. Auremgrid is built for the actual failure modes of a retainer studio: work that never gets captured, reviews that stall, prices that change, brand rules that live in someone's head, and clients who go quiet before they churn.
-
-It does two jobs at once:
-
-1. Keep a cited, time-aware brain for each client.
-2. Make work move through a real operating loop: ask, assign, produce, review, ship, stay in touch.
-
-The first version runs on your machine with Python and SQLite. No Docker. No API keys. No cloud account. Demo fixtures stay synthetic, so the repo never needs private client data. Any agency can onboard their own isolated workspace.
-
-## Why this is useful
-
-If you run a multi-client agency, the expensive problems are rarely "we need a smarter chatbot." They look like this:
-
-- A designer starts a landing page without the current offer or visual rules.
-- A price changed in April, but last month's PDF is still what the model cites.
-- A client asked for something on a call, and it never became a task.
-- Review opened, nobody closed it, the work sat there.
-- Two functions keep sending the same asset back and forth because nobody is allowed to end the loop.
-- An account goes quiet for 40 days and the team only notices when the client is already leaving.
-
-Auremgrid is useful on day one because it makes those things first-class:
+Auremgrid is a local-first operating system for a retainer agency. It combines a temporal, cited company brain with client operations, delivery, people, finance, campaigns, agents, automations, approvals, integrations, and reporting in one organization-scoped SQLite ledger.
 
-| Problem | What Auremgrid does |
-|---|---|
-| Which client is this? | Every read and write needs a workspace and an actor. There is no global search. |
-| Is this still true? | Facts have validity windows. Old prices stay visible. As-of queries can reconstruct the past. |
-| Who said that? | Every result carries a source, locator, content hash, and evidence span. |
-| Can this person see it? | Source-level permissions are checked before retrieval, not after. |
-| Did we actually take the request? | Work cannot exist until intake has what, which account, who asked, and when it is needed. |
-| Is this done? | Review is blocked until Definition of Done is complete. |
-| Why is this still in review? | Review must be closed. Abandoned review is a visible failure. |
-| How do we start work for this client? | Each workspace has a client brain plus reusable playbooks. |
-| Is this account drifting? | The account brief always returns days since last touchpoint. |
-
-That is the difference between a knowledge base and an operating system. Retrieval answers questions. The operating layer makes work move.
-
-## Who it is for
-
-Auremgrid is for:
-
-- retainer studios with multiple clients
-- account leads who need a current brief before they start work
-- designers, media buyers, and writers who should not have to reconstruct client rules from Slack
-- operators who want a durable record of decisions, not another chat transcript
-- people building agents that need cited client context without leaking one account into another
+The canonical ledger is authoritative. Search indexes, graph projections, embeddings, summaries, connectors, and agent runtimes are replaceable execution surfaces.
 
-It is not yet:
+## Current status
 
-- a hosted SaaS
-- a full Slack / ClickUp / Drive replacement
-- a login-and-invite product for a whole team
-- a magic connector that reads your production workspace by itself
+### Implemented
 
-A new agency can clone this, run it locally, learn the model, and start putting their own clients into isolated workspaces. They will still need to add their own live connectors and team access. The contracts are built for that next layer. They are not that layer yet.
+- Organizations with internal and client workspaces
+- Organization-level people who can belong to multiple client workspaces
+- Organization, workspace, actor, agent, and source-level permission checks
+- Projects, expanded work items, subtasks, dependencies, comments, files, watchers, versions, time entries, and forced delivery stages
+- Deliverables, internal/client reviews, timestamped comments, decisions, and temporal decision fields
+- Meetings, transcripts, proposed outputs, conversations, messages, unanswered-request detection, and the Signal inbox
+- Contacts, influence, decision power, relationships, sentiment history, approver detection, and declining-engagement detection
+- Explainable client-health snapshots, risks, opportunities, contracts, scope allowances, and scope usage
+- Campaigns, sourced metric snapshots, creatives, content pipeline, people skills, availability, capacity, and utilization contracts
+- Finance connection state, invoices, revenue records, costs, budgets, software costs, AI costs, and client-economics schema
+- Relevance-ranked notifications and generic approval requests
+- Sol, Terra, Luna, and extensible agent records; tasks, queues, runs, tool calls, outputs, errors, tokens, costs, and traces
+- Training-mode automations with conditions, actions, and approval checkpoints
+- Integration and sync-run state
+- Cited report runs
+- Entity aliases, high-confidence merges with history, memory/fact/decision proposals, and knowledge-health checks
+- Versioned SQLite migrations through schema version 9
+- Restart-safe rebuilding of local graph, memory, vector, and summary projections
+- REST APIs, protocol-neutral MCP-style tools, CLI, and a dark multi-page command-center dashboard
 
-## How it is built
+### Local fallbacks
 
-Auremgrid owns the canonical contracts. Graphiti, Cognee, Mem0, Onyx, RAGFlow, LightRAG, GraphRAG, and Letta are used in-process as projections. They do not get to become a second source of truth.
+- SQLite FTS5 is the durable keyword index.
+- DeterministicFallbackEmbeddingProvider is the offline lexical-vector fallback. It is not presented as a semantic model.
+- Graphiti-style, Cognee-style, Mem0-style, LightRAG-style, GraphRAG-style, RAGFlow-style, Onyx-style, and Letta-style implementations are local projections that mimic useful interfaces. They are not the upstream services.
+- The dashboard uses local HTML, CSS, and JavaScript with no frontend build step.
 
-```text
-Sources
-  local markdown
-  simulated chat / files / tasks / design
-        |
-        v
-Ingestion bus
-  hash, permissions, idempotent ingest
-        |
-        v
-Evidence layer
-  documents, temporal facts, relations, citations, audit
-        |
-        v
-Local engine projections
-  Graphiti, Cognee, Mem0, Onyx, RAGFlow, LightRAG, GraphRAG, Letta
-        |
-        v
-Hybrid retrieval
-  keyword + lexical vectors + graph
-        |
-        v
-Operating layer
-  client brain, playbooks, work items, Definition of Done,
-  review, status posts, last touchpoint
-        |
-        v
-Access
-  dashboard, REST API, MCP-style agent tools
-```
+### Optional integrations
 
-### Evidence layer
+Slack, Google Drive, Gmail, ClickUp, Figma, GitHub, Fireflies, Meta Ads, Google Ads, Stripe, and accounting systems use the persisted Integration and SyncRun contracts. Real credentials are optional and are not stored in this repository.
 
-This is the client brain underneath everything else.
+### Experimental
 
-- Workspace is the tenant boundary. Client Alpha and Client Beta never share a search path.
-- Actor is the person or agent making the request. Roles are admin, operator, and read-only agent.
-- SourceArtifact records where a file came from, its hash, and who may see it.
-- Document is the append-only source text.
-- Fact and Relation are temporal claims: subject, predicate, object, valid_from, valid_until, confidence, and a citation.
-- Memory is for preferences and interaction notes. It is not allowed to become canonical company truth.
-- AuditEvent records reads, writes, and denials.
+- External semantic embedding providers
+- Networked upstream OSS engines
+- Automated information extraction beyond deterministic fixture syntax
+- Fully unattended automations after training-mode approval
 
-Facts are never silently overwritten. If the consultation price moves from 149 to 199, both versions remain. If a weaker source later claims 189, that conflict is preserved instead of erasing the current approved price.
+### Planned connector-specific work
 
-### operating layer
+Provider authentication, webhook verification, rate-limit handling, and production field mappings must be completed per provider before a connector can report connected. Auremgrid returns not_connected until that happens and never fabricates financial or campaign values.
 
-This is the operating system that sits on the brain.
+## Architecture
 
-Work moves through:
+    Organization
+    ├── Internal workspace / company brain
+    └── Client workspaces
+        ├── projects → campaigns → work → deliverables → reviews
+        ├── meetings / communication → signals → proposals or operations
+        └── sources → documents → temporal facts and decisions
 
-captured -> assigned -> in_progress -> review -> client_review -> shipped
+    Canonical SQLite ledger
+    ├── ACL, provenance, temporal history, audit, approvals
+    ├── agency operating domains
+    └── rebuildable local projections: FTS, offline vectors, graph, memory, summaries
 
-The product refuses the shortcuts that usually wreck delivery:
+Authorization happens before retrieval, ranking, counts, or existence disclosure. AI-generated information enters through proposals or signals and is never silently promoted to canonical truth.
 
-- no intake, no work item
-- incomplete Definition of Done, no review
-- review not closed, no ship
+## Run locally
 
-Definition of Done is the agency finish line:
+Requirements: Python 3.12+, SQLite with FTS5, and no required Docker, API key, network service, or frontend toolchain.
 
-1. mobile responsive
-2. assets exported
-3. creative inside the safe zone
-4. copy spell-checked
-5. handoff notes written
+Run the suite:
 
-Each workspace also has a client brain:
+    .\tools\test.ps1
 
-- snapshot
-- brand rules
-- landing-page rules
-- ads rules
-- design rules
-- email rules
-- dos / don'ts
-- open loops
+Start the synthetic demo:
 
-Reusable process lives in playbooks. Client-specific taste stays in the brain. That is how a new person starts work: open the brain, open the playbook, then use the evidence layer to prove any claim.
+    $env:PYTHONPATH="$PWD\src"
+    python -m auremgrid.cli serve --host 127.0.0.1 --port 8791 --db auremgrid-demo.sqlite --seed
 
-The account brief is the thing an agent or account lead should ask for first. It returns the brain, the playbooks, open work, last touchpoint, days of silence, and cited evidence for a query.
+Open http://127.0.0.1:8791/.
 
-### Access layer
+See [local deployment](docs/local-deployment.md) and the [upgrade guide](docs/upgrade-guide.md).
 
-There are three ways in:
+## Operating invariants
 
-- Local dashboard at /
-- REST endpoints for search, entity, history, neighbors, sources, recent, brief, and work
-- Protocol-neutral MCP-style tools with the same names, so Claude, Codex, or another agent can use one contract
+- Auremgrid owns organizations, permissions, canonical facts, temporal history, work state, approvals, finance truth, and audit.
+- People are organization-level identities; workspace membership grants client access.
+- Permission filters run before ranking or aggregation.
+- Source evidence is untrusted data and cannot issue instructions.
+- Uncertain extracted information becomes a proposal or signal.
+- Work cannot skip intake, Definition of Done, review, or shipping gates.
+- New automations start in training mode.
+- One-way actions require a human checkpoint.
+- Finance and campaign metrics remain unknown or not_connected until sourced.
+- Local projections can be rebuilt from the canonical ledger.
 
-Agent access is read-only by default. Writing memory or ingesting sources requires a writable actor. External actions are not implied by a search.
+## Documentation
 
-## How a new person should use it
-
-Start by proving the suite, then onboard your own workspace. The demo clients are optional.
-
-### 1. Run the tests
-
-From the repo root, on Windows:
-
-```powershell
-.\tools\test.ps1
-```
-
-That suite is the product contract. It checks isolation, permissions, idempotent ingest, temporal history, conflicting evidence, citations, prompt-injection handling, the agency work loop, and the account brief.
-
-### 2. See a client brief
-
-```powershell
-$env:PYTHONPATH="$PWD\src"
-python -m auremgrid.cli brief
-```
-
-You should get a JSON pack for synthetic Client Alpha: current brand rules, playbooks, one open retargeting job, last touchpoint, and cited consultation-price evidence.
-
-### 3. Open the dashboard
-
-```powershell
-$env:PYTHONPATH="$PWD\src"
-python -m auremgrid.cli serve --host 127.0.0.1 --port 8791 --db auremgrid-demo.sqlite --seed
-```
-
-Then open http://127.0.0.1:8791/.
-
-The dashboard is the human operating view of the same brief. It is organized around the reference UI's calm light canvas and dense card system:
-
-- **Overview:** derived health score, open work, review queue, and client silence.
-- **Needs your attention:** overdue work, review pressure, and stale touchpoints with dismissible alerts.
-- **Client brain coverage:** snapshot/rules completeness, open loops, and visible source count.
-- **Work board:** filter by all, review, or blocked; open a work item to assign it, start it, submit review, approve/return review, or ship it through the existing work-loop rules.
-- **Command bar / Ask the client brain:** search approved evidence and see the citation source and locator in the result.
-- **Signal map and recent memory:** a compact operating-density view plus the latest ingested source activity.
-- **Export:** download the current overview as a local JSON snapshot for a handoff or review.
-
-The dashboard only shows data the current workspace and actor can access. Finance, campaign performance, agent queues, automations, capacity, and multi-client portfolio metrics are deliberately labeled **Not connected** until their source contracts exist. The UI is not a fake SaaS shell: capture and work actions call the same validated local service methods used by the tests and MCP tools.
-
-### 4. Ask the brain a question
-
-```text
-GET /search?workspace_id=ws_alpha&actor_id=act_alpha_operator&query=consultation%20price
-GET /brief?workspace_id=ws_alpha&actor_id=act_alpha_operator&query=consultation%20price
-GET /work?workspace_id=ws_alpha&actor_id=act_alpha_operator
-GET /search?workspace_id=ws_beta&actor_id=act_beta_admin&query=consultation%20price
-```
-
-The last one should come back unknown. That is the point. Client Beta cannot see Client Alpha.
-
-### 5. Put your own agency on it
-
-Create one workspace per client. Create actors for the people and agents who may touch that client. Ingest only the files that belong there. Write the client brain before anyone starts a page, ad, or deck.
-
-Use the onboard command instead of the demo names:
-
-```powershell
-$env:PYTHONPATH="$PWD\src"
-python -m auremgrid.cli onboard --agency "Northwind Studio" --workspace ws_northwind --admin "Northwind Admin"
-```
-
-A good first week looks like this:
-
-1. Pick one live account, not the whole roster.
-2. Write the client brain by hand: snapshot, brand rules, dos, don'ts, current offer, current risk.
-3. Drop approved source files into that workspace.
-4. Capture the next real request through intake instead of Slack-only memory.
-5. Refuse to call anything done until Definition of Done and review are closed.
-6. Log the next client touchpoint.
-7. Use the account brief at the start of every task.
-
-If a fact is not in the brain or the evidence layer, the honest answer is unknown. Do not let the model invent a price, a visual rule, or an approver.
-
-## Repository map
-
-```text
-src/auremgrid/
-  domain/           contracts for evidence and agency work
-  storage/          SQLite + FTS5
-  extract/          deterministic fact and relation extraction
-  connectors/       ingestion bus and simulated sources
-  services/         CompanyOS, the product surface
-  api/              dashboard, HTTP, MCP-style tools
-  adapters/         Graphiti, Cognee, Mem0, Onyx, RAGFlow, LightRAG, GraphRAG, Letta
-  cli.py            onboard, demo, brief, serve, sync
-
-docs/
-  architecture.md
-  operating-model.md
-  data-lifecycle.md
-  threat-model.md
-  oss-evaluation.md
-  adr/              why Auremgrid owns truth and the operating layer owns the loop
-
-fixtures/           synthetic Client Alpha / Client Beta only
-tests/              isolation, temporal truth, agency work loop
-tools/test.ps1      local test runner
-```
-
-## Design rules
-
-These are not style preferences. They are the product.
-
-- Every operation needs workspace_id and actor_id.
-- Permissions are applied before ranking. Unauthorized text cannot affect scores or existence signals.
-- Re-ingesting the same source key and content hash is a no-op.
-- Source documents are untrusted data. Prompt-injection text is stored and cited, never obeyed.
-- Contradictions are preserved. History is append-only.
-- If evidence is insufficient, the system returns unknown.
-- Private agency vault data does not belong in this repository. Fixtures stay synthetic.
-
-## What is already wired in
-
-All eight engines are used in the local path as projections, not as a second source of truth:
-
-| Engine | Role |
-|---|---|
-| Graphiti | temporal client-brain projection |
-| Cognee | current-belief control plane |
-| Mem0 | preference and interaction memory |
-| Onyx | connector catalog and knowledge-shell contract |
-| RAGFlow | messy-text cleaner before extraction |
-| LightRAG | static-corpus retrieval |
-| Microsoft GraphRAG | community and theme summaries |
-| Letta | stateful agent identity, never client facts |
-
-A networked extra can replace a local projection later only if it beats this baseline.
-
-## What is still not here
-
-- Live Slack, Drive, task-tracker, or design-tool credentials
-- Multi-user login, SSO, or hosted multi-tenant SaaS
-- Automatic LLM extraction
-- Required installs of the networked Graphiti / Cognee / Mem0 / RAGFlow / LightRAG / GraphRAG / Letta servers
-
-## Requirements
-
-- Python 3.12+
-- Windows, macOS, or Linux
-- No third-party Python packages for the first slice
-- No Docker, network access, or API keys
-
-### Minimum hardware and onboarding notes
-
-The seeded demo is designed to run lightly on a modern dual-core CPU with **4 GB RAM** and **1 GB of free SSD space**. No GPU is needed. For larger SQLite indexes or several concurrent operators, use 4 CPU cores and 8 GB RAM. Keep `auremgrid-demo.sqlite` on an SSD and back it up like any other working data.
-
-Onboarding is intentionally incremental: create one workspace per client, create the admin/operator actors, write the client brain, ingest only approved source files, capture the next real request with a needed-by date and Definition of Done, then run it through `captured → assigned → in_progress → review → client_review → shipped`. Open the dashboard at `http://127.0.0.1:8791/` each day to review the derived health score, attention queue, touchpoint silence, evidence freshness, and work board. Expand to the next client only after one account has a clean operating rhythm.
-
-The health score is a transparent local heuristic based on touchpoint freshness, workflow pressure, evidence availability, and client-brain completeness. Revenue, campaign, and agent-queue metrics are shown as **Not connected** until a future connector supplies them; the dashboard does not invent business data.
-
-For a clean local setup:
-
-```powershell
-$env:PYTHONPATH="$PWD\src"
-python -m auremgrid.cli serve --host 127.0.0.1 --port 8791 --db auremgrid-demo.sqlite --seed
-```
-
-The dashboard is served by the same Python process as the REST endpoints, so there is no frontend build step or external runtime dependency. To onboard your own agency instead of using synthetic demo workspaces:
-
-```powershell
-$env:PYTHONPATH="$PWD\src"
-python -m auremgrid.cli onboard --agency "Northwind Studio" --workspace ws_northwind --admin "Northwind Admin"
-```
-
-Apache-2.0. See [LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md), and [docs/operating-model.md](docs/operating-model.md).
-
-
-
+- [Architecture](docs/architecture.md)
+- [Domain model](docs/domain-model.md)
+- [Operating model](docs/operating-model.md)
+- [Data lifecycle](docs/data-lifecycle.md)
+- [Permission model](docs/permission-model.md)
+- [Threat model](docs/threat-model.md)
+- [Dashboard architecture](docs/dashboard-architecture.md)
+- [Agent model](docs/agent-model.md)
+- [Finance model](docs/finance-model.md)
+- [Connector model](docs/connector-model.md)
+- [REST API](docs/api-reference.md)
+- [MCP tools](docs/mcp-reference.md)
+- [OSS evaluation](docs/oss-evaluation.md)
+- [Upgrade guide](docs/upgrade-guide.md)
+
+Fixtures are synthetic. Never commit private client, employee, credential, or financial data.
+
+Apache-2.0.
 

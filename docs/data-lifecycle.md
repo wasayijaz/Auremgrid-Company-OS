@@ -1,5 +1,9 @@
 # Data Lifecycle
 
+External events first become SourceArtifact/Document evidence or a Signal. Classification routes a signal to a proposal, work item, risk, decision, notification, or approval. Uncertain extraction cannot enter canonical facts directly.
+
+Canonical rows are durable and audited. Projection state records rebuild health and counts. Entity merges retain merge history. Proposal review retains the proposer, evidence, reviewer, decision time, and promoted record ID.
+
 1. Register a source artifact for one workspace.
 2. Grant actors access to that source.
 3. Ingest documents with content hashes and locators.

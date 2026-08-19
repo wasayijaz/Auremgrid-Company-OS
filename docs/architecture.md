@@ -1,5 +1,11 @@
 # Architecture
 
+## Agency-scale organization model
+
+Organization is the tenant boundary. Internal and client workspaces sit beneath it; people are organization-level identities joined to any number of workspaces. The SQLite ledger uses ordered migrations. Delivery, client operations, agency systems, agents, automations, integrations, and reports all share that boundary.
+
+Disposable projections rebuild at process start from canonical documents, facts, and memories. The offline embedding implementation is explicitly a deterministic lexical fallback; external semantic providers implement the EmbeddingProvider port.
+
 Auremgrid is built around an evidence ledger. Documents enter from sources, facts and relations are extracted into append-only observations, and query results return evidence bundles with citations.
 
 ## Core Rules
