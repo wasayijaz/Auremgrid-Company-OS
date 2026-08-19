@@ -189,8 +189,15 @@ class CompanyOSTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertIn("text/html", response.getheader("Content-Type", ""))
             self.assertEqual(body.count("<h1>"), 1)
-            for marker in ("health-score", "capture-modal", "command-form", "Client brain coverage"):
+            for marker in (
+                "health-score", "capture-modal", "command-form", "Client brain coverage",
+                "board-view", "list-view", "work-board", "work-detail", "space-list",
+                "Captured", "Assigned", "In progress", "Review", "Shipped",
+            ):
                 self.assertIn(marker, body)
+            self.assertNotIn("Pull request", body)
+            self.assertNotIn("actor_id=${actor}", body)
+            self.assertNotIn("actor_id:actor", body)
             self.assertNotIn("<pre", body)
         finally:
             server.shutdown()

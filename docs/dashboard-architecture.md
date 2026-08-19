@@ -1,6 +1,6 @@
 # Dashboard architecture
 
-The dashboard is a local, dark, dense command-center application served by the Python HTTP process. It requires no frontend build or remote asset.
+The dashboard is a local, light desktop-style operating application served by the Python HTTP process. Its Work surface provides workspace navigation, board/list views, filters, lifecycle lanes, and a contextual detail inspector, while Command, Clients, Brain, Finance, Agents, and integration views remain first-class. It requires no frontend build or remote asset.
 
 Global navigation covers Command, Clients, Work, Projects, Review, Campaigns, Content, Creative, Brain, Meetings, People, Finance, Agents, Automations, Reports, Integrations, and Settings.
 

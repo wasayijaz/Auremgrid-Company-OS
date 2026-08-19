@@ -185,7 +185,7 @@ Create a seeded evaluation database, issue its first local session, then start t
 
 ```text
 auremgrid demo --db auremgrid-demo.sqlite
-auremgrid bootstrap-auth --db auremgrid-demo.sqlite --organization org_demo --person person_demo_owner --email owner@example.invalid --workspace ws_alpha --actor act_alpha_admin
+auremgrid bootstrap-auth --db auremgrid-demo.sqlite --organization org_demo --person person_demo_owner --email owner@demo.invalid --workspace ws_alpha --actor act_alpha_admin
 auremgrid serve --host 127.0.0.1 --port 8791 --db auremgrid-demo.sqlite
 ```
 
