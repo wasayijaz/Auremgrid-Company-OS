@@ -166,35 +166,6 @@ class AgentOperations:
         if op == "contains": return actual is not None and expected in actual
         return False
 
-    def upsert_integration(self, organization_id: str, person_id: str, source: str,
-        workspace_mappings: dict[str, str], permissions: list[str], status: str = "not_connected") -> dict[str, Any]:
-        membership=self.company.org_membership(organization_id,person_id)
-        if membership is None or membership.role not in {"owner","admin"}: raise AuthorizationError("organization admin required")
-        existing=self.conn.execute("SELECT id FROM integrations WHERE organization_id=? AND source=?",(organization_id,source)).fetchone(); item_id=existing[0] if existing else self.new_id("integration")
-        now=_now().isoformat(); self.conn.execute("""INSERT INTO integrations VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,source) DO UPDATE SET
-            status=excluded.status,workspace_mappings=excluded.workspace_mappings,permissions=excluded.permissions,health=excluded.health""",
-        (item_id,organization_id,source,status,json.dumps(workspace_mappings),json.dumps(permissions),None,None,None,0,"healthy" if status=="connected" else "not_connected",now)); self.conn.commit(); return dict(self.conn.execute("SELECT * FROM integrations WHERE id=?",(item_id,)).fetchone())
-
-    def start_sync(self, organization_id: str, person_id: str, integration_id: str) -> dict[str,Any]:
-        if self.company.org_membership(organization_id,person_id) is None: raise AuthorizationError("organization membership required")
-        integration=self.conn.execute("SELECT * FROM integrations WHERE organization_id=? AND id=?",(organization_id,integration_id)).fetchone()
-        if integration is None: raise NotFoundError("integration not found")
-        item={"id":self.new_id("sync"),"integration_id":integration_id,"status":"running","started_at":_now().isoformat(),
-            "completed_at":None,"cursor_before":integration["sync_cursor"],"cursor_after":None,"object_count":0,"error":None}
-        self.conn.execute("INSERT INTO sync_runs VALUES (?,?,?,?,?,?,?,?,?)",tuple(item.values()));self.conn.commit();return item
-
-    def complete_sync(self, organization_id: str, person_id: str, sync_run_id: str, object_count: int,
-        cursor_after: str | None = None, error: str | None = None) -> dict[str,Any]:
-        if self.company.org_membership(organization_id,person_id) is None: raise AuthorizationError("organization membership required")
-        run=self.conn.execute("""SELECT sr.*,i.organization_id FROM sync_runs sr JOIN integrations i ON i.id=sr.integration_id
-            WHERE i.organization_id=? AND sr.id=?""",(organization_id,sync_run_id)).fetchone()
-        if run is None or run["status"]!="running": raise ValidationError("running sync required")
-        status="failed" if error else "completed";now=_now().isoformat()
-        self.conn.execute("UPDATE sync_runs SET status=?,completed_at=?,cursor_after=?,object_count=?,error=? WHERE id=?",(status,now,cursor_after,object_count,error,sync_run_id))
-        self.conn.execute("UPDATE integrations SET status=?,sync_cursor=?,last_sync_at=?,last_error=?,object_count=object_count+?,health=? WHERE id=?",
-            ("error" if error else "connected",cursor_after,now,error,object_count,"error" if error else "healthy",run["integration_id"]));self.conn.commit()
-        return dict(self.conn.execute("SELECT * FROM sync_runs WHERE id=?",(sync_run_id,)).fetchone())
-
     def generate_report(self, organization_id: str, person_id: str, type: str, workspace_id: str | None = None) -> dict[str, Any]:
         if self.company.org_membership(organization_id,person_id) is None: raise AuthorizationError("organization membership required")
         allowed={"daily_owner_brief","weekly_agency_brief","client_weekly_report","campaign_report","workload_report","capacity_report","revenue_report","churn_risk_report","creative_performance_report"}

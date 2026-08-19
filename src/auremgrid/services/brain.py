@@ -55,6 +55,7 @@ from auremgrid.services.workflow_ops import WorkflowOperations
 from auremgrid.services.auth import AuthService
 from auremgrid.services.job_ops import JobOperations
 from auremgrid.services.secrets import EnvironmentSecretStore, SecretBindingService
+from auremgrid.services.integration_ops import IntegrationOperations
 from auremgrid.adapters.semantic import DeterministicFallbackEmbeddingProvider, LocalVectorIndex
 
 
@@ -95,6 +96,7 @@ class CompanyOS:
         self.auth = AuthService(self.store.conn, new_id)
         self.jobs = JobOperations(self.store.conn, new_id)
         self.secrets = SecretBindingService(self.store.conn, new_id, EnvironmentSecretStore())
+        self.integrations = IntegrationOperations(self)
         self.rebuild_projections()
 
     def close(self) -> None:

@@ -19,7 +19,7 @@ LEGACY_ACTOR_PATHS = {
     "/work/submit-review", "/work/submit_review", "/work/close-review", "/work/close_review",
     "/work/ship", "/work/ship_work",
 }
-JOB_TYPES = {"connector.sync", "report.generate", "projection.rebuild", "agent.run", "automation.execute", "outbox.dispatch", "backup.create"}
+JOB_TYPES = {"report.generate", "projection.rebuild", "agent.run", "automation.execute", "outbox.dispatch", "backup.create"}
 
 
 def _route_capability(path: str, method: str) -> str:
@@ -38,7 +38,8 @@ def _route_capability(path: str, method: str) -> str:
     if path.startswith("/auth/"): return "auth_manage"
     if path.startswith("/workflows/approvals") or path.startswith("/workflows/handoffs") or path.startswith("/workflows/stages"): return "workflow_gate"
     if path.startswith("/workflows"): return "workflow_run"
-    if path.startswith("/integrations/sync"): return "integration_sync"
+    if path == "/integrations/credentials": return "secret_bind"
+    if path in {"/integrations/verify","/integrations/sync"}: return "integration_sync"
     if path == "/integrations": return "integration_configure"
     if path.startswith("/agents/runs") or path == "/agents/tasks": return "agent_run"
     if path.startswith("/agents"): return "agent_configure"
@@ -212,9 +213,8 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 rows=self.os.store.conn.execute(f"SELECT * FROM {table} WHERE organization_id=? ORDER BY rowid DESC",(organization_id,)).fetchall()
                 self._json(200,{parsed.path[1:]:[dict(r) for r in rows]});return
             if parsed.path == "/integrations":
-                organization_id,person_id=_need(params,"organization_id"),_need(params,"person_id")
-                if self.os.company.org_membership(organization_id,person_id) is None: raise AuthorizationError("organization membership required")
-                self._json(200,{"integrations":[dict(r) for r in self.os.store.conn.execute("SELECT * FROM integrations WHERE organization_id=? ORDER BY source",(organization_id,)).fetchall()]}); return
+                assert identity is not None
+                self._json(200,{"integrations":self.os.integrations.list(identity)}); return
             if parsed.path == "/memory-proposals":
                 organization_id,person_id=_need(params,"organization_id"),_need(params,"person_id"); workspace_id=params.get("workspace_id")
                 if workspace_id:self.os._require_person_access(organization_id,workspace_id,person_id)
@@ -291,6 +291,7 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/jobs/cancel":
                 item=self.os.jobs.cancel_job(identity.organization_id,_optional_str(payload.get("workspace_id")),_need(payload,"job_id"),
                     _need(payload,"reason"),identity.principal_id,_optional_int(payload.get("expected_version")))
+                if item["type"]=="connector.sync": self.os.integrations.release_job_stream(item["id"])
                 self._json(200,item); return
             if parsed.path == "/search":
                 bundle = self.os.search(
@@ -410,7 +411,20 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/approvals/decide":
                 self._json(200,self.os.agency_ops.decide_approval(_need(payload,"organization_id"),_need(payload,"approver_person_id"),_need(payload,"approval_id"),_bool(payload.get("approved"),"approved"),str(payload.get("comments","")))); return
             if parsed.path == "/integrations":
-                self._json(200,self.os.agent_ops.upsert_integration(_need(payload,"organization_id"),_need(payload,"person_id"),_need(payload,"source"),payload.get("workspace_mappings") or {},[str(x) for x in payload.get("permissions",[])],str(payload.get("status","not_connected")))); return
+                item=self.os.integrations.configure(identity,_need(payload,"source"),_need(payload,"expected_account_id"),payload.get("workspace_mappings") or {},
+                    [str(x) for x in payload.get("permissions",[])])
+                self._json(201,item); return
+            if parsed.path == "/integrations/credentials":
+                item=self.os.integrations.bind_credential(identity,_need(payload,"integration_id"),_need(payload,"name"),
+                    _need(payload,"reference"),[str(x) for x in payload.get("scopes",[])])
+                self._json(201,item); return
+            if parsed.path == "/integrations/verify":
+                self._json(200,self.os.integrations.verify(identity,_need(payload,"integration_id"))); return
+            if parsed.path == "/integrations/sync":
+                integration_id=_need(payload,"integration_id")
+                items=self.os.integrations.enqueue_sync(identity,integration_id,int(payload.get("priority",0)),
+                    int(payload.get("max_attempts",5)),_optional_str(payload.get("idempotency_key")))
+                self._json(202,{"jobs":items}); return
             if parsed.path == "/reports/generate":
                 self._json(201,self.os.agent_ops.generate_report(_need(payload,"organization_id"),_need(payload,"person_id"),_need(payload,"type"),_optional_str(payload.get("workspace_id")))); return
             if parsed.path == "/agents/seed":
@@ -429,10 +443,6 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200,self.os.agent_ops.execute_approved_automation_run(_need(payload,"organization_id"),_need(payload,"person_id"),_need(payload,"run_id")));return
             if parsed.path == "/automations/activate":
                 self._json(200,self.os.agent_ops.activate_automation(_need(payload,"organization_id"),_need(payload,"person_id"),_need(payload,"automation_id")));return
-            if parsed.path == "/integrations/sync/start":
-                self._json(201,self.os.agent_ops.start_sync(_need(payload,"organization_id"),_need(payload,"person_id"),_need(payload,"integration_id")));return
-            if parsed.path == "/integrations/sync/complete":
-                self._json(200,self.os.agent_ops.complete_sync(_need(payload,"organization_id"),_need(payload,"person_id"),_need(payload,"sync_run_id"),int(payload.get("object_count",0)),_optional_str(payload.get("cursor_after")),_optional_str(payload.get("error"))));return
             if parsed.path == "/memory-proposals":
                 self._json(201,self.os.brain_ops.create_proposal(_need(payload,"organization_id"),_optional_str(payload.get("workspace_id")),_need(payload,"proposer_type"),_need(payload,"proposer_id"),_need(payload,"kind"),_need(payload,"content"),payload.get("payload") or {},_need(payload,"evidence"),float(payload.get("confidence",0.5)),_optional_str(payload.get("source_id")))); return
             if parsed.path == "/memory-proposals/review":

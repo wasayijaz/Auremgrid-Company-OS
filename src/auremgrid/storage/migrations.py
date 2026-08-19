@@ -1002,6 +1002,178 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        12,
+        "connector_inbox_cursor_dedupe",
+        """
+        ALTER TABLE secret_bindings ADD COLUMN generation INTEGER NOT NULL DEFAULT 1;
+
+        CREATE TABLE IF NOT EXISTS connector_cursors (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            cursor_type TEXT NOT NULL,
+            cursor_value TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            UNIQUE(organization_id, workspace_id, connector, account_key, cursor_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_connector_cursors_scope
+            ON connector_cursors(organization_id, workspace_id, connector, account_key);
+
+        CREATE TABLE IF NOT EXISTS connector_ingest_batches (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            cursor_type TEXT NOT NULL,
+            cursor_before TEXT,
+            cursor_version_before INTEGER NOT NULL DEFAULT 0,
+            cursor_after TEXT,
+            status TEXT NOT NULL CHECK(status IN ('pending','completed','failed','rate_limited')),
+            event_count INTEGER NOT NULL,
+            rate_limit_retry_after_seconds INTEGER,
+            rate_limit_reset_at TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_connector_batches_scope
+            ON connector_ingest_batches(organization_id, workspace_id, connector, account_key, created_at);
+
+        CREATE TABLE IF NOT EXISTS connector_source_events (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            dedupe_key TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            locator TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            observed_at TEXT,
+            received_at TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','leased','ingested','skipped','failed','quarantined')),
+            ingest_error TEXT,
+            ingested_at TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 3,
+            available_at TEXT NOT NULL,
+            lease_owner TEXT,
+            lease_token TEXT,
+            lease_expires_at TEXT,
+            quarantine_reason TEXT,
+            version INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(batch_id) REFERENCES connector_ingest_batches(id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_connector_source_events_batch
+            ON connector_source_events(batch_id, status);
+        CREATE INDEX IF NOT EXISTS idx_connector_source_events_scope
+            ON connector_source_events(organization_id, workspace_id, connector, status, received_at);
+
+        CREATE TABLE IF NOT EXISTS connector_batch_events (
+            batch_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(batch_id, event_id),
+            FOREIGN KEY(batch_id) REFERENCES connector_ingest_batches(id),
+            FOREIGN KEY(event_id) REFERENCES connector_source_events(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_connector_batch_events_event
+            ON connector_batch_events(event_id);
+
+        CREATE TABLE IF NOT EXISTS connector_dedupe_keys (
+            organization_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            dedupe_key TEXT NOT NULL,
+            first_event_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(organization_id, connector, account_key, dedupe_key),
+            FOREIGN KEY(first_event_id) REFERENCES connector_source_events(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS connector_stream_locks (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            stream_key TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            mapping_hash TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('active','released','cancelled','replaced')),
+            lease_owner TEXT NOT NULL,
+            reservation_token TEXT NOT NULL,
+            reserved_at TEXT NOT NULL,
+            lease_expires_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            released_at TEXT,
+            cancelled_at TEXT,
+            replaced_by_id TEXT,
+            version INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(job_id) REFERENCES jobs(id),
+            FOREIGN KEY(replaced_by_id) REFERENCES connector_stream_locks(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_connector_stream_locks_active
+            ON connector_stream_locks(organization_id, workspace_id, connector, stream_key)
+            WHERE status='active';
+        CREATE INDEX IF NOT EXISTS idx_connector_stream_locks_job
+            ON connector_stream_locks(job_id, status);
+
+        CREATE TRIGGER IF NOT EXISTS connector_source_events_no_payload_update
+        BEFORE UPDATE OF batch_id, organization_id, workspace_id, connector, account_key, dedupe_key,
+            external_id, event_type, source_key, locator, media_type, content, content_hash, payload,
+            observed_at, received_at ON connector_source_events
+        BEGIN
+            SELECT RAISE(ABORT, 'connector source event payloads are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS connector_source_events_no_delete BEFORE DELETE ON connector_source_events
+        BEGIN
+            SELECT RAISE(ABORT, 'connector source events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS connector_dedupe_no_update BEFORE UPDATE ON connector_dedupe_keys
+        BEGIN
+            SELECT RAISE(ABORT, 'connector dedupe keys are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS connector_dedupe_no_delete BEFORE DELETE ON connector_dedupe_keys
+        BEGIN
+            SELECT RAISE(ABORT, 'connector dedupe keys are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS connector_stream_lock_identity_no_update
+        BEFORE UPDATE OF organization_id, workspace_id, connector, account_key, stream_key, job_id, mapping_hash
+            ON connector_stream_locks
+        BEGIN
+            SELECT RAISE(ABORT, 'connector stream lock identity is immutable');
+        END;
+
+        ALTER TABLE integrations ADD COLUMN expected_account_id TEXT;
+        ALTER TABLE integrations ADD COLUMN provider_account_id TEXT;
+        ALTER TABLE integrations ADD COLUMN provider_account_name TEXT;
+        ALTER TABLE integrations ADD COLUMN granted_permissions TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE integrations ADD COLUMN credential_verified_at TEXT;
+        UPDATE integrations SET status='not_connected', health='never_synced', sync_cursor=NULL,
+            last_error=NULL, provider_account_id=NULL, provider_account_name=NULL,
+            granted_permissions='[]', credential_verified_at=NULL;
+        """,
+    ),
 )
 
 

@@ -1,124 +1,316 @@
 # Auremgrid Company OS
 
-Auremgrid is a local-first operating system for a retainer agency. It combines a temporal, cited company brain with client operations, delivery, people, finance, campaigns, agents, automations, approvals, integrations, and reporting in one organization-scoped SQLite ledger.
+Auremgrid is a local-first operating system for an agency that needs one auditable place for client context, delivery work, approvals, evidence, and operating decisions. It uses an organization-scoped SQLite ledger as the canonical record and rebuildable local projections for search and analysis.
 
-The canonical ledger is authoritative. Search indexes, graph projections, embeddings, summaries, connectors, and agent runtimes are replaceable execution surfaces.
+The product decision is simple: keep authority, permissions, provenance, and temporal history in a small system the agency can inspect and back up itself; connect external tools only through explicit, restart-safe adapters.
 
-## Current status
+## Executive view
 
-### Implemented
+### The problem it addresses
 
-- Organizations with internal and client workspaces
-- Organization-level people who can belong to multiple client workspaces
-- Opaque bearer sessions and API tokens, hash-only credential storage, principal-to-actor bindings, and deny-by-default capability checks across HTTP and MCP
-- Projects, expanded work items, subtasks, dependencies, comments, files, watchers, versions, time entries, and forced delivery stages
-- Versioned cross-wing workflow definitions and immutable runs with dependency readiness, rework routes, evidence gates, approvals, handoff contracts, SLAs, escalation, idempotency, cancellation, and append-only transition history
-- Deliverables, internal/client reviews, timestamped comments, decisions, and temporal decision fields
-- Meetings, transcripts, proposed outputs, conversations, messages, unanswered-request detection, and the Signal inbox
-- Contacts, influence, decision power, relationships, sentiment history, approver detection, and declining-engagement detection
-- Explainable client-health snapshots, risks, opportunities, contracts, scope allowances, and scope usage
-- Campaigns, sourced metric snapshots, creatives, content pipeline, people skills, availability, capacity, and utilization contracts
-- Finance connection state, invoices, revenue records, costs, budgets, software costs, AI costs, and client-economics schema
-- Relevance-ranked notifications and generic approval requests
-- Sol, Terra, Luna, and extensible agent records; tasks, queues, runs, tool calls, outputs, errors, tokens, costs, and traces
-- Training-mode automations with conditions, actions, and approval checkpoints
-- Integration and sync-run state
-- External secret bindings that persist references/fingerprints only, resolve values at use time, and centrally redact credential-shaped data
-- Durable organization/workspace/principal-scoped jobs with atomic claims, leases, fencing tokens, progress, retry/backoff, dead-letter state, cancellation, idempotency, and append-only events
-- At-least-once outbox state with leased publishing, retry, idempotency, and stale-worker fencing
-- Online SQLite backup manifests plus checksum/integrity/foreign-key verification and recovery-mode restore fencing
-- Cited report runs
-- Entity aliases, high-confidence merges with history, memory/fact/decision proposals, and knowledge-health checks
-- Versioned SQLite migrations through schema version 11
-- Restart-safe rebuilding of local graph, memory, vector, and summary projections
-- REST APIs, protocol-neutral MCP-style tools, CLI, and a dark multi-page command-center dashboard
+Agency work is usually split across conversations, task boards, documents, design files, campaign tools, finance tools, and spreadsheets. That makes it hard to answer basic operating questions: what was promised, who owns the next step, which client can see a record, what evidence supports a claim, and what is waiting for approval.
 
-### Local fallbacks
+### What Auremgrid changes
 
-- SQLite FTS5 is the durable keyword index.
-- DeterministicFallbackEmbeddingProvider is the offline lexical-vector fallback. It is not presented as a semantic model.
-- Graphiti-style, Cognee-style, Mem0-style, LightRAG-style, GraphRAG-style, RAGFlow-style, Onyx-style, and Letta-style implementations are local projections that mimic useful interfaces. They are not the upstream services.
-- The dashboard uses local HTML, CSS, and JavaScript with no frontend build step.
+- A single organization and workspace boundary for people, clients, projects, work, decisions, evidence, and audit history.
+- A temporal company brain: source documents, facts, relations, citations, conflicts, proposals, and signals remain distinguishable.
+- Executable cross-wing workflows with dependencies, evidence gates, approvals, handoffs, SLAs, escalation, rework, and immutable run snapshots.
+- Durable jobs and connector sync that can restart without silently advancing a cursor or claiming a provider is healthy when it is not.
+- A local dashboard, REST API, MCP-style tools, and CLI over the same policy and canonical ledger.
 
-### Optional integrations
+This is an operating control plane, not a replacement for every specialist tool. Slack and ClickUp have credential-backed read synchronization. Google Drive and Gmail adapters are tested but deliberately disabled for live sync until routing, backfill, account verification, and error classification meet the same safety gates.
 
-Slack, Google Drive, Gmail, ClickUp, Figma, GitHub, Fireflies, Meta Ads, Google Ads, Stripe, and accounting systems use the persisted Integration and SyncRun contracts. Real credentials are optional and are not stored in this repository.
+## Who it serves—and who it does not
 
-### Experimental
+### Good fit
 
-- External semantic embedding providers
-- Networked upstream OSS engines
-- Automated information extraction beyond deterministic fixture syntax
-- Fully unattended automations after training-mode approval
+- Retainer or project agencies coordinating strategy, product, paid media, design, video, and operations across several client workspaces.
+- Owners and operations leads who need explainable health, scope, risk, and delivery status rather than another unscoped task list.
+- Teams that prefer local control, inspectable SQLite, explicit backups, and reversible connector integrations.
+- Technical operators who can run a Python process and keep a durable database path available to the worker and backup process.
 
-### Planned connector-specific work
+### Not the right first choice
 
-Provider authentication, webhook verification, rate-limit handling, and production field mappings must be completed per provider before a connector can report connected. Auremgrid returns not_connected until that happens and never fabricates financial or campaign values.
+- A team seeking a hosted CRM, a full accounting system, or a general-purpose project-management replacement.
+- A company that requires managed multi-region availability, built-in OAuth installation, or guaranteed unattended production operations today.
+- A workload that needs high-volume event streaming or binary asset storage; Auremgrid records metadata, evidence, and links while asset backup remains a separate policy.
 
-## Architecture
+## Outcomes and use cases
 
-    Organization
-    ├── Internal workspace / company brain
-    └── Client workspaces
-        ├── projects → campaigns → work → deliverables → reviews
-        ├── meetings / communication → signals → proposals or operations
-        └── sources → documents → temporal facts and decisions
+| Operating question | Auremgrid outcome |
+|---|---|
+| “What is true for this client, and when was it true?” | Cited facts with observed time, validity windows, source permissions, and conflict history. |
+| “What should happen next?” | Work items, dependencies, owners, forced review, and accountable notifications. |
+| “Can this request move across several disciplines?” | Versioned workflow template, stage evidence, approval gate, handoff contract, SLA, and rework route. |
+| “Are we drifting from the agreement?” | Contract allowances, scope usage, risks, opportunities, health explanations, and decision records. |
+| “Can a worker or connector resume safely?” | Leased jobs, fencing, retries, dead letters, inbox dedupe, durable cursors, and explicit degraded state. |
+| “Can an assistant change the company record?” | No silently: AI outputs enter as proposals/signals and promotion remains human or policy controlled. |
 
-    Canonical SQLite ledger
-    ├── ACL, provenance, temporal history, audit, approvals
-    ├── agency operating domains and versioned workflow runs
-    └── rebuildable local projections: FTS, offline vectors, graph, memory, summaries
+## Capability map
 
-Authorization happens before retrieval, ranking, counts, or existence disclosure. AI-generated information enters through proposals or signals and is never silently promoted to canonical truth.
+| Module | What it provides | Current status |
+|---|---|---|
+| Organization and identity | Organizations, internal/client workspaces, people, memberships, principals, sessions, API tokens, actor bindings | Implemented; deny-by-default policy |
+| Company brain | Sources, documents, temporal facts, relations, citations, aliases, conflicts, history, proposals, knowledge health | Implemented; SQLite FTS5 and local projections |
+| Client operations | Briefs, health explanations, risks, opportunities, contacts, relationships, meetings, conversations, unanswered requests | Implemented |
+| Projects and delivery | Projects, work hierarchy, subtasks, dependencies, comments, files, versions, time entries, reviews, approvals, forced delivery stages | Implemented |
+| Cross-wing workflows | Neutral templates, immutable definition versions/runs, readiness, evidence, gates, handoffs, SLAs, escalation, cancellation, rework | Implemented; eight representative templates |
+| Campaigns and content | Campaigns, sourced metrics, creatives, content stages, performance snapshots | Implemented; values remain unknown/not connected until sourced |
+| People and capacity | Skills, availability, leave, capacity snapshots, utilization contracts | Implemented |
+| Finance | Connection state, invoices, revenue, costs, budgets, software/AI cost records, client economics | Implemented schema and sourced records; never fabricates values |
+| Agents and automations | Agent records, scoped roles, tasks, queues, runs, tool calls, outputs, costs, traces, training-mode automations | Implemented; unattended automation remains experimental |
+| Integrations | Explicit mappings, external secret references, verification, sync runs, connector inbox/dedupe | Slack and ClickUp live read sync; Google Drive/Gmail disabled live; other providers catalog-only |
+| Jobs, outbox, recovery | Atomic claims, leases, fencing, progress, retry/backoff, dead letters, cancellation, idempotency, append-only events, recovery mode | Implemented; outbound sends remain a future gate |
+| Interfaces | Local dashboard, REST API, MCP-style router, CLI | Implemented; all policy remains service-side |
+| Storage and projections | Versioned SQLite migrations, online backups, checksums, integrity/FK verification, restart-safe rebuilds | Implemented; external binary assets require separate backup |
 
-## Run locally
+## How the system hangs together
 
-Requirements: Python 3.12+, SQLite with FTS5, and no required Docker, API key, network service, or frontend toolchain.
+### Company hierarchy and data isolation
 
-Run the suite:
+```mermaid
+graph TD
+    O[Organization] --> I[Internal workspace<br/>company brain]
+    O --> C1[Client workspace A]
+    O --> C2[Client workspace B]
+    P[Organization person] --> I
+    P --> C1
+    I --> L[Canonical SQLite ledger]
+    C1 --> L
+    C2 --> L
+    L --> ACL[ACL before lookup, ranking, counts, or aggregation]
+    L --> PROJ[Rebuildable FTS, graph, vector, memory, summary projections]
+```
 
-    .\tools\test.ps1
+People are organization-level identities. A person can span client workspaces, but every read and write is scoped through organization and workspace membership. Denied records are not disclosed through counts, ranking, or existence checks.
 
-Start the synthetic demo:
+### Request-to-delivery cross-wing workflow
 
-    $env:PYTHONPATH="$PWD\src"
-    python -m auremgrid.cli serve --host 127.0.0.1 --port 8791 --db auremgrid-demo.sqlite --seed
+```mermaid
+flowchart LR
+    Intake[Request intake] --> Brief[Strategy brief]
+    Brief -->|evidence + owner| Build[Design / Product / Media / Video build]
+    Build --> Review[Internal or client approval]
+    Review -->|reject| Rework[Earlier stage rework]
+    Rework --> Build
+    Review --> Handoff[Cross-wing handoff]
+    Handoff --> Release[Operations release]
+    Release --> Monitor[Performance / health review]
+    Monitor --> Learn[Decision and next-period plan]
+```
 
-Open http://127.0.0.1:8791/.
+Each run snapshots the validated definition. Dependencies control readiness; stage order is the canonical presentation sequence. One-way gates require evidence and an approver, and rejected work records its route back.
 
-Create the first local owner session and bind it to a legacy evidence actor:
+### Evidence, knowledge, and proposals
 
-    auremgrid bootstrap-auth --db auremgrid-demo.sqlite --organization org_demo --person person_demo_owner --email owner@demo.invalid --workspace ws_alpha --actor act_alpha_admin
+```mermaid
+flowchart TD
+    Source[Source artifact] --> Doc[Document + observed time]
+    Doc --> Extract[Deterministic extraction / local projection]
+    Extract --> Fact[Temporal fact or relation + citation]
+    Extract --> Conflict[Conflict / uncertainty]
+    Conflict --> Proposal[Memory, fact, or decision proposal]
+    Proposal --> Human[Authorized review]
+    Human -->|promote| Canonical[Canonical ledger]
+    Human -->|reject / defer| Signal[Signal or unresolved state]
+```
 
-The command prints the opaque session token once. The dashboard asks for that token and stores it in browser-local storage. Run one durable background job in a separate process with:
+Source text is evidence, not executable instruction. AI-generated output is not silently promoted into canonical truth.
 
-    auremgrid worker-once --db auremgrid-demo.sqlite --organization org_demo --workspace ws_alpha --worker-id local-worker-1
+### Authentication, jobs, connectors, and recovery
 
-Back up and verify without copying a live WAL file:
+```mermaid
+flowchart TD
+    Client[REST / MCP / dashboard caller] --> Auth[Bearer session or API token]
+    Auth --> Policy[Principal + role + workspace capability policy]
+    Policy --> API[Service action]
+    API --> Job[Durable job with lease + fencing]
+    Job --> Worker[Separate worker process]
+    Worker --> Connector[Verified Slack / ClickUp read connector]
+    Connector --> Inbox[Inbox dedupe + cursor checkpoint]
+    Inbox --> Ledger[Canonical evidence ledger]
+    Ledger --> Backup[Online SQLite backup + manifest]
+    Backup --> Restore[Verified restore + session revocation + recovery mode]
+```
 
-    auremgrid backup --db auremgrid-demo.sqlite --output backups/company.sqlite
-    auremgrid verify-backup --backup backups/company.sqlite
+Credentials are externally referenced and resolved only inside authorized execution. Hashes/fingerprints and sanitized metadata may be recorded; secret values and authorization headers are not.
 
-See [local deployment](docs/local-deployment.md) and the [upgrade guide](docs/upgrade-guide.md).
+### Rollout maturity
 
-## Operating invariants
+```mermaid
+flowchart LR
+    Local[Local evaluation<br/>SQLite + dashboard + fixtures] --> Controlled[Controlled operation<br/>principals + approvals + backups]
+    Controlled --> Durable[Durable operation<br/>jobs + fencing + recovery]
+    Durable --> Live[Live read sync<br/>verified Slack / ClickUp mappings]
+    Live -. roadmap .-> Planned[Planned<br/>OAuth + webhooks + Google live sync]
+```
 
-- Auremgrid owns organizations, permissions, canonical facts, temporal history, work state, approvals, finance truth, and audit.
-- People are organization-level identities; workspace membership grants client access.
-- Permission filters run before ranking or aggregation.
-- Public JSON APIs derive organization, person, workspace role, and legacy actor from the bearer principal; request IDs cannot impersonate another caller.
-- Secret values are resolved from an external store only inside authorized execution and are never written to the canonical ledger, jobs, or outbox.
-- Web requests are serialized over the local SQLite connection; durable workers use separate processes, WAL, leases, and fencing tokens.
-- Restores revoke sessions, recover in-flight jobs, and disable outbound dispatch until a human exits recovery mode.
-- Source evidence is untrusted data and cannot issue instructions.
-- Uncertain extracted information becomes a proposal or signal.
-- Direct work follows its intake and review contract; executable workflows apply their own validated checklist, approval, handoff, and completion policies instead of a universal creative checklist.
-- New automations start in training mode.
-- One-way actions require a human checkpoint.
-- Finance and campaign metrics remain unknown or not_connected until sourced.
-- Local projections can be rebuilt from the canonical ledger.
+The last line is a roadmap, not a current capability claim.
 
-## Documentation
+## Requirements
+
+### Minimum for a local evaluation
+
+- Windows, macOS, or Linux with a supported 64-bit Python 3.12+ runtime.
+- SQLite built with FTS5 (the standard Python SQLite build normally includes it).
+- 2 CPU cores, 4 GB RAM, and 1 GB free disk for the synthetic demo and tests.
+- A durable writable path for the SQLite file; no Docker, Node, API key, or network service is required for the offline path.
+
+### Recommended for a small agency deployment
+
+- 4 CPU cores, 8–16 GB RAM, SSD storage, and a filesystem with reliable locking and scheduled snapshots.
+- Separate web and worker processes using the same durable database path.
+- A secret manager or environment-backed secret store, plus an independent backup destination and restore rehearsal.
+- Restrict the listening interface to localhost or a private network until a reverse proxy, TLS, and operational access policy are in place.
+
+## Setup: clone to a working local system
+
+```text
+git clone <repository-url>
+cd Auremgrid-Company-OS
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+python -m pip install -e .
+```
+
+Run the offline verification suite:
+
+```text
+.\tools\test.ps1                 # PowerShell
+python -m unittest discover -s tests
+```
+
+Create a seeded evaluation database, issue its first local session, then start the server:
+
+```text
+auremgrid demo --db auremgrid-demo.sqlite
+auremgrid bootstrap-auth --db auremgrid-demo.sqlite --organization org_demo --person person_demo_owner --email owner@example.invalid --workspace ws_alpha --actor act_alpha_admin
+auremgrid serve --host 127.0.0.1 --port 8791 --db auremgrid-demo.sqlite
+```
+
+The bootstrap command prints the session token once. Open `http://127.0.0.1:8791/` and paste that token when prompted. For a real organization database, create or import the organization and person records first, then bootstrap the first principal:
+
+```text
+auremgrid bootstrap-auth --db agency.sqlite --organization <organization-id> --person <person-id> --email owner@example.invalid --workspace <workspace-id> --actor <legacy-actor-id>
+```
+
+The token is not recoverable from the database; the dashboard stores the supplied value in browser-local storage, while API clients can keep it in an environment variable. Run one durable job in a separate process:
+
+```text
+auremgrid worker-once --db agency.sqlite --organization <organization-id> --workspace <workspace-id> --worker-id local-worker-1
+```
+
+Create and verify an online backup without copying a live WAL file:
+
+```text
+auremgrid backup --db agency.sqlite --output backups/agency.sqlite
+auremgrid verify-backup --backup backups/agency.sqlite
+```
+
+Restore is intentionally an explicit offline operation and requires the verified backup plus `--overwrite` when replacing an existing destination.
+
+## First 30 minutes
+
+1. **Minutes 0–5 — Start the seeded system.** Run `demo`, `bootstrap-auth`, and `serve` as shown above; open the dashboard and inspect the internal workspace plus two synthetic client workspaces.
+2. **Minutes 5–10 — Read the brain.** Use the search box and client brief to inspect a cited result, its source, and the distinction between known and unknown information.
+3. **Minutes 10–15 — Inspect delivery control.** Open a project and its work/review records in the dashboard. Use the authenticated REST/MCP work endpoints for assignment, checklist, and review transitions; the dashboard currently presents those records but does not expose every mutation control.
+4. **Minutes 15–20 — Inspect a workflow.** Use the workflow REST/MCP endpoints to list the neutral templates, create a `landing_page` or `campaign_launch` run, start a ready stage, attach evidence, and then return to the dashboard to see the canonical run records. The present dashboard is an operating view; workflow mutation remains API/MCP driven.
+5. **Minutes 20–25 — Inspect control surfaces.** Visit people/capacity, finance, integrations, jobs, and activity. `not_connected` and unknown values are intentional when no source is configured.
+6. **Minutes 25–30 — Exercise recovery.** Run `backup` and `verify-backup`, inspect the manifest, and review [jobs and recovery](docs/jobs-and-recovery.md) before connecting any external provider.
+
+## API and MCP examples
+
+The examples below use placeholders, not real credentials. All JSON and data routes except `/health` require a bearer session or API token. The unauthenticated `/` and `/dashboard` routes serve only the static shell; its data requests still require the token. The server derives identity from the credential, so caller-supplied person, actor, and organization values cannot impersonate another principal.
+
+Health check:
+
+```http
+GET /health HTTP/1.1
+Host: 127.0.0.1:8791
+```
+
+Authenticated identity:
+
+```text
+curl http://127.0.0.1:8791/auth/me \
+  -H "Authorization: Bearer ${AUREMGRID_SESSION_TOKEN}"
+```
+
+Create an idempotent workflow run:
+
+```text
+curl -X POST http://127.0.0.1:8791/workflows/runs \
+  -H "Authorization: Bearer ${AUREMGRID_SESSION_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"organization_id":"<org>","workspace_id":"<workspace>","template_id":"landing_page","idempotency_key":"demo-run-001"}'
+```
+
+The MCP-style interface exposes the same service policy through namespaced tools, for example:
+
+```json
+{
+  "name": "workflows.templates",
+  "arguments": {"organization_id": "<org>", "wing": "Design"}
+}
+```
+
+See [REST API reference](docs/api-reference.md) and [MCP tools](docs/mcp-reference.md) for route/tool coverage and capability requirements.
+
+## Deployment modes
+
+### Local evaluation
+
+One Python process serves the dashboard/API over localhost and uses SQLite. Synthetic fixtures and simulated connectors keep the path offline.
+
+### Controlled single-host operation
+
+Run the web process and `worker-once` jobs as separate processes against a durable SQLite file. Use filesystem permissions, a private bind address, scheduled online backups, and a tested restore destination. This is the intended current operating mode for a small agency.
+
+### External-provider read sync
+
+Bind an external environment reference, verify the provider account and mapped streams, then enqueue a `connector.sync` job. Slack and ClickUp are supported for read synchronization; Google Drive and Gmail remain disabled live. The worker resolves the secret at execution time and records sanitized state only.
+
+### CI and development
+
+Run the unittest suite with synthetic fixtures and injected connector transports. No private accounts or network access are needed. Networked semantic engines and unattended automations remain optional/experimental.
+
+## Security and trust boundaries
+
+- Organization membership and workspace membership are checked before retrieval, ranking, aggregation, counts, or existence disclosure.
+- Sessions and API tokens are opaque; only hashes are stored. API-token scopes narrow role capabilities. Workspace viewer cannot write.
+- External secrets are references/fingerprints. They are resolved only inside authorized connector/job execution and recursively redacted from payloads, evidence, jobs, outbox records, and errors.
+- Source evidence is untrusted data and cannot issue instructions. Extracted uncertainty becomes a proposal or signal; canonical facts are append-only observations with provenance.
+- Durable jobs use atomic claims, leases, retries, dead-letter state, idempotency, and fencing. A stale worker cannot complete a reclaimed job.
+- Restore revokes sessions, recovers in-flight jobs, enables recovery mode, and disables outbound dispatch until a human exits recovery mode.
+- The current HTTP server is a local standard-library server. Put a reverse proxy/TLS/access policy in front of any non-local deployment; production hardening is not claimed by this repository.
+
+## Verified evidence and release discipline
+
+The authoritative release matrix is [release verification](docs/release-verification.md). It tracks isolation, persistence, permissions, workflow gates, projection rebuilds, migration-forward behavior, job fencing, credential redaction, backup verification, dashboard behavior, and live Slack/ClickUp sync safety.
+
+Before a release or schema change, run:
+
+```text
+.\tools\test.ps1
+python -m compileall -q src tests
+git diff --check
+```
+
+The offline suite must not require Docker, provider credentials, a private vault, or network access. Live provider tests use deterministic injected transports; they do not claim that a customer account was connected.
+
+## Current limitations and roadmap
+
+- No in-product OAuth installation/callback flow, webhook ingestion, or refresh-token rotation; credential binding is manual and environment-backed.
+- Google Drive and Gmail change-feed contracts exist but are not live because initial backfill, folder/label routing, and immutable account verification are not complete.
+- Figma, GitHub, Fireflies, advertising, and accounting systems are catalog contracts only and do not report connected.
+- Unattended automations, external semantic providers, upstream OSS engines, and externally visible sends remain experimental or future gates.
+- SQLite is local-first, not a multi-region distributed database. External binary assets require a separate backup policy.
+- The standard-library HTTP server is appropriate for local/private operation; hardened public deployment needs an explicit reverse proxy, TLS, and access review.
+
+The next safe increments are OAuth/PKCE with a write-capable secret backend, webhooks and multiple provider installations, Google routing/backfill, a transactional outbox boundary for externally visible sends, and a documented asset backup policy.
+
+## Documentation map
 
 - [Architecture](docs/architecture.md)
 - [Domain model](docs/domain-model.md)
@@ -126,6 +318,7 @@ See [local deployment](docs/local-deployment.md) and the [upgrade guide](docs/up
 - [Wing workflow catalog](docs/wing-workflows.md)
 - [Authentication and capabilities](docs/authentication.md)
 - [Jobs, outbox, and recovery](docs/jobs-and-recovery.md)
+- [Live connector synchronization](docs/live-connectors.md)
 - [Data lifecycle](docs/data-lifecycle.md)
 - [Permission model](docs/permission-model.md)
 - [Threat model](docs/threat-model.md)
@@ -135,11 +328,9 @@ See [local deployment](docs/local-deployment.md) and the [upgrade guide](docs/up
 - [Connector model](docs/connector-model.md)
 - [REST API](docs/api-reference.md)
 - [MCP tools](docs/mcp-reference.md)
-- [OSS evaluation](docs/oss-evaluation.md)
 - [Upgrade guide](docs/upgrade-guide.md)
 - [Release verification](docs/release-verification.md)
 
 Fixtures are synthetic. Never commit private client, employee, credential, or financial data.
 
 Apache-2.0.
-

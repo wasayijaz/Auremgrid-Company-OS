@@ -248,6 +248,7 @@ class SqliteStore:
         self.conn.executescript(SCHEMA)
         migrate(self.conn)
         self._lock = threading.RLock()
+        self._transaction_depth = 0
 
     @property
     def schema_version(self) -> int:
@@ -258,6 +259,29 @@ class SqliteStore:
         with self._lock:
             yield self.conn
 
+    @contextmanager
+    def atomic(self, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+        """Own one SQLite transaction while repository helpers suppress inner commits."""
+        with self._lock:
+            outermost = self._transaction_depth == 0
+            if outermost:
+                self.conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+            self._transaction_depth += 1
+            try:
+                yield self.conn
+                self._transaction_depth -= 1
+                if outermost:
+                    self.conn.commit()
+            except Exception:
+                self._transaction_depth -= 1
+                if outermost:
+                    self.conn.rollback()
+                raise
+
+    def _commit(self) -> None:
+        if self._transaction_depth == 0:
+            self.conn.commit()
+
     def close(self) -> None:
         with self._lock:
             self.conn.close()
@@ -267,7 +291,7 @@ class SqliteStore:
             "INSERT INTO workspaces(id, name, created_at) VALUES (?, ?, ?)",
             (workspace.id, workspace.name, workspace.created_at.isoformat()),
         )
-        self.conn.commit()
+        self._commit()
         return workspace
 
     def get_workspace(self, workspace_id: str) -> Workspace | None:
@@ -283,7 +307,7 @@ class SqliteStore:
             "INSERT INTO actors(id, workspace_id, name, role, created_at) VALUES (?, ?, ?, ?, ?)",
             (actor.id, actor.workspace_id, actor.name, actor.role, actor.created_at.isoformat()),
         )
-        self.conn.commit()
+        self._commit()
         return actor
 
     def get_actor(self, workspace_id: str, actor_id: str) -> Actor | None:
@@ -360,7 +384,7 @@ class SqliteStore:
                 source.version,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return source
 
     def get_source(self, workspace_id: str, source_id: str) -> SourceArtifact | None:
@@ -391,7 +415,7 @@ class SqliteStore:
             "INSERT INTO documents_fts(document_id, workspace_id, content) VALUES (?, ?, ?)",
             (document.id, document.workspace_id, document.content),
         )
-        self.conn.commit()
+        self._commit()
         return document
 
     def get_document(self, workspace_id: str, document_id: str) -> Document | None:
@@ -428,7 +452,7 @@ class SqliteStore:
                 fact.citation.evidence_span,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return fact
 
     def mark_fact_superseded(self, workspace_id: str, fact_id: str, successor_id: str) -> None:
@@ -436,7 +460,7 @@ class SqliteStore:
             "UPDATE facts SET superseded_by = ? WHERE workspace_id = ? AND id = ?",
             (successor_id, workspace_id, fact_id),
         )
-        self.conn.commit()
+        self._commit()
 
     def create_relation(self, relation: Relation) -> Relation:
         self.conn.execute(
@@ -462,7 +486,7 @@ class SqliteStore:
                 relation.citation.evidence_span,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return relation
 
     def create_memory(self, memory: Memory) -> Memory:
@@ -482,7 +506,7 @@ class SqliteStore:
                 memory.recorded_at.isoformat(),
             ),
         )
-        self.conn.commit()
+        self._commit()
         return memory
 
     def create_audit(self, event: AuditEvent) -> AuditEvent:
@@ -503,7 +527,7 @@ class SqliteStore:
                 event.recorded_at.isoformat(),
             ),
         )
-        self.conn.commit()
+        self._commit()
         return event
 
     def list_audit(self, workspace_id: str) -> list[AuditEvent]:
@@ -571,7 +595,7 @@ class SqliteStore:
                 item.start_date,item.deadline,item.blocking_reason,item.brief,item.brain_context,item.financial_value,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return item
 
     def get_work_item(self, workspace_id: str, work_item_id: str) -> WorkItem | None:
@@ -608,7 +632,7 @@ class SqliteStore:
                 event.recorded_at.isoformat(),
             ),
         )
-        self.conn.commit()
+        self._commit()
         return event
 
     def create_touchpoint(self, touchpoint: Touchpoint) -> Touchpoint:
@@ -628,7 +652,7 @@ class SqliteStore:
                 touchpoint.recorded_at.isoformat(),
             ),
         )
-        self.conn.commit()
+        self._commit()
         return touchpoint
 
     def latest_touchpoint(self, workspace_id: str) -> Touchpoint | None:
@@ -656,7 +680,7 @@ class SqliteStore:
                 playbook.created_at.isoformat(),
             ),
         )
-        self.conn.commit()
+        self._commit()
         return playbook
 
     def list_playbooks(self, workspace_id: str | None = None) -> list[Playbook]:
@@ -722,7 +746,7 @@ class SqliteStore:
                 brain.updated_at.isoformat(),
             ),
         )
-        self.conn.commit()
+        self._commit()
         return brain
 
     def get_client_brain(self, workspace_id: str) -> ClientBrainPack | None:
@@ -754,7 +778,7 @@ class SqliteStore:
             """,
             (post.id, post.workspace_id, post.actor_id, post.body, post.posted_at.isoformat()),
         )
-        self.conn.commit()
+        self._commit()
         return post
 
     def list_status_posts(self, workspace_id: str) -> list[StatusPost]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os as environment
 import threading
 import unittest
 from http.client import HTTPConnection
@@ -32,6 +33,7 @@ class HttpAuthenticationTests(unittest.TestCase):
         self.host, self.port = self.server.server_address
 
     def tearDown(self) -> None:
+        environment.environ.pop("AUREMGRID_HTTP_CONNECTOR_TOKEN", None)
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
@@ -121,6 +123,46 @@ class HttpAuthenticationTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(result["job"]["status"], "queued")
+
+    def test_connector_configuration_earns_connected_state_through_job_flow(self) -> None:
+        status, integration = self.request(
+            "POST", "/integrations", self.token,
+            {"source": "slack", "expected_account_id": "T1", "workspace_mappings": {"C1": "ws_allowed"},
+             "permissions": ["channels:history"], "status": "connected"},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(integration["status"], "not_connected")
+        environment.environ["AUREMGRID_HTTP_CONNECTOR_TOKEN"] = "http-sentinel-token"
+        status, credential = self.request(
+            "POST", "/integrations/credentials", self.token,
+            {"integration_id": integration["id"], "name": "Slack read token",
+             "reference": "env:AUREMGRID_HTTP_CONNECTOR_TOKEN",
+             "scopes": ["connector:slack", "channels:history"]},
+        )
+        self.assertEqual(status, 201)
+        self.assertNotIn("reference", credential)
+
+        def factory(mode, *_args):
+            if mode == "verify":
+                return {"account_id": "T1", "account_name": "Agency workspace",
+                        "granted_permissions": ["channels:history"]}
+            return [], "checkpoint"
+
+        self.os.integrations.connector_factory = factory
+        status, verified = self.request(
+            "POST", "/integrations/verify", self.token, {"integration_id": integration["id"]}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(verified["integration"]["status"], "authorized")
+        self.assertEqual(verified["integration"]["credential"]["status"], "active")
+        status, job = self.request(
+            "POST", "/integrations/sync", self.token,
+            {"integration_id": integration["id"], "idempotency_key": "sync-http-1"},
+        )
+        self.assertEqual(status, 202)
+        self.assertEqual(job["jobs"][0]["type"], "connector.sync")
+        self.assertEqual(job["jobs"][0]["workspace_id"], "ws_allowed")
+        self.assertEqual(job["jobs"][0]["payload"]["integration_id"], integration["id"])
 
 
 if __name__ == "__main__":

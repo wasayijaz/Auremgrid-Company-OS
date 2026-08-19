@@ -92,6 +92,34 @@ class AuthTests(unittest.TestCase):
 
 
 class AuthFileStorageTests(unittest.TestCase):
+    def test_schema_11_upgrade_adds_credential_generation_in_schema_12(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "schema-11.sqlite"
+            original = CompanyOS(path)
+            original.close()
+            connection = sqlite3.connect(path)
+            connection.execute("ALTER TABLE secret_bindings DROP COLUMN generation")
+            for column in (
+                "expected_account_id", "provider_account_id", "provider_account_name",
+                "granted_permissions", "credential_verified_at",
+            ):
+                connection.execute(f"ALTER TABLE integrations DROP COLUMN {column}")
+            connection.execute("DELETE FROM schema_migrations WHERE version=12")
+            connection.commit()
+            connection.close()
+
+            upgraded = CompanyOS(path)
+            try:
+                columns = {
+                    row[1] for row in upgraded.store.conn.execute(
+                        "PRAGMA table_info(secret_bindings)"
+                    ).fetchall()
+                }
+                self.assertEqual(upgraded.store.schema_version, 12)
+                self.assertIn("generation", columns)
+            finally:
+                upgraded.close()
+
     def test_plaintext_session_and_api_tokens_are_absent_from_database_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "company.sqlite"

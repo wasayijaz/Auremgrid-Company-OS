@@ -54,9 +54,13 @@ class AgentAutomationTests(unittest.TestCase):
         active=self.os.agent_ops.activate_automation(self.org.id,self.owner.id,automation["id"]);self.assertEqual(active["status"],"active")
 
     def test_integration_requires_admin_and_tracks_not_connected(self) -> None:
+        member_principal=self.os.auth.create_principal(self.org.id,self.member.id,"member@integration.test")
+        member_identity=self.os.auth.identity_for_principal(member_principal["id"])
         with self.assertRaises(AuthorizationError):
-            self.os.agent_ops.upsert_integration(self.org.id,self.member.id,"slack",{},[])
-        integration=self.os.agent_ops.upsert_integration(self.org.id,self.owner.id,"slack",{self.ws.id:"C123"},["channels:read"])
+            self.os.integrations.configure(member_identity,"slack","T1",{"C123":self.ws.id},["channels:history"])
+        owner_principal=self.os.auth.create_principal(self.org.id,self.owner.id,"owner@integration.test")
+        owner_identity=self.os.auth.identity_for_principal(owner_principal["id"])
+        integration=self.os.integrations.configure(owner_identity,"slack","T1",{"C123":self.ws.id},["channels:history"])
         self.assertEqual(integration["status"],"not_connected")
         self.assertEqual(integration["object_count"],0)
 

@@ -20,10 +20,10 @@ class ConnectorDefinition:
 
 
 TARGET_CONNECTORS = (
-    ConnectorDefinition("slack","Slack",("messages","threads","participants"),("channels:read","history:read")),
-    ConnectorDefinition("google_drive","Google Drive",("files","documents","permissions"),("drive.readonly",)),
-    ConnectorDefinition("gmail","Gmail",("threads","messages","participants"),("gmail.readonly",)),
-    ConnectorDefinition("clickup","ClickUp",("projects","tasks","comments"),("tasks:read",)),
+    ConnectorDefinition("slack","Slack",("messages","threads","participants"),("channels:read","channels:history")),
+    ConnectorDefinition("google_drive","Google Drive",("files","documents","permissions"),("https://www.googleapis.com/auth/drive.readonly",)),
+    ConnectorDefinition("gmail","Gmail",("threads","messages","participants"),("https://www.googleapis.com/auth/gmail.metadata",)),
+    ConnectorDefinition("clickup","ClickUp",("projects","tasks","comments"),("authorized_team",)),
     ConnectorDefinition("figma","Figma",("files","versions","comments"),("file_content:read",)),
     ConnectorDefinition("github","GitHub",("repositories","issues","pull_requests"),("repo:read",)),
     ConnectorDefinition("fireflies","Fireflies",("meetings","transcripts","participants"),("transcripts:read",)),
@@ -42,7 +42,7 @@ class ConfiguredConnector:
         self.transport=transport;self.cursor=cursor;self.next_cursor=cursor
 
     @property
-    def status(self) -> str: return "connected" if self.transport else self.definition.default_status
+    def status(self) -> str: return "configured" if self.transport else self.definition.default_status
 
     def pull(self) -> list[ConnectorEvent]:
         if self.transport is None:return []

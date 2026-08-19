@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from auremgrid.domain.models import IngestResult
-from auremgrid.services.brain import CompanyOS
+if TYPE_CHECKING:
+    from auremgrid.services.brain import CompanyOS
 
 
 @dataclass(frozen=True)

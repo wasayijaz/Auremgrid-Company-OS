@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -62,6 +62,8 @@ class JobOperations:
         max_attempts: int = 3,
         available_at: datetime | str | None = None,
         idempotency_key: str | None = None,
+        transaction_hook: Callable[[dict[str, Any]], None] | None = None,
+        manage_transaction: bool = True,
     ) -> dict[str, Any]:
         type = _required_text(type, "job type")
         principal = self.conn.execute(
@@ -82,7 +84,7 @@ class JobOperations:
                 return existing
         now_text = _now().isoformat()
         available = _iso(available_at) or now_text
-        with self._tx_immediate():
+        with (self._tx_immediate() if manage_transaction else nullcontext()):
             job = self.repo.insert_job(
                 {
                     "id": self.new_id("job"),
@@ -112,6 +114,8 @@ class JobOperations:
                     "version": 1,
                 }
             )
+            if transaction_hook is not None:
+                transaction_hook(job)
             self._event(job, "system", "enqueue", None, "queued", {"idempotency_key": idempotency_key}, now_text)
         return job
 
@@ -224,6 +228,7 @@ class JobOperations:
                     "updated_at": now_text,
                 },
             )
+            self._release_managed_connector_stream(updated,now_text)
             self._event(updated, lease_owner, "succeed", job["status"], "succeeded", {"result": result}, now_text)
         return updated
 
@@ -236,6 +241,7 @@ class JobOperations:
         lease_token: str,
         error: Any,
         retry: bool = True,
+        retry_after_seconds: float | None = None,
         expected_version: int | None = None,
         now: datetime | str | None = None,
     ) -> dict[str, Any]:
@@ -247,7 +253,12 @@ class JobOperations:
             job = self._leased_job(organization_id, workspace_id, job_id, lease_owner, lease_token, now_text)
             if retry and job["attempts"] < job["max_attempts"]:
                 status = "retry_wait"
-                available_at = (now_dt + self._backoff(job["attempts"])).isoformat()
+                delay = self._backoff(job["attempts"])
+                if retry_after_seconds is not None:
+                    if retry_after_seconds < 0:
+                        raise ValidationError("retry_after_seconds cannot be negative")
+                    delay = max(delay, timedelta(seconds=float(retry_after_seconds)))
+                available_at = (now_dt + delay).isoformat()
                 completed_at = None
             elif retry:
                 status = "dead_letter"
@@ -272,6 +283,7 @@ class JobOperations:
                     "updated_at": now_text,
                 },
             )
+            self._release_managed_connector_stream(updated,now_text)
             self._event(
                 updated,
                 lease_owner,
@@ -309,6 +321,7 @@ class JobOperations:
                     "updated_at": now_text,
                 },
             )
+            self._release_managed_connector_stream(updated,now_text)
             self._event(updated, actor, "cancel", job["status"], "cancelled", {"reason": reason}, now_text)
         return updated
 
@@ -551,6 +564,14 @@ class JobOperations:
                 "detail": detail,
                 "created_at": now,
             }
+        )
+
+    def _release_managed_connector_stream(self,job: dict[str,Any],now: str) -> None:
+        if job["type"]!="connector.sync" or job["status"] not in {"succeeded","failed","dead_letter","cancelled"}:
+            return
+        self.conn.execute(
+            """UPDATE connector_stream_locks SET status='released',released_at=?,updated_at=?,version=version+1
+            WHERE job_id=? AND status='active' AND stream_key LIKE 'managed:%'""",(now,now,job["id"])
         )
 
     def _coerce_now(self, value: datetime | str | None) -> datetime:

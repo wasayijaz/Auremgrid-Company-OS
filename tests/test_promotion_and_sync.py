@@ -21,9 +21,4 @@ class PromotionSyncTests(unittest.TestCase):
         message=self.os.client_ops.add_message(self.org.id,self.ws.id,self.owner.id,conversation.id,"contact","c","Please reply",datetime.now(timezone.utc),True)
         self.assertEqual(len(self.os.client_ops.unanswered_messages(self.org.id,self.ws.id,self.owner.id)),1)
         self.os.client_ops.reply_to_message(self.org.id,self.ws.id,self.owner.id,message.id,"Done",datetime.now(timezone.utc));self.assertEqual(self.os.client_ops.unanswered_messages(self.org.id,self.ws.id,self.owner.id),[])
-    def test_connector_failure_is_persisted_and_visible(self):
-        integration=self.os.agent_ops.upsert_integration(self.org.id,self.owner.id,"slack",{self.ws.id:"C1"},["read"],"connected")
-        run=self.os.agent_ops.start_sync(self.org.id,self.owner.id,integration["id"]);failed=self.os.agent_ops.complete_sync(self.org.id,self.owner.id,run["id"],0,error="rate limited")
-        state=self.os.store.conn.execute("SELECT * FROM integrations WHERE id=?",(integration["id"],)).fetchone();self.assertEqual(failed["status"],"failed");self.assertEqual(state["health"],"error");self.assertEqual(state["last_error"],"rate limited")
-
 if __name__=="__main__":unittest.main()

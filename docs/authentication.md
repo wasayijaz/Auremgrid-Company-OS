@@ -1,7 +1,7 @@
 # Authentication and capabilities
 
 `auremgrid.services.auth.AuthService` authenticates opaque sessions and API
-tokens against the schema-v11 `auth_principals`, `auth_sessions`, and
+tokens against the authentication tables introduced in schema v11: `auth_principals`, `auth_sessions`, and
 `api_tokens` tables. Tokens are generated with `secrets`, persisted only as
 SHA-256 digests, and compared with `hmac.compare_digest`. The plaintext token
 is returned only at creation/rotation time.

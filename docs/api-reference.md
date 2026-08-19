@@ -4,7 +4,12 @@ All responses are JSON except the dashboard. Errors use error and message fields
 
 Read routes include /health, /search, /entity, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /decisions, /people, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /memory-proposals, /knowledge-health, /dashboard/data, and /dashboard/client.
 
-Write/action routes include /organizations, /workspaces, /people, /workspace-memberships, /projects, /deliverables, /reviews, /reviews/decide, /decisions, /signals, /signals/route, /risks, /opportunities, /health/calculate, /campaigns, /campaigns/metrics, /creative, /content, /content/advance, /approvals, /approvals/decide, /integrations, /reports/generate, /memory-proposals, /memory-proposals/review, and the /work action routes.
+Write/action routes include /organizations, /workspaces, /people, /workspace-memberships, /projects, /deliverables, /reviews, /reviews/decide, /decisions, /signals, /signals/route, /risks, /opportunities, /health/calculate, /campaigns, /campaigns/metrics, /creative, /content, /content/advance, /approvals, /approvals/decide, /integrations, /integrations/credentials, /integrations/verify, /integrations/sync, /reports/generate, /memory-proposals, /memory-proposals/review, and the /work action routes.
+
+Connector configuration requires the expected provider account ID and never accepts a connection state. Credential responses
+contain metadata and fingerprints only. Verification earns `authorized`; the
+first successful durable worker sync earns `connected`. Sync requests return a
+workspace-scoped `connector.sync` jobs rather than performing provider I/O in the HTTP process.
 
 Organization-domain routes require organization_id and person_id. Evidence/legacy work routes require workspace_id and actor_id.
 

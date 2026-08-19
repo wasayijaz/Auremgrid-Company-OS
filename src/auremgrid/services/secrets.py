@@ -112,9 +112,10 @@ class SecretBindingService:
             "created_at": now,
             "updated_at": now,
             "revoked_at": None,
+            "generation": 1,
         }
         self.conn.execute(
-            "INSERT INTO secret_bindings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(item.values())
+            "INSERT INTO secret_bindings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(item.values())
         )
         self.conn.commit()
         return self._public(item)
@@ -124,9 +125,9 @@ class SecretBindingService:
         return {
             "id": item["id"], "organization_id": item["organization_id"], "workspace_id": item["workspace_id"],
             "integration_id": item["integration_id"], "name": item["name"], "provider": item["provider"],
-            "reference": item["reference"], "scopes": json.loads(item["scopes"]), "fingerprint": item["fingerprint"],
+            "scopes": json.loads(item["scopes"]), "fingerprint": item["fingerprint"],
             "status": item["status"], "last_verified_at": item["last_verified_at"], "created_at": item["created_at"],
-            "updated_at": item["updated_at"], "revoked_at": item["revoked_at"],
+            "updated_at": item["updated_at"], "revoked_at": item["revoked_at"], "generation": item["generation"],
         }
 
     def _get(self, binding_id: str) -> dict[str, Any]:
@@ -144,14 +145,20 @@ class SecretBindingService:
             raise AuthorizationError("secret binding is revoked")
         if required_scope not in json.loads(item["scopes"]):
             raise AuthorizationError("secret binding scope denied")
-        secret = self.store.resolve(item["reference"])
+        return self.store.resolve(item["reference"])
+
+    def mark_verified(self, identity: AuthenticatedIdentity, binding_id: str) -> dict[str, Any]:
+        item = self._get(binding_id)
+        self._require_scope(identity, item["organization_id"], item["workspace_id"], "integration_sync")
+        if item["status"] == "revoked" or item["revoked_at"] is not None:
+            raise AuthorizationError("secret binding is revoked")
         now = _now()
         self.conn.execute(
-            "UPDATE secret_bindings SET status='active',last_verified_at=?,updated_at=? WHERE id=?",
+            "UPDATE secret_bindings SET status='active',last_verified_at=?,updated_at=?,generation=generation+1 WHERE id=?",
             (now, now, binding_id),
         )
         self.conn.commit()
-        return secret
+        return self._public(self._get(binding_id))
 
     def rotate_reference(
         self, identity: AuthenticatedIdentity, binding_id: str, reference: str
@@ -163,9 +170,18 @@ class SecretBindingService:
         now = _now()
         fingerprint = hashlib.sha256(reference.encode("utf-8")).hexdigest()[:16]
         self.conn.execute(
-            "UPDATE secret_bindings SET reference=?,fingerprint=?,status='unverified',last_verified_at=NULL,updated_at=? WHERE id=?",
+            """UPDATE secret_bindings
+            SET reference=?,fingerprint=?,status='unverified',last_verified_at=NULL,
+                updated_at=?,generation=generation+1
+            WHERE id=?""",
             (reference, fingerprint, now, binding_id),
         )
+        if item["integration_id"]:
+            self.conn.execute(
+                """UPDATE integrations SET status='not_connected',health='never_synced',
+                provider_account_id=NULL,provider_account_name=NULL,granted_permissions='[]',
+                credential_verified_at=NULL WHERE id=?""",(item["integration_id"],)
+            )
         self.conn.commit()
         return self._public(self._get(binding_id))
 
@@ -174,8 +190,13 @@ class SecretBindingService:
         self._require_scope(identity, item["organization_id"], item["workspace_id"], "secret_rotate")
         now = _now()
         self.conn.execute(
-            "UPDATE secret_bindings SET status='revoked',revoked_at=?,updated_at=? WHERE id=?",
+            "UPDATE secret_bindings SET status='revoked',revoked_at=?,updated_at=?,generation=generation+1 WHERE id=?",
             (now, now, binding_id),
         )
+        if item["integration_id"]:
+            self.conn.execute(
+                "UPDATE integrations SET status='reauth_required',health='error' WHERE id=?",
+                (item["integration_id"],),
+            )
         self.conn.commit()
         return self._public(self._get(binding_id))

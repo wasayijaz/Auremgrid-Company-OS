@@ -59,6 +59,11 @@ class McpToolRouter:
             {"name": "workflows.approvals.request", "description": "Move an evidence-complete workflow stage to approval."},
             {"name": "workflows.approvals.decide", "description": "Approve or return a gated workflow stage with a reason."},
             {"name": "workflows.handoffs.acknowledge", "description": "Accept a cross-wing artifact handoff contract."},
+            {"name": "integrations.list", "description": "List sanitized integration connection and sync state."},
+            {"name": "integrations.configure", "description": "Configure explicit provider-container to workspace mappings."},
+            {"name": "integrations.credentials.bind", "description": "Bind an external secret reference to an integration."},
+            {"name": "integrations.verify", "description": "Verify a bound credential with its provider."},
+            {"name": "integrations.sync", "description": "Enqueue durable synchronization for a verified integration."},
         ]
         namespaced = {
             "brain.search":"Search cited evidence.","brain.entity":"Get a brain entity.","brain.history":"Get temporal fact history.",
@@ -85,7 +90,8 @@ class McpToolRouter:
                 "people.capacity","risks.list","opportunities.list","agents.list","agents.runs","notifications.list","reports.generate",
                 "workflows.templates","workflows.runs.get","workflows.runs.create","workflows.stages.start",
                 "workflows.stages.complete","workflows.evidence.add","workflows.approvals.request",
-                "workflows.approvals.decide","workflows.handoffs.acknowledge"}
+                "workflows.approvals.decide","workflows.handoffs.acknowledge","integrations.list",
+                "integrations.configure","integrations.credentials.bind","integrations.verify","integrations.sync"}
             if name in company_tools:
                 return self._call_company_tool(name, arguments)
             workspace_id = _required(arguments, "workspace_id")
@@ -336,6 +342,25 @@ class McpToolRouter:
             return self.os.workflow_ops.acknowledge_handoff(organization_id,_required(arguments,"workspace_id"),person_id,
                 _required(arguments,"run_id"),_required(arguments,"from_stage_id"),_required(arguments,"to_stage_id"),
                 _required(arguments,"artifact_contract"),str(arguments.get("reason","")),_optional_str(arguments.get("idempotency_key")))
+        if name == "integrations.list":
+            return {"integrations": self.os.integrations.list(self.identity)}
+        if name == "integrations.configure":
+            mappings=arguments.get("workspace_mappings") or {}
+            if not isinstance(mappings,dict): raise AuremgridError("workspace_mappings must be an object")
+            return self.os.integrations.configure(self.identity,_required(arguments,"source"),_required(arguments,"expected_account_id"),
+                {str(key):str(value) for key,value in mappings.items()},
+                [str(value) for value in arguments.get("permissions",[])])
+        if name == "integrations.credentials.bind":
+            return self.os.integrations.bind_credential(self.identity,_required(arguments,"integration_id"),
+                _required(arguments,"name"),_required(arguments,"reference"),
+                [str(value) for value in arguments.get("scopes",[])])
+        if name == "integrations.verify":
+            return self.os.integrations.verify(self.identity,_required(arguments,"integration_id"))
+        if name == "integrations.sync":
+            integration_id=_required(arguments,"integration_id")
+            return {"jobs":self.os.integrations.enqueue_sync(self.identity,integration_id,
+                int(arguments.get("priority",0)),int(arguments.get("max_attempts",5)),
+                _optional_str(arguments.get("idempotency_key")))}
         raise AuremgridError(f"unknown tool: {name}")
 
 
@@ -369,6 +394,9 @@ def _mcp_capability(name: str) -> str:
     if name in {"decisions.create"}: return "brain_promote"
     if name in {"agents.list","agents.runs"}: return "agent_run"
     if name == "reports.generate": return "workspace_write"
+    if name in {"integrations.list","integrations.configure"}: return "integration_configure"
+    if name == "integrations.credentials.bind": return "secret_bind"
+    if name in {"integrations.verify","integrations.sync"}: return "integration_sync"
     if name.startswith("workflows.approvals") or name.startswith("workflows.handoffs") or name.startswith("workflows.stages"):
         return "workflow_gate"
     if name == "workflows.runs.create": return "workflow_run"

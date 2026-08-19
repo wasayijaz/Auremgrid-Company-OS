@@ -21,5 +21,10 @@ lookup. It exposes:
 - workflows.stages.start, workflows.stages.complete, workflows.evidence.add
 - workflows.approvals.request, workflows.approvals.decide
 - workflows.handoffs.acknowledge
+- integrations.list, integrations.configure, integrations.credentials.bind
+- integrations.verify, integrations.sync
 
 The original short tool names remain internal aliases for the same handlers. Permissions are enforced by the service layer, not by tool naming.
+Connector sync enqueues a durable job. Credential binding accepts only an
+external `env:` reference; resolved credential material never enters MCP
+arguments, results, jobs, or the ledger.

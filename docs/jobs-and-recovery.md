@@ -36,6 +36,11 @@ jobs, outbox, audit, and error payloads must carry binding IDs, never credential
 values or authorization headers. Recursive redaction is defense in depth, not
 permission to persist a secret.
 
+Connector synchronization is a registered `connector.sync` worker job. Its
+payload contains only the integration ID. Provider rate limits schedule a
+durable retry using the provider delay when available; adapters do not sleep.
+See [live connector synchronization](live-connectors.md).
+
 ## Backup and restore
 
 Backups use SQLite's online backup API, then write a manifest containing SHA-256,
