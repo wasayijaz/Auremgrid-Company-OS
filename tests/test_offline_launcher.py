@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -12,7 +13,10 @@ LAUNCHER = ROOT / "scripts" / "auremgrid.py"
 
 class OfflineLauncherTests(unittest.TestCase):
     def run_launcher(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([sys.executable, str(LAUNCHER), *args], cwd=cwd or Path("C:/"), text=True, capture_output=True)
+        if cwd is not None:
+            return subprocess.run([sys.executable, str(LAUNCHER), *args], cwd=cwd, text=True, capture_output=True)
+        with tempfile.TemporaryDirectory(prefix="auremgrid unrelated path ") as unrelated:
+            return subprocess.run([sys.executable, str(LAUNCHER), *args], cwd=unrelated, text=True, capture_output=True)
 
     def test_help_works_from_unrelated_cwd(self) -> None:
         result = self.run_launcher("--help")
