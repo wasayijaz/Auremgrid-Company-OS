@@ -23,7 +23,7 @@ This matrix maps the product definition of complete to authoritative implementat
 | 17. MCP/API cover major domains | ExpandedApiTests and namespaced MCP discovery test |
 | 18. Dashboard surfaces major operations | 18 destinations including workflows, 8 metrics, Client HQ operational tabs, bearer-authenticated data fetches, operational Brain proposal/conflict/current-truth board, workflow stage board, capability-gated descriptor actions with idempotency/expected-version payloads, historical zero-action behavior, degraded/loading/empty states, and dashboard/API behavior tests |
 | 19. Projections rebuild after restart | ProjectionRestartTests, durable schema-16 embedding projection, and live rebuild report |
-| 20. Tests prove isolation, persistence, permissions, and workflows | 320 offline behavior tests |
+| 20. Tests prove isolation, persistence, permissions, and workflows | 324 offline behavior tests |
 | 21. README accurately describes reality | implemented/local fallback/optional/experimental/planned status sections |
 | 22. Existing data migrates forward | legacy-v1 migration test and schema 18 migration chain, including durable provider task identity, embedding projection, graph generations, entity resolution, and knowledge states |
 | 23. Wings coordinate through executable operating contracts | eight neutral templates, immutable definition versions/run snapshots, dependency and rework behavior, evidence/approval/handoff gates, REST/MCP parity, dashboard status, and workflow isolation tests |
@@ -41,3 +41,12 @@ Release checks:
 - git diff --check
 - live Playwright dashboard interaction
 - on-disk schema and projection rebuild inspection
+
+Clean-room walkthrough evidence (2026-08-19): the zero-install launcher ran
+from an unrelated working directory against an absolute temporary database;
+`demo`, `bootstrap-auth`, `serve`, `/health`, authenticated
+`/dashboard/brain`, and authenticated `/dashboard/workflows` completed. The
+seeded response reported schema 18, 7 sources, 7 current truths, one conflict
+group, and zero workflow runs. `worker-once` returned `idle`; `backup` and
+`verify-backup` both reported schema 18, 163 tables, integrity `ok`, and zero
+foreign-key violations. The bootstrap token was not recorded here.

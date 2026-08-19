@@ -178,7 +178,7 @@ The last line is a roadmap, not a current capability claim.
 
 - Windows, macOS, or Linux with a supported 64-bit Python 3.12+ runtime.
 - SQLite built with FTS5 (the standard Python SQLite build normally includes it).
-- 2 CPU cores, 4 GB RAM, and 1 GB free disk for the synthetic demo and tests.
+- Unverified evaluation estimate: 2 CPU cores, 4 GB RAM, and 1 GB free disk for the synthetic demo and tests. Measure your own workload before production use.
 - A durable writable path for the SQLite file; no Docker, Node, API key, or network service is required for the offline path.
 
 ### Recommended for a small agency deployment
@@ -193,11 +193,25 @@ The last line is a roadmap, not a current capability claim.
 ```text
 git clone <repository-url>
 cd Auremgrid-Company-OS
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
-python -m pip install -e .
+python scripts/auremgrid.py --help
 ```
+
+The launcher is the zero-install path: it runs directly from this trusted
+checkout, does not change directory, install packages, or contact a network.
+Use an explicit absolute database path when operating outside the repository:
+
+```text
+python scripts/auremgrid.py demo --db C:\data\auremgrid-demo.sqlite
+python scripts/auremgrid.py bootstrap-auth --db C:\data\auremgrid-demo.sqlite --organization org_demo --person person_demo_owner --email owner@demo.invalid --workspace ws_alpha --actor act_alpha_admin
+```
+
+Optional editable installation requires Python 3.12+, a local setuptools 68+
+build backend, and (for offline use) disabled build isolation:
+
+```text
+python -m pip install --no-build-isolation --no-deps -e .
+```
+Do not run installation from an untrusted checkout.
 
 Run the offline verification suite:
 
@@ -209,28 +223,28 @@ python -m unittest discover -s tests
 Create a seeded evaluation database, issue its first local session, then start the server:
 
 ```text
-auremgrid demo --db auremgrid-demo.sqlite
-auremgrid bootstrap-auth --db auremgrid-demo.sqlite --organization org_demo --person person_demo_owner --email owner@demo.invalid --workspace ws_alpha --actor act_alpha_admin
-auremgrid serve --host 127.0.0.1 --port 8791 --db auremgrid-demo.sqlite
+python scripts/auremgrid.py demo --db "C:\data\auremgrid-demo.sqlite"
+python scripts/auremgrid.py bootstrap-auth --db "C:\data\auremgrid-demo.sqlite" --organization org_demo --person person_demo_owner --email owner@demo.invalid --workspace ws_alpha --actor act_alpha_admin
+python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\auremgrid-demo.sqlite"
 ```
 
 The bootstrap command prints the session token once. Open `http://127.0.0.1:8791/` and paste that token when prompted. For a real organization database, create or import the organization and person records first, then bootstrap the first principal:
 
 ```text
-auremgrid bootstrap-auth --db agency.sqlite --organization <organization-id> --person <person-id> --email owner@example.invalid --workspace <workspace-id> --actor <legacy-actor-id>
+python scripts/auremgrid.py bootstrap-auth --db "C:\data\agency.sqlite" --organization <organization-id> --person <person-id> --email owner@example.invalid --workspace <workspace-id> --actor <legacy-actor-id>
 ```
 
 The token is not recoverable from the database; the dashboard stores the supplied value in browser-local storage, while API clients can keep it in an environment variable. Run one durable job in a separate process:
 
 ```text
-auremgrid worker-once --db agency.sqlite --organization <organization-id> --workspace <workspace-id> --worker-id local-worker-1
+python scripts/auremgrid.py worker-once --db "C:\data\agency.sqlite" --organization <organization-id> --workspace <workspace-id> --worker-id local-worker-1
 ```
 
 Create and verify an online backup without copying a live WAL file:
 
 ```text
-auremgrid backup --db agency.sqlite --output backups/agency.sqlite
-auremgrid verify-backup --backup backups/agency.sqlite
+python scripts/auremgrid.py backup --db "C:\data\agency.sqlite" --output "C:\data\backups\agency.sqlite"
+python scripts/auremgrid.py verify-backup --backup "C:\data\backups\agency.sqlite"
 ```
 
 Restore is intentionally an explicit offline operation and requires the verified backup plus `--overwrite` when replacing an existing destination.
