@@ -7,12 +7,16 @@ track each immutable stream. The durable connector inbox owns event dedupe,
 leases, retries, quarantine, and fenced cursor promotion.
 
 Connector events first enter the evidence ingestion path. Slack, ClickUp, Drive,
-and Gmail are enabled read integrations with provider verification, durable
+Gmail, and exact-file Figma polling are enabled read integrations with provider verification, durable
 backfill/change checkpoints, lifecycle-aware routing, and redacted overlap
-quarantine. Figma, GitHub, Fireflies, Meta Ads,
-Google Ads, and finance providers remain catalog entries. Connectors never own
-organization identity, permissions, canonical work state, approvals, or
-financial truth.
+quarantine. Figma requires `current_user:read`, `file_metadata:read`, and
+`file_content:read`; polling reads current metadata first and downloads content
+only when the version changes. Named version history is disabled unless the
+optional `file_versions:read` grant is explicitly configured and proven.
+GitHub, Fireflies, Meta Ads, Google Ads, and finance providers remain disabled
+catalog entries and have no live adapter or integration wiring. Connectors
+never own organization identity, permissions, canonical work state, approvals,
+or financial truth.
 
 The repository includes local Markdown and simulated source connectors for
 offline demonstrations; they are not reported as live provider connections.

@@ -761,7 +761,8 @@ class ConnectorInboxRepository:
                 raise ValidationError("lifecycle mutation does not match an exact pulled event")
             if (
                 event["external_id"] != mutation.external_id
-                or event["source_key"] != f"google-drive/files/{mutation.external_id}"
+                or event["source_key"] != mutation.external_id
+                and event["source_key"] != f"google-drive/files/{mutation.external_id}"
                 and event["source_key"] != f"gmail/messages/{mutation.external_id}"
             ):
                 raise ValidationError("lifecycle mutation identity does not match pulled event")

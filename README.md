@@ -342,7 +342,7 @@ The offline suite must not require Docker, provider credentials, a private vault
 
 - No in-product OAuth installation/callback flow, webhook ingestion, or refresh-token rotation; credential binding is manual and environment-backed.
 - Google Drive bootstraps from a captured changes token, walks mapped folders/shared drives through durable continuation tasks, reconciles parent chains and descendants after moves, and retires objects only after ancestry is resolved. Gmail captures a history baseline before label backfill and maintains label membership lifecycle. Objects that match mappings owned by different workspaces create an organization-level redacted quarantine, block cursor promotion, and write no workspace evidence.
-- Figma, GitHub, Fireflies, advertising, and accounting systems are catalog contracts only and do not report connected.
+- Figma supports verified, exact-file read polling with `current_user:read`, `file_metadata:read`, and `file_content:read`; GitHub, Fireflies, advertising, and accounting systems remain disabled catalog entries only and do not report connected.
 - Unattended automations, remote semantic providers, upstream OSS engines, and externally visible sends remain experimental or future gates. Local semantic retrieval and its deterministic fallback are available behind the provider/index boundary described above.
 - SQLite is local-first, not a multi-region distributed database. External binary assets require a separate backup policy.
 - The standard-library HTTP server is appropriate for local/private operation; hardened public deployment needs an explicit reverse proxy, TLS, and access review.

@@ -1,13 +1,14 @@
 # Live connector synchronization
 
 Auremgrid has credential-backed read synchronization for Slack, ClickUp,
-Google Drive, and Gmail. Google server-side contracts require a
-read-only Google scope and explicit `folder:<id>` / `drive:<id>` or
-`label:<id>` mappings. Integration responses report `live_enabled: true` only
-after the catalog gate; verification still requires provider identity and
-granted-scope evidence. Enabled connectors use external secret references and durable
-jobs; access tokens, refresh tokens, authorization headers, and provider
-credentials are never stored in SQLite or job payloads.
+Google Drive, Gmail, and explicitly mapped Figma files. Google server-side
+contracts require a read-only Google scope and explicit `folder:<id>` /
+`drive:<id>` or `label:<id>` mappings. Integration responses report
+`live_enabled: true` only after the catalog gate; verification still requires
+provider identity and granted-scope evidence. Enabled connectors use external
+secret references and durable jobs; access tokens, refresh tokens,
+authorization headers, and provider credentials are never stored in SQLite or
+job payloads.
 
 The Google execution path expects the referenced environment value to be
 a JSON object containing exactly `client_id`, `client_secret`, and
@@ -63,6 +64,16 @@ drain. A file that matches mappings for different workspaces is quarantined at
 organization scope using an opaque digest, with no object, content, count, or
 workspace evidence written to either stream; the original cursor remains
 parked until an operator resolves the mapping.
+
+Figma synchronization is limited to explicit `file:<key>` mappings. Verification
+proves the expected provider identity and the `current_user:read`,
+`file_metadata:read`, and `file_content:read` grants. Each poll reads current
+metadata first and downloads the file at that captured provider version only
+when it differs from the durable cursor. Inaccessible previously seen files
+produce tombstones; malformed or failed responses do not advance the cursor.
+Named-version history remains disabled unless `file_versions:read` is explicitly
+configured and proven. Fireflies has no live adapter or execution path and
+remains a disabled catalog entry.
 
 ## Current deployment boundary
 

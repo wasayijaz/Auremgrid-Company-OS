@@ -22,6 +22,7 @@ from auremgrid.connectors.google_drive import (
     DriveBackfillTask, GoogleDriveConnector, GoogleDriveMappingOverlap,
 )
 from auremgrid.connectors.http import ConnectorTransportError, sanitize_content
+from auremgrid.connectors.figma import FigmaConnector, FigmaMappingOverlap, FIGMA_REQUIRED_PERMISSIONS, FIGMA_OPTIONAL_PERMISSIONS
 from auremgrid.connectors.slack import SlackConnector
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
 from auremgrid.domain.security import AuthenticatedIdentity
@@ -32,10 +33,10 @@ from auremgrid.storage.sqlite import ProviderSyncFence
 GOOGLE_DRIVE_READ_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 
-CONFIGURABLE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail"})
+CONFIGURABLE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail", "figma"})
 # Google live synchronization is enabled only after the durable routing,
 # account, backfill, reconciliation, and quarantine gates in this branch.
-LIVE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail"})
+LIVE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail", "figma"})
 
 
 def _now() -> str:
@@ -436,7 +437,7 @@ class IntegrationOperations:
                                     (batch["id"], event["dedupe_key"]),
                                 ).fetchall()
                                 activates = any(row["operation"] == "activate" for row in staged)
-                                if activates or not self._is_google(integration["source"]):
+                                if activates or not self._uses_provider_lifecycle(integration["source"]):
                                     result = self.os.ingest_text(
                                         workspace_id, actor_id, event["source_key"], event["content"], event["locator"],
                                         observed_at=self._observed_at(event["observed_at"]), media_type=event["media_type"],
@@ -451,7 +452,7 @@ class IntegrationOperations:
                                     credential_binding_id=binding["id"],
                                     credential_generation=binding["generation"],
                                 )
-                                if self._is_google(integration["source"]):
+                                if self._uses_provider_lifecycle(integration["source"]):
                                     fence = self._provider_fence(
                                         stream_lock_id, stream_reservation_token, binding
                                     )
@@ -538,7 +539,7 @@ class IntegrationOperations:
                         JOIN connector_source_events e ON e.id=be.event_id
                         WHERE be.batch_id=? AND e.status='quarantined'""",(batch["id"],)
                     ).fetchone()[0]
-                    if self._is_google(integration["source"]):
+                    if self._uses_provider_lifecycle(integration["source"]):
                         self.os.rebuild_projections(workspace_id)
                     # Task pages reconcile durable state while the original
                     # provider cursor remains parked.  Only a regular provider
@@ -574,7 +575,7 @@ class IntegrationOperations:
                 self.inbox._assert_stream_fence(stream_lock_id,stream_reservation_token,now)
                 self.inbox._assert_credential_fence(binding["id"],binding["generation"])
                 rollup=self._stream_rollup(integration)
-                if self._is_google(integration["source"]):
+                if self._uses_provider_lifecycle(integration["source"]):
                     current_objects = int(self.conn.execute(
                         """SELECT COUNT(DISTINCT external_id) FROM provider_object_routes
                         WHERE connector=? AND account_key LIKE ? AND status='active'""",
@@ -595,7 +596,7 @@ class IntegrationOperations:
             return {"integration_id": integration_id, "status": "completed", "seen": total_seen,
                     "created": total_created, "quarantined":total_quarantined,
                     "backfill_remaining":backfill_remaining,"batch_ids": batches}
-        except (GoogleDriveMappingOverlap, GmailMappingOverlap) as exc:
+        except (GoogleDriveMappingOverlap, GmailMappingOverlap, FigmaMappingOverlap) as exc:
             # Quarantine only a redacted organization-level digest.  The
             # stream cursor is still untouched because the exception occurs
             # before ``record_pull``; neither workspace learns object existence.
@@ -687,19 +688,19 @@ class IntegrationOperations:
     ) -> tuple[list[ConnectorSourceEvent], str | None, bool, dict[str, Any]]:
         if self.connector_factory is not None:
             result=self.connector_factory("pull", source, secret, external_key, workspace_id, cursor, integration)
-            if source in {"google_drive", "gmail"} and len(result) >= 4:
+            if self._uses_provider_lifecycle(source) and len(result) >= 4:
                 factory_events, factory_cursor, factory_more, factory_meta = result[:4]
                 for event in factory_events:
                     payload = event.payload if isinstance(event.payload, dict) else {}
                     workspace_ids = payload.get("workspace_ids") or ()
                     if any(str(value) != workspace_id for value in workspace_ids):
-                        overlap_type = GoogleDriveMappingOverlap if source == "google_drive" else GmailMappingOverlap
+                        overlap_type = self._overlap_type(source)
                         raise overlap_type(evidence_digest=hashlib.sha256(
                             f"{event.external_id}:{','.join(sorted(str(value) for value in workspace_ids))}".encode()
                         ).hexdigest()[:32])
                 for mutation in tuple(factory_meta.get("lifecycle_mutations", ())):
                     if mutation.route_key != external_key or mutation.workspace_id != workspace_id:
-                        overlap_type = GoogleDriveMappingOverlap if source == "google_drive" else GmailMappingOverlap
+                        overlap_type = self._overlap_type(source)
                         raise overlap_type(evidence_digest=hashlib.sha256(
                             f"{mutation.external_id}:{mutation.route_key}:{mutation.workspace_id}".encode()
                         ).hexdigest()[:32])
@@ -770,7 +771,48 @@ class IntegrationOperations:
                 owned_route_key=external_key,
             )
             return self._google_pull_page(connector.pull(cursor), source, external_key, workspace_id)
+        if source == "figma":
+            full_mappings = dict(integration.get("workspace_mappings") or {external_key: workspace_id})
+            registry_keys = [
+                f"{integration['id']}:{self._mapping_hash(source, route, mapped_workspace)}"
+                for route, mapped_workspace in full_mappings.items()
+            ]
+            common = {
+                "expected_account_id": integration["expected_account_id"],
+                "granted_permissions": integration.get("granted_permissions", ()),
+                "route_state": self.os.store.provider_route_state_for_mappings(source, registry_keys),
+                "owned_route_key": external_key,
+            }
+            connector = FigmaConnector(secret, file_workspace_mappings=full_mappings, **common)
+            return self._provider_pull_page(connector.pull(cursor), source, external_key, workspace_id)
         raise ValidationError("connector adapter is not enabled for live synchronization")
+
+    def _provider_pull_page(
+        self, result: Any, source: str, external_key: str, workspace_id: str
+    ) -> tuple[list[ConnectorSourceEvent], str | None, bool, dict[str, Any]]:
+        events = list(result.events)
+        event_keys = {event.dedupe_key for event in events}
+        for event in events:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            workspace_ids = {str(value) for value in payload.get("workspace_ids") or ()}
+            if workspace_ids != {workspace_id}:
+                raise self._overlap_type(source)(hashlib.sha256(
+                    f"{event.external_id}:{','.join(sorted(workspace_ids))}".encode()
+                ).hexdigest()[:32])
+        mutations = tuple(result.lifecycle_mutations)
+        for mutation in mutations:
+            if mutation.event_dedupe_key not in event_keys:
+                raise ValidationError("provider lifecycle mutation has no exact page event")
+            if mutation.route_key != external_key or mutation.workspace_id != workspace_id:
+                raise AuthorizationError("provider lifecycle mutation is outside the immutable mapped stream")
+        return events, result.next_cursor, bool(result.has_more), {"lifecycle_mutations": mutations}
+
+    @staticmethod
+    def _overlap_type(source: str) -> type[Exception]:
+        return {
+            "google_drive": GoogleDriveMappingOverlap, "gmail": GmailMappingOverlap,
+            "figma": FigmaMappingOverlap,
+        }[source]
 
     def _google_pull_page(
         self, result: Any, source: str, external_key: str, workspace_id: str
@@ -1021,6 +1063,12 @@ class IntegrationOperations:
                 expected_account_id=integration["expected_account_id"],
                 granted_scopes=integration.get("_runtime_granted_permissions", ()),
             ).verify_credentials()
+        if source == "figma":
+            return FigmaConnector(
+                secret, file_workspace_mappings=integration["workspace_mappings"],
+                expected_account_id=integration["expected_account_id"],
+                granted_permissions=integration.get("permissions", ()),
+            ).verify_credentials()
         if source == "gmail":
             return GmailConnector(
                 secret,
@@ -1094,6 +1142,10 @@ class IntegrationOperations:
     @staticmethod
     def _is_google(source: str) -> bool:
         return source in {"google_drive", "gmail"}
+
+    @staticmethod
+    def _uses_provider_lifecycle(source: str) -> bool:
+        return source in {"google_drive", "gmail", "figma"}
 
     @staticmethod
     def _drive_mappings(workspace_mappings: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
@@ -1256,6 +1308,8 @@ class IntegrationOperations:
             return value.email_address,value.email_address,tuple(
                 getattr(value, "granted_scopes", getattr(value, "scopes", ()))
             )
+        if source == "figma":
+            return value.user_id,value.email or value.user_id,tuple(value.granted_permissions)
         raise ValidationError("unsupported provider identity")
 
     @staticmethod
@@ -1270,6 +1324,11 @@ class IntegrationOperations:
             raise ValidationError("Google Drive synchronization requires drive.readonly permission")
         if source == "gmail" and GMAIL_READ_SCOPE not in permissions:
             raise ValidationError("Gmail synchronization requires gmail.readonly permission")
+        if source == "figma" and (
+            not FIGMA_REQUIRED_PERMISSIONS.issubset(permissions)
+            or not permissions.issubset(FIGMA_REQUIRED_PERMISSIONS | FIGMA_OPTIONAL_PERMISSIONS)
+        ):
+            raise ValidationError("Figma synchronization requires current_user:read, file_metadata:read, and file_content:read")
 
     @staticmethod
     def _validate_mapping_keys(source: str, workspace_mappings: dict[str, str]) -> None:
@@ -1283,6 +1342,8 @@ class IntegrationOperations:
                 raise ValidationError("Google Drive mappings must use folder:<id> or drive:<id>")
         if source == "gmail" and any(not key.startswith("label:") or not key[6:].strip() for key in keys):
             raise ValidationError("Gmail mappings must use label:<id>")
+        if source == "figma" and any(not key.startswith("file:") or not key[5:].strip() for key in keys):
+            raise ValidationError("Figma mappings must use file:<key>")
 
     @staticmethod
     def _canonicalize_mappings(workspace_mappings: dict[str, str]) -> dict[str, str]:

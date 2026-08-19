@@ -25,7 +25,7 @@ TARGET_CONNECTORS = (
     ConnectorDefinition("google_drive","Google Drive",("files","documents","permissions"),("https://www.googleapis.com/auth/drive.readonly",),live_enabled=True),
     ConnectorDefinition("gmail","Gmail",("threads","messages","participants"),("https://www.googleapis.com/auth/gmail.readonly",),live_enabled=True),
     ConnectorDefinition("clickup","ClickUp",("projects","tasks","comments"),("authorized_team",),live_enabled=True),
-    ConnectorDefinition("figma","Figma",("files","versions","comments"),("file_content:read",)),
+    ConnectorDefinition("figma","Figma",("files",),("current_user:read","file_metadata:read","file_content:read"),live_enabled=True),
     ConnectorDefinition("github","GitHub",("repositories","issues","pull_requests"),("repo:read",)),
     ConnectorDefinition("fireflies","Fireflies",("meetings","transcripts","participants"),("transcripts:read",)),
     ConnectorDefinition("meta_ads","Meta Ads",("campaigns","ad_sets","ads","insights"),("ads_read",)),
