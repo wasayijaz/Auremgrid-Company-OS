@@ -112,6 +112,7 @@ See [local deployment](docs/local-deployment.md) and the [upgrade guide](docs/up
 - [MCP tools](docs/mcp-reference.md)
 - [OSS evaluation](docs/oss-evaluation.md)
 - [Upgrade guide](docs/upgrade-guide.md)
+- [Release verification](docs/release-verification.md)
 
 Fixtures are synthetic. Never commit private client, employee, credential, or financial data.
 
