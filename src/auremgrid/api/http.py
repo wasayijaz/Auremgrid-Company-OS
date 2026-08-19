@@ -190,6 +190,14 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/dashboard/module":
                 self._json(200,self.os.dashboard.module(_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id"),_need(params,"module")));return
+            if parsed.path == "/dashboard/brain":
+                assert identity is not None
+                organization_id, workspace_id, person_id = _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
+                self._json(200, self.os.dashboard.brain(identity, organization_id, workspace_id, person_id, _optional_dt(params.get("as_of")))); return
+            if parsed.path == "/dashboard/workflows":
+                assert identity is not None
+                organization_id, workspace_id, person_id = _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
+                self._json(200, self.os.dashboard.workflow_board(identity, organization_id, workspace_id, person_id, _optional_dt(params.get("as_of")))); return
             if parsed.path in {"/signals","/risks","/opportunities","/meetings","/campaigns","/creative","/content"}:
                 organization_id, workspace_id, person_id = _need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id")
                 self.os._require_person_access(organization_id,workspace_id,person_id)

@@ -6,7 +6,7 @@ and legacy actor arguments are checked against that identity before any service
 lookup. It exposes:
 
 - brain.search, brain.entity, brain.history, brain.neighbors, brain.sources, brain.recent
-- brain.propose (requires `brain_propose`) and brain.promote (requires `brain_promote`)
+- brain.propose (requires `brain_propose`), brain.promote (requires `brain_promote`), and brain.resolve_conflict (requires `brain_promote`)
 - clients.list, clients.brief, clients.health
 - projects.list, projects.get
 - work.list, work.create, work.assign, work.update, work.review

@@ -26,6 +26,7 @@ class McpToolRouter:
             {"name": "remember", "description": "Store an actor-scoped preference or interaction note."},
             {"name": "brain.propose", "description": "Create a human-gated brain proposal in the authenticated workspace."},
             {"name": "brain.promote", "description": "Approve or reject a brain proposal in the authenticated workspace."},
+            {"name": "brain.resolve_conflict", "description": "Resolve a fact conflict with an authenticated winner."},
             {"name": "brief", "description": "Assemble the client brief: brain, playbooks, open work, and last touchpoint."},
             {"name": "engines", "description": "Show what each open-source engine contributed for a query."},
             {"name": "work", "description": "List open or all work items in a workspace."},
@@ -171,6 +172,8 @@ class McpToolRouter:
                 if row is not None:
                     return self.os.brain_ops.brain_promote_fact(self.identity, proposal_id, action)
                 return self.os.brain_ops.brain_promote(self.identity.organization_id, workspace_id, self.identity, proposal_id, action)
+            if name == "brain.resolve_conflict":
+                return self.os.brain_ops.resolve_fact_conflict(self.identity, _required(arguments, "conflict_group"), _required(arguments, "winner_fact_id"))
             if name == "brief":
                 actor_id = _required(arguments, "actor_id")
                 return self.os.account_brief(
@@ -425,6 +428,7 @@ def _optional_int(value: Any) -> int | None:
 def _mcp_capability(name: str) -> str:
     if name in {"brain.propose"}: return "brain_propose"
     if name in {"brain.promote"}: return "brain_promote"
+    if name in {"brain.resolve_conflict"}: return "brain_promote"
     if name in {"search","entity","history","neighbors","sources","recent","brief","engines"} or name.startswith("brain."):
         return "brain_read"
     if name == "remember": return "brain_propose"

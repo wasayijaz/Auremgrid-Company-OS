@@ -2,7 +2,7 @@
 
 All responses are JSON except the dashboard. Errors use error and message fields with 400 validation, 403 authorization, 404 not found, or 500 internal status.
 
-Read routes include /health, /search, /entity, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /decisions, /people, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /memory-proposals, /knowledge-health, /dashboard/data, and /dashboard/client.
+Read routes include /health, /search, /entity, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /decisions, /people, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /memory-proposals, /knowledge-health, /dashboard/data, /dashboard/client, /dashboard/brain, and /dashboard/workflows.
 
 Write/action routes include /organizations, /workspaces, /people, /workspace-memberships, /projects, /deliverables, /reviews, /reviews/decide, /decisions, /signals, /signals/route, /risks, /opportunities, /health/calculate, /campaigns, /campaigns/metrics, /creative, /content, /content/advance, /approvals, /approvals/decide, /integrations, /integrations/credentials, /integrations/verify, /integrations/sync, /reports/generate, /memory-proposals, and the /work action routes. `POST /memory-proposals` derives the proposer and scope from the bearer identity; the former `/memory-proposals/review` route is retired with 404. Use the authenticated MCP `brain.promote` service path for proposal decisions.
 
