@@ -15,3 +15,7 @@ Auremgrid owns the canonical workspace, permission, provenance, temporal, and au
 - Security and citations can be tested without external services.
 - Adapter output must be rechecked against Auremgrid source permissions.
 - The initial implementation can be fully local and deterministic.
+
+## Review note
+
+This decision keeps provider integrations replaceable and the evidence contract inspectable.

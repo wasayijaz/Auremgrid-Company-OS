@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 
+# Keep the fixture grammar deterministic and dependency-free.
 FACT_RE = re.compile(
     r"^FACT:\s*(?P<subject>.+?)\s*\|\s*(?P<predicate>.+?)\s*\|\s*(?P<object>.+?)\s*$"
 )

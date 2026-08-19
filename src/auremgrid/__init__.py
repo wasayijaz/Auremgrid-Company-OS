@@ -1,4 +1,7 @@
-"""Auremgrid Company OS — local-first multi-client operating brain."""
+"""Auremgrid Company OS — local-first multi-client operating brain.
+
+The package surface stays intentionally small and explicit.
+"""
 
 from auremgrid.services.brain import CompanyOS
 

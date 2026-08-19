@@ -1,5 +1,6 @@
 $ErrorActionPreference = "Stop"
 
+# Resolve the repository before selecting the available Python runtime.
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $env:PYTHONPATH = Join-Path $repoRoot "src"
 

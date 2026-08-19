@@ -1,5 +1,7 @@
 # Client Beta brand
 
+<!-- Fixture metadata: source-neutral evidence format. -->
+
 META: valid_from=2026-02-01T00:00:00+00:00
 FACT: Client Beta | industry | fitness studio
 FACT: Client Beta | visual_rule | charcoal and lime

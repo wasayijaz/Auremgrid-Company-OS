@@ -1,3 +1,5 @@
+"""Core entities, errors, and policy value objects."""
+
 from auremgrid.domain.errors import (
     AuremgridError,
     AuthorizationError,

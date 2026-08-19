@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *.db
 *.sqlite
+# Local test and coverage artifacts.
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -13,4 +14,3 @@ build/
 *.egg-info/
 .env
 .DS_Store
-

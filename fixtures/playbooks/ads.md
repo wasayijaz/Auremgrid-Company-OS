@@ -1,5 +1,7 @@
 # Ads playbook
 
+<!-- Playbook metadata: source-neutral operating guidance. -->
+
 Use this before launching or revising paid creative.
 
 1. Read the client brain first.

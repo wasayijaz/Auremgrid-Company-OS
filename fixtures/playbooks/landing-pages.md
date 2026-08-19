@@ -1,5 +1,7 @@
 # Landing page playbook
 
+<!-- Playbook metadata: source-neutral operating guidance. -->
+
 1. Open the client brain.
 2. Confirm the current offer, visual rules, and banned claims.
 3. Keep the page mobile-first.
