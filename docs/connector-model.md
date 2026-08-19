@@ -6,9 +6,10 @@ error, object count, and health. Per-mapping cursor records and ingest batches
 track each immutable stream. The durable connector inbox owns event dedupe,
 leases, retries, quarantine, and fenced cursor promotion.
 
-Connector events first enter the evidence ingestion path. Slack and ClickUp are
-enabled read integrations. Drive and Gmail are disabled change-feed adapter
-contracts pending safe routing and backfill. Figma, GitHub, Fireflies, Meta Ads,
+Connector events first enter the evidence ingestion path. Slack, ClickUp, Drive,
+and Gmail are enabled read integrations with provider verification, durable
+backfill/change checkpoints, lifecycle-aware routing, and redacted overlap
+quarantine. Figma, GitHub, Fireflies, Meta Ads,
 Google Ads, and finance providers remain catalog entries. Connectors never own
 organization identity, permissions, canonical work state, approvals, or
 financial truth.

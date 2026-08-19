@@ -1473,6 +1473,85 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        15,
+        "provider_sync_operation_identity_and_quarantine",
+        """
+        ALTER TABLE provider_sync_tasks ADD COLUMN operation_key TEXT;
+        UPDATE provider_sync_tasks
+        SET operation_key=COALESCE(
+            NULLIF(json_extract(payload, '$.operation_key'), ''),
+            'legacy:' || id
+        )
+        WHERE operation_key IS NULL OR operation_key='';
+        CREATE TABLE provider_sync_tasks_v15 (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            stream_key TEXT NOT NULL,
+            generation_id TEXT,
+            task_type TEXT NOT NULL CHECK(task_type IN ('backfill','reconcile','descendants')),
+            external_id TEXT,
+            route_key TEXT,
+            page_token TEXT,
+            operation_key TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','leased','completed','cancelled')),
+            lease_owner TEXT,
+            lease_token TEXT,
+            lease_expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            UNIQUE(workspace_id,connector,account_key,stream_key,operation_key)
+        );
+        INSERT INTO provider_sync_tasks_v15(
+            id,workspace_id,connector,account_key,stream_key,generation_id,task_type,
+            external_id,route_key,page_token,operation_key,payload,status,lease_owner,
+            lease_token,lease_expires_at,created_at,updated_at,completed_at
+        ) SELECT id,workspace_id,connector,account_key,stream_key,generation_id,task_type,
+            external_id,route_key,page_token,operation_key,payload,status,lease_owner,
+            lease_token,lease_expires_at,created_at,updated_at,completed_at
+            FROM provider_sync_tasks;
+        DROP TABLE provider_sync_tasks;
+        ALTER TABLE provider_sync_tasks_v15 RENAME TO provider_sync_tasks;
+        CREATE INDEX IF NOT EXISTS idx_provider_sync_tasks_claim
+            ON provider_sync_tasks(workspace_id,connector,account_key,stream_key,status,created_at);
+        CREATE TRIGGER provider_sync_task_operation_key_required
+        BEFORE INSERT ON provider_sync_tasks
+        WHEN NEW.operation_key IS NULL OR NEW.operation_key=''
+        BEGIN
+            SELECT RAISE(ABORT, 'provider sync task requires operation key');
+        END;
+        DROP TRIGGER IF EXISTS provider_sync_task_identity_no_update;
+        CREATE TRIGGER provider_sync_task_identity_no_update
+        BEFORE UPDATE OF id,workspace_id,connector,account_key,stream_key,generation_id,
+            task_type,external_id,route_key,page_token,operation_key,payload,created_at
+            ON provider_sync_tasks
+        BEGIN
+            SELECT RAISE(ABORT, 'provider sync task identity is immutable');
+        END;
+
+        CREATE TABLE IF NOT EXISTS provider_sync_quarantines (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            integration_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            reason_code TEXT NOT NULL,
+            evidence_digest TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('open','resolved')),
+            created_at TEXT NOT NULL,
+            resolved_at TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(integration_id) REFERENCES integrations(id),
+            UNIQUE(integration_id,reason_code,evidence_digest,status)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_sync_quarantine_scope
+            ON provider_sync_quarantines(organization_id,integration_id,status,created_at);
+        """,
+    ),
 )
 
 
@@ -1486,8 +1565,18 @@ def migrate(conn: sqlite3.Connection) -> int:
     for migration in MIGRATIONS:
         if migration.version in applied:
             continue
+        sql = migration.sql
+        # A few operators rebuild the migration ledger from a backup while
+        # retaining already-created tables.  Keep the operation-key migration
+        # replay-safe instead of failing on SQLite's non-idempotent ALTER.
+        if migration.version == 15:
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(provider_sync_tasks)").fetchall()
+            }
+            if "operation_key" in columns:
+                sql = sql.replace("ALTER TABLE provider_sync_tasks ADD COLUMN operation_key TEXT;", "")
         with conn:
-            conn.executescript(migration.sql)
+            conn.executescript(sql)
             conn.execute(
                 "INSERT INTO schema_migrations(version, name) VALUES (?, ?)",
                 (migration.version, migration.name),

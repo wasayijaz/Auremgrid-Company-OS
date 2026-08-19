@@ -649,6 +649,75 @@ class SqliteStore:
             state.setdefault(row["external_id"], []).append(row["route_key"])
         return {key: tuple(value) for key, value in state.items()}
 
+    def provider_route_state_for_mappings(
+        self,
+        connector: str,
+        account_keys: Iterable[str],
+    ) -> dict[str, tuple[str, ...]]:
+        """Return active object routes across one integration's full registry.
+
+        This is an internal routing projection only.  Callers must still filter
+        events to their owned route before writing workspace evidence.
+        """
+        keys = tuple(sorted({str(value) for value in account_keys if str(value)}))
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        rows = self.conn.execute(
+            f"""SELECT external_id,route_key FROM provider_object_routes
+                WHERE connector=? AND account_key IN ({placeholders}) AND status='active'
+                ORDER BY external_id,route_key""",
+            (connector, *keys),
+        ).fetchall()
+        state: dict[str, list[str]] = {}
+        for row in rows:
+            state.setdefault(row["external_id"], []).append(row["route_key"])
+        return {key: tuple(value) for key, value in state.items()}
+
+    def quarantine_provider_sync(
+        self,
+        organization_id: str,
+        integration_id: str,
+        connector: str,
+        reason_code: str,
+        evidence_digest: str,
+    ) -> dict[str, object]:
+        """Record a redacted organization-level provider quarantine.
+
+        No workspace, provider object id, filename, content, or count is stored;
+        this makes a mapping collision actionable without leaking existence to a
+        client workspace.
+        """
+        if not all(str(value).strip() for value in (organization_id, integration_id, connector, reason_code, evidence_digest)):
+            raise ValidationError("provider quarantine identity is required")
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        quarantine_id = _stable_id("pquarantine", integration_id, reason_code, evidence_digest)
+        with self.atomic(immediate=True):
+            self.conn.execute(
+                """INSERT OR IGNORE INTO provider_sync_quarantines(
+                    id,organization_id,integration_id,connector,reason_code,evidence_digest,
+                    status,created_at,resolved_at
+                ) VALUES (?,?,?,?,?,?, 'open', ?, NULL)""",
+                (quarantine_id, organization_id, integration_id, connector, reason_code, evidence_digest, now),
+            )
+            self.conn.execute(
+                "UPDATE integrations SET status='authorized',health='action_required',last_error=? WHERE id=? AND organization_id=?",
+                (f"provider_quarantine:{reason_code}", integration_id, organization_id),
+            )
+            return dict(self.conn.execute(
+                "SELECT id,organization_id,integration_id,connector,reason_code,evidence_digest,status,created_at,resolved_at FROM provider_sync_quarantines WHERE id=?",
+                (quarantine_id,),
+            ).fetchone())
+
+    def open_provider_sync_quarantines(self, organization_id: str, integration_id: str) -> list[dict[str, object]]:
+        return [dict(row) for row in self.conn.execute(
+            """SELECT id,connector,reason_code,evidence_digest,status,created_at,resolved_at
+               FROM provider_sync_quarantines
+               WHERE organization_id=? AND integration_id=? AND status='open'
+               ORDER BY created_at,id""",
+            (organization_id, integration_id),
+        ).fetchall()]
+
     def resolve_provider_object_routes(
         self,
         workspace_id: str,
@@ -956,13 +1025,21 @@ class SqliteStore:
         external_id: str | None = None,
         route_key: str | None = None,
         page_token: str | None = None,
+        operation_key: str | None = None,
         payload: dict[str, object] | None = None,
         fence: ProviderSyncFence | None = None,
     ) -> dict[str, object]:
         if task_type not in {"backfill", "reconcile", "descendants"}:
             raise ValidationError("provider sync task type is invalid")
-        identity = tuple(value or "" for value in (workspace_id, connector, account_key, stream_key, task_type,
-                                                     external_id, route_key, page_token, generation_id))
+        payload_value = dict(payload or {})
+        operation = str(operation_key or payload_value.get("operation_key") or "").strip()
+        if not operation:
+            operation = _stable_id(
+                "operation", workspace_id, connector, account_key, stream_key, task_type,
+                *(str(value or "") for value in (external_id, route_key, page_token, generation_id)),
+            )
+        payload_value.setdefault("operation_key", operation)
+        identity = tuple(value or "" for value in (workspace_id, connector, account_key, stream_key, operation))
         task_id = _stable_id("ptask", *identity)
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with self.atomic(immediate=True):
@@ -978,12 +1055,12 @@ class SqliteStore:
             self.conn.execute(
                 """INSERT OR IGNORE INTO provider_sync_tasks(
                        id,workspace_id,connector,account_key,stream_key,generation_id,task_type,
-                       external_id,route_key,page_token,payload,status,lease_owner,lease_token,
+                       external_id,route_key,page_token,operation_key,payload,status,lease_owner,lease_token,
                        lease_expires_at,created_at,updated_at,completed_at
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending',NULL,NULL,NULL,?,?,NULL)""",
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',NULL,NULL,NULL,?,?,NULL)""",
                 (task_id, workspace_id, connector, account_key, stream_key, generation_id,
-                 task_type, external_id, route_key, page_token,
-                 json.dumps(payload or {}, sort_keys=True), now, now),
+                 task_type, external_id, route_key, page_token, operation,
+                 json.dumps(payload_value, sort_keys=True), now, now),
             )
             return dict(self.conn.execute("SELECT * FROM provider_sync_tasks WHERE id=?", (task_id,)).fetchone())
 

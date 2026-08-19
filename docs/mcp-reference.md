@@ -32,8 +32,8 @@ arguments, results, jobs, or the ledger.
 `integrations.list` returns sanitized provider identity, credential metadata,
 health, and `live_enabled`. Google mapping contracts use `folder:<id>` or
 `drive:<id>` for Drive and `label:<id>` for Gmail; configuration does not imply
-live sync or historical ingestion, and `integrations.sync` refuses sources
-whose live gate is false.
+provider verification or historical ingestion. `integrations.sync` is enabled
+for Google only after account, scope, and mapping verification.
 
 Google credential references are external `env:` bindings whose value is a
 strict JSON bundle containing `client_id`, `client_secret`, and `refresh_token`.

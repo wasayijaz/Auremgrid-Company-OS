@@ -1,18 +1,15 @@
 # Live connector synchronization
 
-Auremgrid has credential-backed read synchronization for Slack and ClickUp.
-Google Drive and Gmail configuration contracts are available but deliberately
-not enabled as live integrations yet. Their server-side contracts require a
+Auremgrid has credential-backed read synchronization for Slack, ClickUp,
+Google Drive, and Gmail. Google server-side contracts require a
 read-only Google scope and explicit `folder:<id>` / `drive:<id>` or
-`label:<id>` mappings. Integration responses report `live_enabled: false`, and
-the enqueue boundary rejects a Google sync while that gate is closed. Enabled connectors use external secret references and durable
+`label:<id>` mappings. Integration responses report `live_enabled: true` only
+after the catalog gate; verification still requires provider identity and
+granted-scope evidence. Enabled connectors use external secret references and durable
 jobs; access tokens, refresh tokens, authorization headers, and provider
 credentials are never stored in SQLite or job payloads.
 
-Google provider verification and enqueue remain behind the same closed live
-gate. Configuration and credential-reference binding do not ingest historical
-files or messages; no Google content is represented as synchronized evidence.
-The future Google execution path expects the referenced environment value to be
+The Google execution path expects the referenced environment value to be
 a JSON object containing exactly `client_id`, `client_secret`, and
 `refresh_token`. It refreshes an access token in memory, requires provider-
 reported granted scopes, and persists none of those four credential values.
@@ -55,13 +52,17 @@ periodically restarts reconciliation from page zero. A worker processes up to 20
 provider pages per run while heartbeating. If more remain, the integration stays
 `authorized/backfilling` rather than claiming healthy completion.
 
-The disabled Google adapters are held to a stricter release gate than a
-successful API call: bounded historical backfill must cut over to Drive changes
-or Gmail history without a gap; moves, removals, label exits, and deletions must
-produce durable route lifecycle state; cursor expiry must rebootstrap safely;
-and provider identity, permission, quota, authorization, and retry states must
-remain explicit. Until those behaviors pass end-to-end integration tests, a
-Google connection cannot enqueue work or report `connected`.
+Google synchronization is held to a stricter gate than a successful API call:
+bounded historical backfill captures a baseline before switching to Drive
+changes or Gmail history; moves, removals, label exits, and deletions produce
+durable route lifecycle state; cursor expiry reboots through a controlled
+generation; and provider identity, permission, quota, authorization, and retry
+states remain explicit. Drive move/reconciliation tasks are leased and fenced,
+restartable, and only acknowledge a descendant wave after all spawned pages
+drain. A file that matches mappings for different workspaces is quarantined at
+organization scope using an opaque digest, with no object, content, count, or
+workspace evidence written to either stream; the original cursor remains
+parked until an operator resolves the mapping.
 
 ## Current deployment boundary
 

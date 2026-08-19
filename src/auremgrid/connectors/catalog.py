@@ -22,8 +22,8 @@ class ConnectorDefinition:
 
 TARGET_CONNECTORS = (
     ConnectorDefinition("slack","Slack",("messages","threads","participants"),("channels:read","channels:history"),live_enabled=True),
-    ConnectorDefinition("google_drive","Google Drive",("files","documents","permissions"),("https://www.googleapis.com/auth/drive.readonly",)),
-    ConnectorDefinition("gmail","Gmail",("threads","messages","participants"),("https://www.googleapis.com/auth/gmail.readonly",)),
+    ConnectorDefinition("google_drive","Google Drive",("files","documents","permissions"),("https://www.googleapis.com/auth/drive.readonly",),live_enabled=True),
+    ConnectorDefinition("gmail","Gmail",("threads","messages","participants"),("https://www.googleapis.com/auth/gmail.readonly",),live_enabled=True),
     ConnectorDefinition("clickup","ClickUp",("projects","tasks","comments"),("authorized_team",),live_enabled=True),
     ConnectorDefinition("figma","Figma",("files","versions","comments"),("file_content:read",)),
     ConnectorDefinition("github","GitHub",("repositories","issues","pull_requests"),("repo:read",)),

@@ -5,8 +5,9 @@ import os as environment
 import unittest
 from unittest.mock import patch
 
-from auremgrid.connectors.google_auth import ConnectorSourceEvent, RouteLifecycleMutation
-from auremgrid.connectors.google_drive import DriveBackfillTask
+from auremgrid.connectors.google_auth import ConnectorSourceEvent, HttpResponse, RouteLifecycleMutation
+from auremgrid.connectors.http import ConnectorTransportError
+from auremgrid.connectors.google_drive import DriveBackfillTask, DriveReconciliationRequest, GoogleDriveConnector
 from auremgrid.services.brain import CompanyOS
 from auremgrid.services.integration_ops import GMAIL_READ_SCOPE, GOOGLE_DRIVE_READ_SCOPE
 from tests.auth_support import issue_identity
@@ -213,6 +214,350 @@ class GoogleIntegrationWiringTests(unittest.TestCase):
             ).fetchone()[0],
             0,
         )
+
+    def test_drive_reconciliation_task_restarts_without_cursor_promotion(self) -> None:
+        integration = self.os.integrations.configure(
+            self.identity, "google_drive", "permission-1",
+            {"folder:root": self.ws.id}, [GOOGLE_DRIVE_READ_SCOPE],
+        )
+        self.os.integrations.bind_credential(
+            self.identity, integration["id"], "Google bundle",
+            "env:AUREMGRID_TEST_GOOGLE_WIRING",
+            ["connector:google_drive", GOOGLE_DRIVE_READ_SCOPE],
+        )
+        calls = {"pull": 0, "reconciled": False}
+
+        def factory(mode, _source, _secret, *args):
+            if mode == "refresh":
+                return {"access_token": "access", "scopes": [GOOGLE_DRIVE_READ_SCOPE]}
+            if mode == "verify":
+                return {
+                    "account_id": "permission-1", "account_name": "Drive",
+                    "granted_permissions": [GOOGLE_DRIVE_READ_SCOPE],
+                }
+            route, workspace, cursor, runtime = args
+            calls["pull"] += 1
+            event_id = "moved-folder"
+            dedupe = f"{event_id}:{calls['pull']}"
+            event = ConnectorSourceEvent(
+                dedupe, event_id, "file_changed", f"google-drive/files/{event_id}",
+                f"https://drive.test/{event_id}", "folder metadata",
+                {
+                    "file": {"id": event_id, "parents": ["root"], "mimeType": "application/vnd.google-apps.folder"},
+                    "route_keys": [route], "workspace_ids": [workspace],
+                },
+            )
+            mutation = RouteLifecycleMutation(event_id, route, workspace, "upsert", str(calls["pull"]), dedupe)
+            if runtime.get("_runtime_provider_task_type") == "reconcile":
+                calls["reconciled"] = True
+                return [event], cursor, False, {"lifecycle_mutations": (mutation,)}
+            if calls["reconciled"]:
+                return [], '{"v":1,"phase":"changes","checkpoint":"base-2","page_token":null}', False, {}
+            request = DriveReconciliationRequest(
+                event_id, ("root",), "unknown_ancestry", False, operation_key="wave-1"
+            )
+            return [event], '{"v":1,"phase":"changes","checkpoint":"base-1","page_token":null}', False, {
+                "lifecycle_mutations": (mutation,), "reconciliation_requests": (request,),
+            }
+
+        self.os.integrations.connector_factory = factory
+        self.os.integrations.verify(self.identity, integration["id"])
+        first = self.os.integrations.sync(self.identity, integration["id"])
+        self.assertEqual(first["status"], "completed")
+        cursor_before = self.os.store.conn.execute(
+            "SELECT cursor_value FROM connector_cursors WHERE connector='google_drive'"
+        ).fetchone()
+        self.assertIsNone(cursor_before)
+        pending = self.os.store.conn.execute(
+            "SELECT task_type,status FROM provider_sync_tasks"
+        ).fetchall()
+        self.assertEqual([(row["task_type"], row["status"]) for row in pending], [("reconcile", "pending")])
+        # The resumed worker executes the reconciliation wave, then consumes a
+        # regular changes page and promotes the original checkpoint in one run.
+        self.os.integrations.sync(self.identity, integration["id"])
+        self.assertEqual(calls["pull"], 3)
+        cursor_after = self.os.store.conn.execute(
+            "SELECT cursor_value FROM connector_cursors WHERE connector='google_drive'"
+        ).fetchone()["cursor_value"]
+        self.assertEqual(json.loads(cursor_after)["checkpoint"], "base-2")
+        self.assertEqual(
+            self.os.store.conn.execute("SELECT COUNT(*) FROM provider_sync_tasks WHERE status!='completed'").fetchone()[0],
+            0,
+        )
+
+    def test_drive_multilevel_descendant_wave_propagates_parent_and_drains(self) -> None:
+        integration = self.os.integrations.configure(
+            self.identity, "google_drive", "permission-1",
+            {"folder:root": self.ws.id}, [GOOGLE_DRIVE_READ_SCOPE],
+        )
+        self.os.integrations.bind_credential(
+            self.identity, integration["id"], "Google bundle",
+            "env:AUREMGRID_TEST_GOOGLE_WIRING",
+            ["connector:google_drive", GOOGLE_DRIVE_READ_SCOPE],
+        )
+        calls = {"count": 0}
+
+        def factory(mode, _source, _secret, *args):
+            if mode == "refresh":
+                return {"access_token": "access", "scopes": [GOOGLE_DRIVE_READ_SCOPE]}
+            if mode == "verify":
+                return {
+                    "account_id": "permission-1", "account_name": "Drive",
+                    "granted_permissions": [GOOGLE_DRIVE_READ_SCOPE],
+                }
+            route, workspace, cursor, runtime = args
+            calls["count"] += 1
+            task_type = runtime.get("_runtime_provider_task_type")
+            payload = runtime.get("_runtime_provider_task_payload") or {}
+            if task_type == "descendants":
+                external_id = "child-folder"
+                next_tasks = (DriveBackfillTask(route, external_id),)
+                phase = '{"v":1,"phase":"backfill","checkpoint":"base"}'
+            elif task_type == "backfill" and payload.get("parent_wave") == "moved-folder" and payload.get("kind") == "drive_tree":
+                external_id = "grandchild-folder"
+                next_tasks = (DriveBackfillTask(route, external_id),)
+                phase = '{"v":1,"phase":"backfill","checkpoint":"base"}'
+            elif task_type == "backfill":
+                external_id = "leaf-file"
+                next_tasks = ()
+                phase = '{"v":1,"phase":"changes","checkpoint":"base-2","page_token":null}'
+            else:
+                external_id = "moved-folder"
+                next_tasks = ()
+                phase = '{"v":1,"phase":"changes","checkpoint":"base-1","page_token":null}'
+            dedupe = f"{external_id}:{calls['count']}"
+            event = ConnectorSourceEvent(
+                dedupe, external_id, "file_changed", f"google-drive/files/{external_id}",
+                f"https://drive.test/{external_id}", external_id,
+                {"file": {"id": external_id, "parents": ["root"], "mimeType": "application/pdf"},
+                 "route_keys": [route], "workspace_ids": [workspace]},
+            )
+            mutation = RouteLifecycleMutation(external_id, route, workspace, "upsert", str(calls["count"]), dedupe)
+            if task_type is None:
+                request = DriveReconciliationRequest(
+                    "moved-folder", ("root",), "folder_moved", True,
+                    operation_key="move-wave", descendant_ids=(),
+                )
+                return [event], phase, False, {"lifecycle_mutations": (mutation,), "reconciliation_requests": (request,)}
+            return [event], phase, False, {"lifecycle_mutations": (mutation,), "backfill_tasks": next_tasks}
+
+        self.os.integrations.connector_factory = factory
+        self.os.integrations.verify(self.identity, integration["id"])
+        self.os.integrations.sync(self.identity, integration["id"])
+        result = self.os.integrations.sync(self.identity, integration["id"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(calls["count"], 4)
+        rows = self.os.store.conn.execute(
+            "SELECT payload,status FROM provider_sync_tasks ORDER BY created_at,id"
+        ).fetchall()
+        self.assertTrue(rows)
+        self.assertTrue(all(row["status"] == "completed" for row in rows))
+        self.assertTrue(all(json.loads(row["payload"]).get("parent_wave") in {None, "moved-folder"} for row in rows))
+
+    def test_real_drive_adapter_move_out_persists_parent_first_ancestry_and_retires_descendants(self) -> None:
+        integration = self.os.integrations.configure(
+            self.identity, "google_drive", "permission-1",
+            {"folder:root": self.ws.id}, [GOOGLE_DRIVE_READ_SCOPE],
+        )
+        self.os.integrations.bind_credential(
+            self.identity, integration["id"], "Google bundle",
+            "env:AUREMGRID_TEST_GOOGLE_WIRING",
+            ["connector:google_drive", GOOGLE_DRIVE_READ_SCOPE],
+        )
+        calls = {"pull": 0}
+
+        def factory(mode, _source, _secret, *args):
+            if mode == "refresh":
+                return {"access_token": "access", "scopes": [GOOGLE_DRIVE_READ_SCOPE]}
+            if mode == "verify":
+                return {"account_id": "permission-1", "account_name": "Drive", "granted_permissions": [GOOGLE_DRIVE_READ_SCOPE]}
+            route, workspace, cursor, runtime = args
+            calls["pull"] += 1
+            task_type = runtime.get("_runtime_provider_task_type")
+            if task_type == "reconcile":
+                transport = type("Transport", (), {})()
+                responses = [
+                    {"id": "target", "mimeType": "application/vnd.google-apps.folder", "parents": ["outside"]},
+                    {"id": "outside", "mimeType": "application/vnd.google-apps.folder", "parents": []},
+                ]
+                def request(_method, _url, _headers, _body):
+                    body = responses.pop(0)
+                    return HttpResponse(200, {}, body)
+                transport.__call__ = request
+                # A tiny callable transport keeps the test on the real adapter
+                # path while making provider I/O deterministic.
+                class QueueTransport:
+                    def __init__(self, values): self.values = list(values)
+                    def __call__(self, _method, _url, _headers=None, _body=None): return HttpResponse(200, {}, self.values.pop(0))
+                adapter = GoogleDriveConnector(
+                    "access", QueueTransport(responses), folder_workspace_mappings={"root": workspace},
+                    owned_route_key=route, route_state=self.os.store.provider_route_state(
+                        workspace, "google_drive", f"{integration['id']}:{self.os.integrations._mapping_hash('google_drive', route, workspace)}"
+                    ), ancestry_state=self.os.integrations._drive_ancestry_state(
+                        workspace, "google_drive", f"{integration['id']}:{self.os.integrations._mapping_hash('google_drive', route, workspace)}"
+                    ), backfill_task=DriveBackfillTask(route, "target"), task_type="reconcile",
+                    task_payload=runtime.get("_runtime_provider_task_payload") or {},
+                )
+                result = adapter.pull(cursor)
+                return result.events, result.next_cursor, result.has_more, {
+                    "lifecycle_mutations": result.lifecycle_mutations,
+                    "reconciliation_requests": result.reconciliation_requests,
+                    "ancestry_resolutions": result.ancestry_resolutions,
+                }
+            if task_type == "descendants":
+                adapter = GoogleDriveConnector(
+                    "access", folder_workspace_mappings={"root": workspace}, owned_route_key=route,
+                    route_state=self.os.store.provider_route_state(
+                        workspace, "google_drive", f"{integration['id']}:{self.os.integrations._mapping_hash('google_drive', route, workspace)}"
+                    ), task_type="descendants", task_payload=runtime.get("_runtime_provider_task_payload") or {},
+                    backfill_task=DriveBackfillTask(route, "target"),
+                )
+                result = adapter.pull(cursor)
+                return result.events, result.next_cursor, result.has_more, {"lifecycle_mutations": result.lifecycle_mutations}
+            if calls["pull"] == 1:
+                target = ConnectorSourceEvent(
+                    "target:active", "target", "file_changed", "google-drive/files/target", "https://drive.test/target",
+                    "target", {"file": {"id": "target", "parents": ["root"], "mimeType": "application/vnd.google-apps.folder"}, "route_keys": [route], "workspace_ids": [workspace]},
+                )
+                child = ConnectorSourceEvent(
+                    "child:active", "child", "file_changed", "google-drive/files/child", "https://drive.test/child",
+                    "child", {"file": {"id": "child", "parents": ["target"], "mimeType": "application/pdf"}, "route_keys": [route], "workspace_ids": [workspace]},
+                )
+                mutations = (
+                    RouteLifecycleMutation("target", route, workspace, "upsert", "1", "target:active"),
+                    RouteLifecycleMutation("child", route, workspace, "upsert", "1", "child:active"),
+                )
+                request = DriveReconciliationRequest("target", ("outside",), "folder_moved", False, operation_key="move-wave")
+                return [target, child], '{"v":1,"phase":"changes","checkpoint":"base-1","page_token":null}', False, {
+                    "lifecycle_mutations": mutations, "reconciliation_requests": (request,)
+                }
+            return [], '{"v":1,"phase":"changes","checkpoint":"base-final","page_token":null}', False, {}
+
+        self.os.integrations.connector_factory = factory
+        self.os.integrations.verify(self.identity, integration["id"])
+        self.os.integrations.sync(self.identity, integration["id"])
+        result = self.os.integrations.sync(self.identity, integration["id"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(calls["pull"], 4)
+        cursor = self.os.store.conn.execute("SELECT cursor_value FROM connector_cursors WHERE connector='google_drive'").fetchone()["cursor_value"]
+        self.assertEqual(json.loads(cursor)["checkpoint"], "base-final")
+        routes = self.os.store.conn.execute("SELECT external_id,status FROM provider_object_routes ORDER BY external_id").fetchall()
+        self.assertEqual([(row["external_id"], row["status"]) for row in routes], [("child", "retired"), ("target", "retired")])
+        outside = self.os.store.conn.execute("SELECT root_route_keys,reconciliation_status FROM provider_object_ancestry WHERE external_id='outside'").fetchone()
+        self.assertEqual(json.loads(outside["root_route_keys"]), [])
+        self.assertEqual(outside["reconciliation_status"], "resolved")
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM provider_sync_tasks WHERE status!='completed'").fetchone()[0], 0)
+
+    def test_drive_cross_workspace_overlap_quarantines_without_workspace_evidence(self) -> None:
+        ws2 = self.os.create_organization_workspace(self.org.id, "Client Two", "client", "ws_google_wiring_two")
+        self.os.add_person_to_workspace(self.org.id, ws2.id, self.person.id, "admin")
+        self.os.create_actor(ws2.id, "Connector Two", "admin", "actor_google_wiring_two")
+        _, global_identity = issue_identity(self.os, self.org.id, self.person.id)
+        self.os.auth.bind_actor(global_identity, self.ws.id, "actor_google_wiring")
+        self.os.auth.bind_actor(global_identity, ws2.id, "actor_google_wiring_two")
+        integration = self.os.integrations.configure(
+            global_identity, "google_drive", "permission-1",
+            {"folder:root-a": self.ws.id, "folder:root-b": ws2.id}, [GOOGLE_DRIVE_READ_SCOPE],
+        )
+        self.os.integrations.bind_credential(
+            global_identity, integration["id"], "Google bundle",
+            "env:AUREMGRID_TEST_GOOGLE_WIRING",
+            ["connector:google_drive", GOOGLE_DRIVE_READ_SCOPE],
+        )
+        state = {"external_id": "ambiguous-one"}
+
+        def factory(mode, _source, _secret, *args):
+            if mode == "refresh":
+                return {"access_token": "access", "scopes": [GOOGLE_DRIVE_READ_SCOPE]}
+            if mode == "verify":
+                return {
+                    "account_id": "permission-1", "account_name": "Drive",
+                    "granted_permissions": [GOOGLE_DRIVE_READ_SCOPE],
+                }
+            route, workspace, _cursor, _runtime = args
+            external_id = state["external_id"]
+            dedupe = f"{external_id}:overlap"
+            event = ConnectorSourceEvent(
+                dedupe, external_id, "file_changed", f"google-drive/files/{external_id}",
+                "https://drive.test/ambiguous", "must not be ingested",
+                {"route_keys": ["folder:root-a", "folder:root-b"], "workspace_ids": [self.ws.id, ws2.id]},
+            )
+            mutation = RouteLifecycleMutation(external_id, route, workspace, "upsert", "1", dedupe)
+            return [event], '{"v":1,"phase":"changes","checkpoint":"base","page_token":null}', False, {
+                "lifecycle_mutations": (mutation,)
+            }
+
+        self.os.integrations.connector_factory = factory
+        self.os.integrations.verify(global_identity, integration["id"])
+        with self.assertRaises(ConnectorTransportError):
+            self.os.integrations.sync(global_identity, integration["id"])
+        state["external_id"] = "ambiguous-two"
+        with self.assertRaises(ConnectorTransportError):
+            self.os.integrations.sync(global_identity, integration["id"])
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM connector_source_events").fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM connector_cursors").fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0], 0)
+        quarantine = self.os.store.conn.execute(
+            "SELECT * FROM provider_sync_quarantines ORDER BY created_at,id"
+        ).fetchall()
+        self.assertEqual(len(quarantine), 2)
+        self.assertTrue(all("workspace_id" not in quarantine[0].keys() for _ in [0]))
+        self.assertNotIn("must not be ingested", "\n".join(str(dict(row)) for row in quarantine))
+
+    def test_gmail_cross_workspace_overlap_quarantines_without_workspace_evidence(self) -> None:
+        ws2 = self.os.create_organization_workspace(self.org.id, "Mailbox Two", "client", "ws_google_wiring_mail_two")
+        self.os.add_person_to_workspace(self.org.id, ws2.id, self.person.id, "admin")
+        self.os.create_actor(ws2.id, "Mailbox Connector Two", "admin", "actor_google_wiring_mail_two")
+        _, global_identity = issue_identity(self.os, self.org.id, self.person.id)
+        self.os.auth.bind_actor(global_identity, self.ws.id, "actor_google_wiring")
+        self.os.auth.bind_actor(global_identity, ws2.id, "actor_google_wiring_mail_two")
+        integration = self.os.integrations.configure(
+            global_identity, "gmail", "owner@wiring.test",
+            {"label:INBOX": self.ws.id, "label:Projects": ws2.id}, [GMAIL_READ_SCOPE],
+        )
+        self.os.integrations.bind_credential(
+            global_identity, integration["id"], "Gmail bundle",
+            "env:AUREMGRID_TEST_GOOGLE_WIRING",
+            ["connector:gmail", GMAIL_READ_SCOPE],
+        )
+        state = {"external_id": "message-overlap-one"}
+
+        def factory(mode, _source, _secret, *args):
+            if mode == "refresh":
+                return {"access_token": "access", "scopes": [GMAIL_READ_SCOPE]}
+            if mode == "verify":
+                return {
+                    "account_id": "owner@wiring.test", "account_name": "Mailbox",
+                    "granted_permissions": [GMAIL_READ_SCOPE],
+                }
+            route, workspace, _cursor, _runtime = args
+            external_id = state["external_id"]
+            dedupe = f"{external_id}:overlap"
+            event = ConnectorSourceEvent(
+                dedupe, external_id, "message_added", f"gmail/messages/{external_id}",
+                "https://mail.google.test/ambiguous", "must not be ingested",
+                {"route_keys": ["label:INBOX", "label:Projects"], "workspace_ids": [self.ws.id, ws2.id]},
+            )
+            mutation = RouteLifecycleMutation(external_id, route, workspace, "upsert", "1", dedupe)
+            return [event], '{"v":1,"phase":"history","checkpoint":"101","page_token":null}', False, {
+                "lifecycle_mutations": (mutation,)
+            }
+
+        self.os.integrations.connector_factory = factory
+        self.os.integrations.verify(global_identity, integration["id"])
+        with self.assertRaises(ConnectorTransportError):
+            self.os.integrations.sync(global_identity, integration["id"])
+        state["external_id"] = "message-overlap-two"
+        with self.assertRaises(ConnectorTransportError):
+            self.os.integrations.sync(global_identity, integration["id"])
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM connector_source_events").fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM connector_cursors").fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0], 0)
+        quarantine = self.os.store.conn.execute(
+            "SELECT * FROM provider_sync_quarantines ORDER BY created_at,id"
+        ).fetchall()
+        self.assertEqual(len(quarantine), 2)
+        self.assertNotIn("must not be ingested", "\n".join(str(dict(row)) for row in quarantine))
 
 
 if __name__ == "__main__":

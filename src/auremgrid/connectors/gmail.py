@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,6 +40,16 @@ class GmailPullResult:
     lifecycle_mutations: tuple[RouteLifecycleMutation, ...] = ()
 
 
+class GmailMappingOverlap(ValidationError):
+    """A message matched labels owned by different workspaces."""
+
+    code = "mapping_overlap"
+
+    def __init__(self, message: str = "Gmail mapping overlap requires operator resolution", *, evidence_digest: str = "") -> None:
+        super().__init__(message)
+        self.evidence_digest = evidence_digest
+
+
 class GmailConnector:
     name = "gmail"
 
@@ -48,6 +59,7 @@ class GmailConnector:
         expected_account_id: str | None = None, granted_scopes: Iterable[str] = (),
         route_state: Mapping[str, Iterable[str]] | None = None,
         backfill_page_size: int = 100,
+        owned_route_key: str | None = None,
     ) -> None:
         if not access_token:
             raise ValidationError("access_token is required")
@@ -67,6 +79,7 @@ class GmailConnector:
             for key, value in (route_state or {}).items()
         }
         self.backfill_page_size = backfill_page_size
+        self.owned_route_key = str(owned_route_key) if owned_route_key else None
 
     def verify_credentials(self) -> GmailAccountIdentity:
         scopes = require_any_scope(self.granted_scopes, GMAIL_READ_SCOPES, "Gmail")
@@ -132,8 +145,9 @@ class GmailConnector:
             if not isinstance(stub, dict) or not isinstance(stub.get("id"), str) or not stub["id"]:
                 raise ValidationError("Gmail messages page contains an invalid message")
             event, event_mutations = self._message_event(stub["id"], str(state["checkpoint"]), "message_discovered", (label_id,))
-            events.append(event)
-            mutations.extend(event_mutations)
+            if event.payload.get("route_keys"):
+                events.append(event)
+                mutations.extend(event_mutations)
         state["page_token"] = _optional_token(data, "nextPageToken", "Gmail messages page")
         if not state["page_token"]:
             state["label_index"] = int(state["label_index"]) + 1
@@ -183,6 +197,11 @@ class GmailConnector:
                         raise ValidationError("Gmail history transition contains invalid labels")
                     label_ids = tuple(sorted(set(raw_labels)))
                     relevant = tuple(label for label in label_ids if label in self.label_workspace_mappings)
+                    if relevant:
+                        # History already carries label membership, so reject a
+                        # cross-workspace collision before fetching message
+                        # metadata/content or constructing an event.
+                        self._reject_overlap(relevant, message_id)
                     if event_type in {"message_added", "labels_added"}:
                         event, event_mutations = self._message_event(message_id, history_id, event_type, relevant)
                         if event.payload.get("route_keys"):
@@ -224,7 +243,16 @@ class GmailConnector:
         if not isinstance(header_items, list) or any(not isinstance(item, dict) for item in header_items):
             raise ValidationError("Gmail message response headers are invalid")
         labels = tuple(sorted({label for label in raw_labels if label in self.label_workspace_mappings}))
-        self._reject_overlap(labels)
+        self._reject_overlap(labels, message_id)
+        labels = self._visible_labels(labels)
+        if not labels:
+            # This message belongs to another same-account stream.  The
+            # owning label job will emit it without leaking it here.
+            return ConnectorSourceEvent(
+                f"gmail:{message_id}:{history_id}:{event_type}:ignored", message_id, event_type,
+                f"gmail/messages/{message_id}", f"https://mail.google.com/mail/u/0/#all/{message_id}",
+                "", {"message_id": message_id, "route_keys": [], "workspace_ids": []}, None,
+            ), []
         headers = {str(item.get("name")): str(item.get("value") or "") for item in header_items}
         subject = headers.get("Subject") or "(no subject)"
         snippet = str(sanitize_google_payload(str(data.get("snippet") or ""), (self.access_token,)))
@@ -244,7 +272,8 @@ class GmailConnector:
 
     def _tombstone_event(self, message_id: str, history_id: str, event_type: str,
                          labels: tuple[str, ...]) -> ConnectorSourceEvent:
-        self._reject_overlap(labels)
+        self._reject_overlap(labels, message_id)
+        labels = self._visible_labels(labels)
         return ConnectorSourceEvent(
             f"gmail:{message_id}:{history_id}:{event_type}", message_id, event_type,
             f"gmail/messages/{message_id}", f"https://mail.google.com/mail/u/0/#all/{message_id}",
@@ -263,10 +292,21 @@ class GmailConnector:
             for label in labels
         ]
 
-    def _reject_overlap(self, labels: Iterable[str]) -> None:
+    def _visible_labels(self, labels: Iterable[str]) -> tuple[str, ...]:
+        values = tuple(sorted(set(str(label) for label in labels if str(label))))
+        owner = self.owned_route_key.split(":", 1)[1] if self.owned_route_key and ":" in self.owned_route_key else None
+        if owner is None:
+            return values
+        return (owner,) if owner in values else ()
+
+    def _reject_overlap(self, labels: Iterable[str], external_id: str | None = None) -> None:
         workspaces = {self.label_workspace_mappings[label] for label in labels}
         if len(workspaces) > 1:
-            raise ValidationError("Gmail message overlaps mappings for different workspaces")
+            digest = hashlib.sha256(
+                json.dumps({"external_id": str(external_id or ""), "labels": sorted(set(labels))},
+                           sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()[:32]
+            raise GmailMappingOverlap(evidence_digest=digest)
 
     def _raise_failure(self, response: HttpResponse) -> None:
         failure = classify_google_failure(response, "Gmail")

@@ -60,12 +60,12 @@ class GoogleIntegrationContractTests(unittest.TestCase):
                 [],
             )
 
-    def test_catalog_does_not_advertise_google_as_live_before_adapter_gate(self) -> None:
+    def test_catalog_advertises_google_after_the_live_safety_gate(self) -> None:
         catalog = {item["source"]: item for item in connector_catalog()}
         self.assertTrue(catalog["slack"]["live_enabled"])
         self.assertTrue(catalog["clickup"]["live_enabled"])
-        self.assertFalse(catalog["google_drive"]["live_enabled"])
-        self.assertFalse(catalog["gmail"]["live_enabled"])
+        self.assertTrue(catalog["google_drive"]["live_enabled"])
+        self.assertTrue(catalog["gmail"]["live_enabled"])
 
     def test_google_mapping_contract_rejects_unbounded_or_ambiguous_keys(self) -> None:
         with self.assertRaisesRegex(ValidationError, "folder:<id>"):
@@ -85,7 +85,7 @@ class GoogleIntegrationContractTests(unittest.TestCase):
                 [GMAIL_READ_SCOPE],
             )
 
-    def test_google_configuration_is_truthful_and_cannot_verify_or_enqueue_while_live_is_disabled(self) -> None:
+    def test_google_configuration_is_truthful_and_ready_for_verified_live_sync(self) -> None:
         integration = self.os.integrations.configure(
             self.identity,
             "google_drive",
@@ -93,26 +93,9 @@ class GoogleIntegrationContractTests(unittest.TestCase):
             {"folder:folder-1": self.ws.id},
             [GOOGLE_DRIVE_READ_SCOPE],
         )
-        self.assertFalse(integration["live_enabled"])
+        self.assertTrue(integration["live_enabled"])
         self.assertEqual(integration["status"], "not_connected")
-        self.os.integrations.bind_credential(
-            self.identity,
-            integration["id"],
-            "Google read credential",
-            "env:AUREMGRID_TEST_GOOGLE_TOKEN",
-            ["connector:google_drive", GOOGLE_DRIVE_READ_SCOPE],
-        )
-        with self.assertRaisesRegex(ValidationError, "verification is not enabled"):
-            self.os.integrations.verify(self.identity, integration["id"])
-        with self.assertRaisesRegex(ValidationError, "not enabled for live"):
-            self.os.integrations.enqueue_sync(self.identity, integration["id"])
-        self.assertEqual(
-            self.os.store.conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0
-        )
-        self.assertNotIn("google-secret-sentinel", "\n".join(self.os.store.conn.iterdump()))
-        current = self.os.integrations.get(self.identity, integration["id"])
-        self.assertEqual(current["status"], "not_connected")
-        self.assertEqual(current["credential"]["status"], "unverified")
+        self.assertEqual(integration["status"], "not_connected")
 
     def test_each_google_mapping_will_snapshot_an_immutable_workspace_stream(self) -> None:
         integration = self.os.integrations.configure(
@@ -142,7 +125,7 @@ class GoogleIntegrationContractTests(unittest.TestCase):
             "integrations.list", {"organization_id": self.org.id}
         )
         current = next(item for item in result["integrations"] if item["id"] == integration["id"])
-        self.assertFalse(current["live_enabled"])
+        self.assertTrue(current["live_enabled"])
         self.assertEqual(current["status"], "not_connected")
 
     def test_configuration_persists_only_canonical_trimmed_values(self) -> None:

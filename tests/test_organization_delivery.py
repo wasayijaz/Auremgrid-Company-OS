@@ -95,7 +95,7 @@ class MigrationTests(unittest.TestCase):
             conn.execute("""INSERT INTO work_items(id,workspace_id,title,request,requested_by,needed_by,status,assignee_id,playbook_id,decision_maker,definition_of_done,created_at,updated_at)
                 VALUES ('work_legacy','ws_legacy','Legacy work','Preserve me','Client',NULL,'captured',NULL,NULL,NULL,'{}','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00')""");conn.commit();conn.close()
             os=CompanyOS(path);item=os.store.get_work_item("ws_legacy","work_legacy")
-            self.assertEqual(os.store.schema_version,14);self.assertEqual(item.title,"Legacy work");self.assertEqual(item.priority,"normal");os.close()
+            self.assertEqual(os.store.schema_version,15);self.assertEqual(item.title,"Legacy work");self.assertEqual(item.priority,"normal");os.close()
 
 
 if __name__ == "__main__":

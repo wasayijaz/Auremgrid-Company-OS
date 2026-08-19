@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from auremgrid.connectors.gmail import GMAIL_API, GmailConnector
+from auremgrid.connectors.gmail import GMAIL_API, GmailConnector, GmailMappingOverlap
 from auremgrid.connectors.google_auth import (
     DRIVE_READ_SCOPES,
     GMAIL_READ_SCOPES,
@@ -20,7 +20,10 @@ from auremgrid.connectors.google_auth import (
     UrllibTransport,
     classify_google_failure,
 )
-from auremgrid.connectors.google_drive import DRIVE_API, GOOGLE_FOLDER, DriveBackfillTask, GoogleDriveConnector
+from auremgrid.connectors.google_drive import (
+    DRIVE_API, GOOGLE_FOLDER, DriveBackfillTask, GoogleDriveConnector,
+    GoogleDriveMappingOverlap,
+)
 from auremgrid.domain.errors import AuthorizationError, ValidationError
 from auremgrid.services.brain import CompanyOS, new_id
 
@@ -59,7 +62,7 @@ class GoogleConnectorTests(unittest.TestCase):
         self.os.close()
 
     def test_v12_schema_has_connector_inbox_without_token_value_columns(self) -> None:
-        self.assertEqual(self.os.store.schema_version, 14)
+        self.assertEqual(self.os.store.schema_version, 15)
         self.assertTrue(
             {
                 "connector_cursors",
@@ -239,7 +242,7 @@ class GoogleConnectorTests(unittest.TestCase):
         )
 
     def test_two_worker_event_lease_exclusion_and_expired_recovery(self) -> None:
-        now = datetime(2026, 8, 19, 12, 0, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc).replace(microsecond=0)
         batch = self.repo.record_pull(
             self.org.id, self.ws.id, "google_drive", "account@example.test", None, "cursor-1", [self._source_event()]
         )
@@ -707,6 +710,168 @@ class GoogleConnectorTests(unittest.TestCase):
         self.assertEqual(result.events[0].payload["route_keys"], ["folder:root"])
         self.assertFalse(any(item.operation == "tombstone" for item in result.lifecycle_mutations))
         self.assertEqual(result.reconciliation_requests, ())
+
+    def test_drive_mapping_overlap_fails_closed_before_content_fetch(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {"newStartPageToken": "base-2", "changes": [{
+            "fileId": "shared", "time": "2026-08-19T12:00:00Z",
+            "file": {"id": "shared", "name": "Private", "mimeType": "text/plain", "parents": ["root-a", "root-b"]},
+        }]}))
+        cursor = json.dumps({"v": 1, "phase": "changes", "checkpoint": "base-1", "page_token": None})
+        with self.assertRaises(GoogleDriveMappingOverlap):
+            GoogleDriveConnector(
+                "access", transport,
+                folder_workspace_mappings={"root-a": "workspace-a", "root-b": "workspace-b"},
+                owned_route_key="folder:root-a",
+            ).pull(cursor)
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_drive_same_workspace_multiple_roots_emit_only_owned_route(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {"newStartPageToken": "base-2", "changes": [{
+            "fileId": "shared-same-workspace", "time": "2026-08-19T12:00:00Z",
+            "file": {
+                "id": "shared-same-workspace", "name": "Shared", "mimeType": "application/pdf",
+                "parents": ["root-a", "root-b"],
+            },
+        }]}))
+        cursor = json.dumps({"v": 1, "phase": "changes", "checkpoint": "base-1", "page_token": None})
+        result = GoogleDriveConnector(
+            "access", transport,
+            folder_workspace_mappings={"root-a": self.ws.id, "root-b": self.ws.id},
+            owned_route_key="folder:root-a",
+        ).pull(cursor)
+        self.assertEqual(result.events[0].payload["route_keys"], ["folder:root-a"])
+        self.assertEqual({mutation.route_key for mutation in result.lifecycle_mutations}, {"folder:root-a"})
+
+    def test_drive_nested_mapped_root_overlap_is_rejected_before_event(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {"newStartPageToken": "base-2", "changes": [{
+            "fileId": "root-b", "time": "2026-08-19T12:00:00Z",
+            "file": {"id": "root-b", "mimeType": GOOGLE_FOLDER, "parents": ["root-a"]},
+        }]}))
+        cursor = json.dumps({"v": 1, "phase": "changes", "checkpoint": "base-1", "page_token": None})
+        with self.assertRaises(GoogleDriveMappingOverlap):
+            GoogleDriveConnector(
+                "access", transport,
+                folder_workspace_mappings={"root-a": "workspace-a", "root-b": "workspace-b"},
+                owned_route_key="folder:root-a",
+            ).pull(cursor)
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_drive_reconcile_resolved_unmapped_parent_tombstones_and_uses_new_wave_key(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {
+            "id": "target", "mimeType": "application/pdf", "parents": ["outside"],
+            "modifiedTime": "2026-08-19T12:00:00Z",
+        }))
+        transport.queue(HttpResponse(200, {}, {
+            "id": "outside", "mimeType": GOOGLE_FOLDER, "parents": [],
+        }))
+        cursor = json.dumps({"v": 1, "phase": "backfill", "checkpoint": "base-1"})
+        result = GoogleDriveConnector(
+            "access", transport, folder_workspace_mappings={"root": self.ws.id},
+            owned_route_key="folder:root", route_state={"target": ["folder:root"]},
+            task_type="reconcile", task_payload={
+                "parent_external_id": "target", "parent_ids": ["outside"], "operation_key": "wave-1",
+            }, backfill_task=DriveBackfillTask("folder:root", "target"),
+        ).pull(cursor)
+        self.assertEqual(result.lifecycle_mutations[0].operation, "tombstone")
+        self.assertEqual(result.events[0].payload["route_keys"], [])
+        self.assertEqual(result.events[0].event_type, "file_moved_out")
+        self.assertEqual(result.reconciliation_requests, ())
+        self.assertEqual([item.external_id for item in result.ancestry_resolutions], ["outside", "target"])
+        self.assertEqual(result.ancestry_resolutions[0].root_route_keys, ())
+
+    def test_drive_reconcile_unknown_parent_creates_non_colliding_followup_wave(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {
+            "id": "target", "mimeType": "application/pdf", "parents": ["unknown"],
+        }))
+        transport.queue(HttpResponse(404, {}, {"error": {"status": "NOT_FOUND"}}))
+        cursor = json.dumps({"v": 1, "phase": "backfill", "checkpoint": "base-1"})
+        result = GoogleDriveConnector(
+            "access", transport, folder_workspace_mappings={"root": self.ws.id},
+            owned_route_key="folder:root", route_state={"target": ["folder:root"]},
+            task_type="reconcile", task_payload={
+                "parent_external_id": "target", "parent_ids": ["unknown"], "operation_key": "wave-1",
+            }, backfill_task=DriveBackfillTask("folder:root", "target"),
+        ).pull(cursor)
+        self.assertEqual(len(result.reconciliation_requests), 1)
+        self.assertNotEqual(result.reconciliation_requests[0].operation_key, "wave-1")
+        self.assertEqual(json.loads(result.next_cursor or "{}"), json.loads(cursor))
+
+    def test_drive_descendant_move_out_emits_child_tombstone_from_resolved_empty_ancestry(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {"files": [{
+            "id": "child", "mimeType": "application/pdf", "parents": ["moved-folder"],
+            "modifiedTime": "2026-08-19T12:00:00Z",
+        }]}))
+        cursor = json.dumps({"v": 1, "phase": "backfill", "checkpoint": "base-1"})
+        result = GoogleDriveConnector(
+            "access", transport, folder_workspace_mappings={"root": self.ws.id},
+            owned_route_key="folder:root", route_state={"child": ["folder:root"]},
+            ancestry_state={"moved-folder": {"root_route_keys": [], "reconciliation_status": "resolved"}},
+            task_type="descendants", task_payload={"parent_external_id": "moved-folder"},
+            backfill_task=DriveBackfillTask("folder:root", "moved-folder"),
+        ).pull(cursor)
+        self.assertEqual(result.lifecycle_mutations[0].operation, "tombstone")
+        self.assertEqual(result.events[0].payload["route_keys"], [])
+
+    def test_drive_removed_folder_without_file_metadata_queues_cached_descendant_cleanup(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {"newStartPageToken": "base-2", "changes": [{
+            "fileId": "folder", "removed": True, "time": "2026-08-19T12:00:00Z",
+        }]}))
+        cursor = json.dumps({"v": 1, "phase": "changes", "checkpoint": "base-1", "page_token": None})
+        result = GoogleDriveConnector(
+            "access", transport, folder_workspace_mappings={"root": self.ws.id},
+            owned_route_key="folder:root", route_state={"folder": ["folder:root"], "child": ["folder:root"]},
+            ancestry_state={
+                "folder": {"parent_ids": [], "root_route_keys": ["folder:root"], "is_container": True, "reconciliation_status": "resolved"},
+                "child": {"parent_ids": ["folder"], "root_route_keys": ["folder:root"], "reconciliation_status": "resolved"},
+            },
+        ).pull(cursor)
+        self.assertEqual(result.reconciliation_requests[0].descendant_ids, ("child",))
+        self.assertEqual(result.lifecycle_mutations[0].operation, "tombstone")
+        cleanup = GoogleDriveConnector(
+            "access", FakeTransport(), folder_workspace_mappings={"root": self.ws.id},
+            owned_route_key="folder:root", route_state={"child": ["folder:root"]},
+            task_type="descendants", task_payload={"descendant_ids": ["child"], "operation_key": "removed-wave"},
+            backfill_task=DriveBackfillTask("folder:root", "folder"),
+        ).pull(json.dumps({"v": 1, "phase": "backfill", "checkpoint": "base-1"}))
+        self.assertEqual(cleanup.lifecycle_mutations[0].operation, "tombstone")
+
+    def test_gmail_cross_workspace_label_overlap_fails_before_message_fetch(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(200, {}, {"historyId": "101", "history": [{
+            "id": "101", "messagesAdded": [{"message": {
+                "id": "msg-overlap", "labelIds": ["Label_A", "Label_B"]
+            }}],
+        }]}))
+        cursor = json.dumps({"v": 1, "phase": "history", "checkpoint": "100", "page_token": None})
+        with self.assertRaises(GmailMappingOverlap):
+            GmailConnector(
+                "access", transport,
+                label_workspace_mappings={"label:Label_A": "workspace-a", "label:Label_B": "workspace-b"},
+                owned_route_key="label:Label_A",
+            ).pull(cursor)
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_drive_reconcile_404_emits_owned_tombstone_without_advancing_changes_cursor(self) -> None:
+        transport = FakeTransport()
+        transport.queue(HttpResponse(404, {}, {"error": {"status": "NOT_FOUND"}}))
+        cursor = json.dumps({"v": 1, "phase": "backfill", "checkpoint": "base-1"})
+        result = GoogleDriveConnector(
+            "access", transport, folder_workspace_mappings={"root": self.ws.id},
+            route_state={"folder-1": ["folder:root"]},
+            owned_route_key="folder:root", task_type="reconcile",
+            task_payload={"parent_external_id": "folder-1"},
+            backfill_task=DriveBackfillTask("folder:root", "folder-1"),
+        ).pull(cursor)
+        self.assertEqual(result.events[0].event_type, "file_removed")
+        self.assertEqual(result.lifecycle_mutations[0].operation, "tombstone")
+        self.assertEqual(json.loads(result.next_cursor or "{}"), json.loads(cursor))
 
     def test_drive_unknown_ancestry_preserves_route_and_requests_reconciliation(self) -> None:
         transport = FakeTransport()

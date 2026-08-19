@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from auremgrid.connectors.clickup import ClickUpConnector
-from auremgrid.connectors.gmail import GmailConnector
+from auremgrid.connectors.gmail import GmailConnector, GmailMappingOverlap
 from auremgrid.connectors.google_auth import (
     ConnectorInboxRepository,
     ConnectorSourceEvent,
@@ -18,7 +18,9 @@ from auremgrid.connectors.google_auth import (
     OAuthRefreshResult,
     RouteLifecycleMutation,
 )
-from auremgrid.connectors.google_drive import DriveBackfillTask, GoogleDriveConnector
+from auremgrid.connectors.google_drive import (
+    DriveBackfillTask, GoogleDriveConnector, GoogleDriveMappingOverlap,
+)
 from auremgrid.connectors.http import ConnectorTransportError, sanitize_content
 from auremgrid.connectors.slack import SlackConnector
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
@@ -30,12 +32,10 @@ from auremgrid.storage.sqlite import ProviderSyncFence
 GOOGLE_DRIVE_READ_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 
-# Google sources are configurable so an operator can establish and inspect the
-# account/mapping contract, but they are not advertised as live until their
-# adapters pass the same routing, backfill, identity, and retry gates as the
-# existing providers.
 CONFIGURABLE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail"})
-LIVE_SOURCES = frozenset({"slack", "clickup"})
+# Google live synchronization is enabled only after the durable routing,
+# account, backfill, reconciliation, and quarantine gates in this branch.
+LIVE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail"})
 
 
 def _now() -> str:
@@ -312,6 +312,7 @@ class IntegrationOperations:
                 page_count=0
                 while True:
                     provider_task = None
+                    pending_provider_tasks_after_page: int | None = None
                     page_integration = integration
                     if self._is_google(integration["source"]):
                         running_generation = self.os.store.get_running_generation(
@@ -320,18 +321,6 @@ class IntegrationOperations:
                         )
                         if cursor is None and running_generation is not None:
                             cursor = running_generation["baseline_cursor"]
-                        next_task_type = self.conn.execute(
-                            """SELECT task_type FROM provider_sync_tasks
-                            WHERE workspace_id=? AND connector=? AND account_key=? AND stream_key=?
-                              AND status IN ('pending','leased')
-                            ORDER BY created_at,id LIMIT 1""",
-                            (workspace_id, integration["source"], account_key, provider_stream_key),
-                        ).fetchone()
-                        if next_task_type is not None and next_task_type["task_type"] != "backfill":
-                            raise ConnectorTransportError(
-                                "Google Drive reconciliation is pending", retryable=True,
-                                retry_after=60,
-                            )
                         provider_task = self.os.store.claim_provider_sync_task(
                             workspace_id, integration["source"], account_key,
                             provider_stream_key, event_lease_owner, 60,
@@ -339,19 +328,39 @@ class IntegrationOperations:
                         )
                         if provider_task is not None:
                             payload = json.loads(provider_task["payload"] or "{}")
-                            if integration["source"] == "google_drive" and provider_task["task_type"] == "backfill":
+                            if integration["source"] == "google_drive":
                                 page_integration = {
                                     **integration,
                                     "_runtime_backfill_task": DriveBackfillTask(
                                         provider_task["route_key"],
-                                        provider_task["external_id"],
+                                        provider_task["external_id"] or provider_task["route_key"].split(":", 1)[1],
                                         provider_task["page_token"],
                                     ),
+                                    "_runtime_provider_task_type": provider_task["task_type"],
+                                    "_runtime_provider_task_payload": payload,
                                 }
                             elif integration["source"] == "gmail" and provider_task["task_type"] == "backfill":
                                 cursor = str(payload["cursor"])
+                    cursor_before_page = cursor
+                    pull_cursor = cursor
+                    if (
+                        provider_task is not None
+                        and integration["source"] == "google_drive"
+                        and provider_task["task_type"] in {"reconcile", "descendants"}
+                    ):
+                        # Reconciliation is an auxiliary operation wave.  Run
+                        # it through the bounded backfill/reconcile endpoint
+                        # while retaining the original changes cursor below.
+                        try:
+                            current_state = json.loads(cursor) if cursor else {}
+                        except (TypeError, json.JSONDecodeError) as exc:
+                            raise ValidationError("Google Drive task cursor is invalid") from exc
+                        pull_cursor = json.dumps({
+                            "v": 1, "phase": "backfill",
+                            "checkpoint": str(current_state.get("checkpoint") or "task"),
+                        }, sort_keys=True, separators=(",", ":"))
                     events,next_cursor,has_more,page_meta = self._pull(
-                        integration["source"],secret,external_key,workspace_id,cursor,page_integration
+                        integration["source"],secret,external_key,workspace_id,pull_cursor,page_integration
                     )
                     if page_meta.get("cursor_expired"):
                         if cursor is None:
@@ -369,7 +378,9 @@ class IntegrationOperations:
                     next_phase = self._google_cursor_phase(next_cursor) if self._is_google(integration["source"]) else None
                     durable_cursor_after = next_cursor
                     if self._is_google(integration["source"]) and (
-                        next_phase == "backfill" or page_meta.get("backfill_tasks")
+                        (provider_task is not None and provider_task["task_type"] != "backfill")
+                        or next_phase == "backfill" or page_meta.get("backfill_tasks")
+                        or page_meta.get("reconciliation_requests")
                     ):
                         durable_cursor_after = None
                     with self.os.store.atomic(immediate=True):
@@ -486,11 +497,16 @@ class IntegrationOperations:
                                     provider_task["id"], provider_task["lease_token"],
                                     provider_fence,
                                 )
+                                self._acknowledge_descendant_wave_if_drained(
+                                    workspace_id, integration["source"], account_key,
+                                    provider_stream_key, provider_task, provider_fence,
+                                )
                             if self._is_google(integration["source"]):
                                 pending = self.os.store.pending_provider_task_count(
                                     workspace_id, integration["source"], account_key,
                                     provider_stream_key,
                                 )
+                                pending_provider_tasks_after_page = pending
                                 if generation is not None and pending == 0 and next_phase != "backfill":
                                     self.os.store.complete_provider_sync_generation(
                                         generation["id"], fence=provider_fence
@@ -524,9 +540,28 @@ class IntegrationOperations:
                     ).fetchone()[0]
                     if self._is_google(integration["source"]):
                         self.os.rebuild_projections(workspace_id)
-                    cursor=next_cursor
+                    # Task pages reconcile durable state while the original
+                    # provider cursor remains parked.  Only a regular provider
+                    # page may advance the stream checkpoint.
+                    cursor = (
+                        cursor_before_page
+                        if provider_task is not None and provider_task["task_type"] != "backfill"
+                        else next_cursor
+                    )
                     page_count += 1
                     if not has_more:
+                        if (
+                            provider_task is not None
+                            and pending_provider_tasks_after_page is not None
+                            and (
+                                pending_provider_tasks_after_page > 0
+                                or provider_task["task_type"] != "backfill"
+                            )
+                        ):
+                            # Keep draining a leased operation wave in this
+                            # resumed worker; when it reaches zero the parked
+                            # provider cursor is consumed immediately below.
+                            continue
                         break
                     if page_count >= 20:
                         backfill_remaining=True
@@ -560,6 +595,20 @@ class IntegrationOperations:
             return {"integration_id": integration_id, "status": "completed", "seen": total_seen,
                     "created": total_created, "quarantined":total_quarantined,
                     "backfill_remaining":backfill_remaining,"batch_ids": batches}
+        except (GoogleDriveMappingOverlap, GmailMappingOverlap) as exc:
+            # Quarantine only a redacted organization-level digest.  The
+            # stream cursor is still untouched because the exception occurs
+            # before ``record_pull``; neither workspace learns object existence.
+            mapping_digest = exc.evidence_digest or hashlib.sha256(
+                json.dumps(integration.get("workspace_mappings") or {}, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()[:32]
+            self.os.store.quarantine_provider_sync(
+                identity.organization_id, integration_id, integration["source"],
+                "mapping_overlap", mapping_digest,
+            )
+            raise ConnectorTransportError(
+                "provider mapping requires operator resolution", status=403, retryable=False
+            ) from exc
         except ConnectorTransportError as exc:
             health, connection_state = self._transport_failure_state(exc)
             if self._owns_sync_fences(
@@ -638,10 +687,35 @@ class IntegrationOperations:
     ) -> tuple[list[ConnectorSourceEvent], str | None, bool, dict[str, Any]]:
         if self.connector_factory is not None:
             result=self.connector_factory("pull", source, secret, external_key, workspace_id, cursor, integration)
+            if source in {"google_drive", "gmail"} and len(result) >= 4:
+                factory_events, factory_cursor, factory_more, factory_meta = result[:4]
+                for event in factory_events:
+                    payload = event.payload if isinstance(event.payload, dict) else {}
+                    workspace_ids = payload.get("workspace_ids") or ()
+                    if any(str(value) != workspace_id for value in workspace_ids):
+                        overlap_type = GoogleDriveMappingOverlap if source == "google_drive" else GmailMappingOverlap
+                        raise overlap_type(evidence_digest=hashlib.sha256(
+                            f"{event.external_id}:{','.join(sorted(str(value) for value in workspace_ids))}".encode()
+                        ).hexdigest()[:32])
+                for mutation in tuple(factory_meta.get("lifecycle_mutations", ())):
+                    if mutation.route_key != external_key or mutation.workspace_id != workspace_id:
+                        overlap_type = GoogleDriveMappingOverlap if source == "google_drive" else GmailMappingOverlap
+                        raise overlap_type(evidence_digest=hashlib.sha256(
+                            f"{mutation.external_id}:{mutation.route_key}:{mutation.workspace_id}".encode()
+                        ).hexdigest()[:32])
             if len(result)==2:
                 return result[0],result[1],False,{}
             if len(result)==3:
                 return result[0],result[1],result[2],{}
+            if source == "google_drive" and len(result) >= 4:
+                factory_meta = dict(result[3] or {})
+                factory_meta.setdefault(
+                    "task_type", integration.get("_runtime_provider_task_type") or "backfill"
+                )
+                factory_meta.setdefault(
+                    "task_payload", integration.get("_runtime_provider_task_payload") or {}
+                )
+                return result[0], result[1], result[2], factory_meta
             return result
         if source == "slack":
             connector = SlackConnector(secret, {external_key: workspace_id}, cursor=cursor)
@@ -652,27 +726,48 @@ class IntegrationOperations:
             raw = connector.pull()
             return [self._normalize_event(item) for item in raw], connector.next_cursor, connector.has_more, {}
         if source == "google_drive":
-            folders, drives = self._drive_mappings({external_key: workspace_id})
+            # Instantiate the adapter with the complete integration registry so
+            # ownership collisions are classified before an inbox row/cursor
+            # can be committed.  The adapter receives this stream's route as
+            # ``owned_route_key`` and filters all emitted mutations to it.
+            full_mappings = dict(integration.get("workspace_mappings") or {external_key: workspace_id})
+            folders, drives = self._drive_mappings(full_mappings)
             account_key = f"{integration['id']}:{self._mapping_hash(source,external_key,workspace_id)}"
+            registry_keys = [
+                f"{integration['id']}:{self._mapping_hash(source, route, mapped_workspace)}"
+                for route, mapped_workspace in full_mappings.items()
+            ]
             connector = GoogleDriveConnector(
                 secret,
                 folder_workspace_mappings=folders,
                 shared_drive_workspace_mappings=drives,
                 expected_account_id=integration["expected_account_id"],
                 granted_scopes=integration.get("_runtime_granted_permissions", ()),
-                route_state=self.os.store.provider_route_state(workspace_id, source, account_key),
-                ancestry_state=self._drive_ancestry_state(workspace_id, source, account_key),
+                route_state=self.os.store.provider_route_state_for_mappings(source, registry_keys),
+                ancestry_state=self._drive_ancestry_state_for_mappings(source, registry_keys),
                 backfill_task=integration.get("_runtime_backfill_task"),
+                owned_route_key=external_key,
+                task_type=str(integration.get("_runtime_provider_task_type") or "backfill"),
+                task_payload=integration.get("_runtime_provider_task_payload") or {},
             )
-            return self._google_pull_page(connector.pull(cursor), source, external_key, workspace_id)
+            page = self._google_pull_page(connector.pull(cursor), source, external_key, workspace_id)
+            page[3]["task_type"] = connector.task_type
+            page[3]["task_payload"] = dict(connector.task_payload)
+            return page
         if source == "gmail":
             account_key = f"{integration['id']}:{self._mapping_hash(source,external_key,workspace_id)}"
+            full_mappings = dict(integration.get("workspace_mappings") or {external_key: workspace_id})
+            registry_keys = [
+                f"{integration['id']}:{self._mapping_hash(source, route, mapped_workspace)}"
+                for route, mapped_workspace in full_mappings.items()
+            ]
             connector = GmailConnector(
                 secret,
-                label_workspace_mappings={external_key: workspace_id},
+                label_workspace_mappings=full_mappings,
                 expected_account_id=integration["expected_account_id"],
                 granted_scopes=integration.get("_runtime_granted_permissions", ()),
-                route_state=self.os.store.provider_route_state(workspace_id, source, account_key),
+                route_state=self.os.store.provider_route_state_for_mappings(source, registry_keys),
+                owned_route_key=external_key,
             )
             return self._google_pull_page(connector.pull(cursor), source, external_key, workspace_id)
         raise ValidationError("connector adapter is not enabled for live synchronization")
@@ -693,6 +788,15 @@ class IntegrationOperations:
                 retryable=bool(result.retryable), retry_after=result.retry_after_seconds,
             )
         events_by_key = {event.dedupe_key: event for event in result.events}
+        if source in {"google_drive", "gmail"}:
+            for event in result.events:
+                payload = event.payload if isinstance(event.payload, dict) else {}
+                workspace_ids = payload.get("workspace_ids") or ()
+                if any(str(value) != workspace_id for value in workspace_ids):
+                    overlap_type = GoogleDriveMappingOverlap if source == "google_drive" else GmailMappingOverlap
+                    raise overlap_type(evidence_digest=hashlib.sha256(
+                        f"{event.external_id}:{','.join(sorted(str(value) for value in workspace_ids))}".encode()
+                    ).hexdigest()[:32])
         mutations = tuple(result.lifecycle_mutations)
         for mutation in mutations:
             if mutation.event_dedupe_key not in events_by_key:
@@ -703,24 +807,54 @@ class IntegrationOperations:
             "lifecycle_mutations": mutations,
             "backfill_tasks": tuple(getattr(result, "backfill_tasks", ())),
             "reconciliation_requests": tuple(getattr(result, "reconciliation_requests", ())),
+            "ancestry_resolutions": tuple(getattr(result, "ancestry_resolutions", ())),
         }
 
     def _drive_ancestry_state(
         self, workspace_id: str, source: str, account_key: str
     ) -> dict[str, dict[str, Any]]:
         rows = self.conn.execute(
-            """SELECT external_id,root_route_keys,reconciliation_status
+            """SELECT external_id,parent_ids,root_route_keys,is_container,reconciliation_status
             FROM provider_object_ancestry
             WHERE workspace_id=? AND connector=? AND account_key=?""",
             (workspace_id, source, account_key),
         ).fetchall()
         return {
             row["external_id"]: {
+                "parent_ids": json.loads(row["parent_ids"]),
                 "root_route_keys": json.loads(row["root_route_keys"]),
+                "is_container": bool(row["is_container"]),
                 "reconciliation_status": row["reconciliation_status"],
             }
             for row in rows
         }
+
+    def _drive_ancestry_state_for_mappings(
+        self, source: str, account_keys: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Merge ancestry snapshots across all streams of one integration."""
+        if not account_keys:
+            return {}
+        placeholders = ",".join("?" for _ in account_keys)
+        rows = self.conn.execute(
+            f"""SELECT external_id,parent_ids,root_route_keys,is_container,reconciliation_status
+                FROM provider_object_ancestry
+                WHERE connector=? AND account_key IN ({placeholders})""",
+            (source, *account_keys),
+        ).fetchall()
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            inherited = json.loads(row["root_route_keys"])
+            current = result.setdefault(row["external_id"], {
+                "parent_ids": [], "root_route_keys": [], "is_container": bool(row["is_container"]),
+                "reconciliation_status": row["reconciliation_status"],
+            })
+            current["parent_ids"] = sorted(set(current["parent_ids"]).union(json.loads(row["parent_ids"])))
+            current["root_route_keys"] = sorted(set(current["root_route_keys"]).union(inherited))
+            current["is_container"] = current["is_container"] or bool(row["is_container"])
+            if row["reconciliation_status"] != "resolved":
+                current["reconciliation_status"] = row["reconciliation_status"]
+        return result
 
     @staticmethod
     def _provider_fence(
@@ -766,6 +900,19 @@ class IntegrationOperations:
                 mutation.event_dedupe_key: mutation.provider_version
                 for mutation in page_meta.get("lifecycle_mutations", ())
             }
+            # Reconciliation returns parent-first ancestry snapshots. Persist
+            # them before applying target lifecycle mutations so an accessible
+            # unmapped parent is a resolved empty route, not an unknown parent
+            # that would preserve stale evidence.
+            for resolution in page_meta.get("ancestry_resolutions", ()):
+                self.os.store.resolve_provider_object_routes(
+                    workspace_id, source, account_key, resolution.external_id,
+                    resolution.provider_version,
+                    direct_route_keys=resolution.root_route_keys,
+                    parent_ids=resolution.parent_ids,
+                    is_container=resolution.is_container,
+                    fence=fence,
+                )
             for event in events:
                 file_node = event.payload.get("file")
                 file_data = file_node if isinstance(file_node, dict) else {}
@@ -783,11 +930,18 @@ class IntegrationOperations:
                     fence=fence,
                 )
             for task in page_meta.get("backfill_tasks", ()):
+                task_payload = page_meta.get("task_payload") or {}
+                parent_wave = task_payload.get("parent_wave") or (
+                    task_payload.get("parent_external_id") if page_meta.get("task_type") == "descendants" else None
+                )
                 self.os.store.enqueue_provider_sync_task(
                     workspace_id, source, account_key, stream_key, "backfill",
                     generation_id=generation_id, external_id=task.container_id,
                     route_key=task.route_key, page_token=task.page_token,
-                    payload={"kind": "drive_tree"}, fence=fence,
+                    operation_key=hashlib.sha256(
+                        f"drive-tree:{task.route_key}:{task.container_id}:{task.page_token or ''}:{parent_wave or ''}".encode()
+                    ).hexdigest()[:32],
+                    payload={"kind": "drive_tree", "parent_wave": parent_wave}, fence=fence,
                 )
             for request in page_meta.get("reconciliation_requests", ()):
                 self.os.store.enqueue_provider_sync_task(
@@ -795,9 +949,14 @@ class IntegrationOperations:
                     "descendants" if request.descendants else "reconcile",
                     generation_id=generation_id, external_id=request.external_id,
                     route_key=route_key,
+                    operation_key=request.operation_key or hashlib.sha256(
+                        f"drive-reconcile:{request.external_id}:{request.reason}:{','.join(request.parent_ids)}".encode()
+                    ).hexdigest()[:32],
                     payload={
                         "parent_ids": list(request.parent_ids),
                         "reason": request.reason,
+                        "parent_external_id": request.external_id,
+                        "descendant_ids": list(getattr(request, "descendant_ids", ())),
                     },
                     fence=fence,
                 )
@@ -808,8 +967,39 @@ class IntegrationOperations:
                 route_key=route_key, page_token=hashlib.sha256(
                     next_cursor.encode("utf-8")
                 ).hexdigest()[:24],
+                operation_key=hashlib.sha256(f"gmail-backfill:{route_key}:{next_cursor}".encode()).hexdigest()[:32],
                 payload={"cursor": next_cursor}, fence=fence,
             )
+
+    def _acknowledge_descendant_wave_if_drained(
+        self,
+        workspace_id: str,
+        source: str,
+        account_key: str,
+        stream_key: str,
+        completed_task: dict[str, Any],
+        fence: ProviderSyncFence | None,
+    ) -> None:
+        """Close a moved-folder wave only after every spawned task is done."""
+        payload = json.loads(completed_task.get("payload") or "{}")
+        wave_root = payload.get("parent_wave")
+        if completed_task.get("task_type") == "descendants":
+            wave_root = completed_task.get("external_id")
+        if not wave_root:
+            return
+        rows = self.conn.execute(
+            """SELECT payload FROM provider_sync_tasks
+               WHERE workspace_id=? AND connector=? AND account_key=? AND stream_key=?
+                 AND status IN ('pending','leased')""",
+            (workspace_id, source, account_key, stream_key),
+        ).fetchall()
+        for row in rows:
+            child_payload = json.loads(row["payload"] or "{}")
+            if child_payload.get("parent_wave") == wave_root:
+                return
+        self.os.store.acknowledge_descendant_reconciliation(
+            workspace_id, source, account_key, str(wave_root), fence=fence
+        )
 
     def _provider_verify(self,integration: dict[str,Any],secret: str) -> Any:
         source=integration["source"]

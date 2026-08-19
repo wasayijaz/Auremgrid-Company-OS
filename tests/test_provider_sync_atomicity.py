@@ -47,6 +47,73 @@ class ProviderSyncAtomicityTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.os.close()
 
+    def test_provider_operation_key_allows_later_reconciliation_wave(self) -> None:
+        first = self.os.store.enqueue_provider_sync_task(
+            self.ws.id, "google_drive", self.account_key, "managed:google",
+            "reconcile", external_id="folder-1", route_key="folder:root",
+            operation_key="wave-1",
+        )
+        second = self.os.store.enqueue_provider_sync_task(
+            self.ws.id, "google_drive", self.account_key, "managed:google",
+            "reconcile", external_id="folder-1", route_key="folder:root",
+            operation_key="wave-2",
+        )
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(
+            self.os.store.conn.execute(
+                "SELECT COUNT(*) FROM provider_sync_tasks WHERE operation_key IN ('wave-1','wave-2')"
+            ).fetchone()[0],
+            2,
+        )
+
+    def test_provider_task_worker_reclaims_expired_lease_and_old_worker_cannot_complete(self) -> None:
+        task = self.os.store.enqueue_provider_sync_task(
+            self.ws.id, "google_drive", self.account_key, "managed:google",
+            "descendants", external_id="folder-1", route_key="folder:root",
+            operation_key="lease-wave",
+        )
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        worker_a = self.os.store.claim_provider_sync_task(
+            self.ws.id, "google_drive", self.account_key, "managed:google",
+            "worker-a", lease_seconds=30, now=now, fence=self.fence,
+        )
+        self.assertEqual(worker_a["lease_owner"], "worker-a")
+        worker_b = self.os.store.claim_provider_sync_task(
+            self.ws.id, "google_drive", self.account_key, "managed:google",
+            "worker-b", lease_seconds=30, now=now + timedelta(seconds=31), fence=self.fence,
+        )
+        self.assertEqual(worker_b["lease_owner"], "worker-b")
+        self.assertFalse(self.os.store.complete_provider_sync_task(
+            task["id"], worker_a["lease_token"], fence=self.fence,
+        ))
+        self.assertTrue(self.os.store.complete_provider_sync_task(
+            task["id"], worker_b["lease_token"], fence=self.fence,
+        ))
+
+    def test_mapping_quarantine_is_redacted_and_durable(self) -> None:
+        self.os.store.conn.execute(
+            """INSERT INTO integrations(
+                id,organization_id,source,status,workspace_mappings,permissions,sync_cursor,
+                last_sync_at,last_error,object_count,health,created_at,expected_account_id,
+                provider_account_id,provider_account_name,granted_permissions,credential_verified_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("integration-1", self.org.id, "google_drive", "authorized", "{}", "[]", None,
+             None, None, 0, "never_synced", datetime.now(timezone.utc).isoformat(),
+             "account", None, None, "[]", None),
+        )
+        self.os.store.conn.commit()
+        item = self.os.store.quarantine_provider_sync(
+            self.org.id, "integration-1", "google_drive", "mapping_overlap", "digest-1"
+        )
+        self.assertEqual(item["status"], "open")
+        columns = {
+            row["name"] for row in self.os.store.conn.execute(
+                "PRAGMA table_info(provider_sync_quarantines)"
+            ).fetchall()
+        }
+        self.assertNotIn("workspace_id", columns)
+        self.assertEqual(len(self.os.store.open_provider_sync_quarantines(self.org.id, "integration-1")), 1)
+
     def _event_and_mutation(self, suffix: str = "1") -> tuple[ConnectorSourceEvent, RouteLifecycleMutation]:
         dedupe = f"drive:f{suffix}:transition"
         event = ConnectorSourceEvent(

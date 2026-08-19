@@ -17,13 +17,13 @@ credential. Google Drive configuration requires a read-only Drive scope and
 mapping keys `folder:<id>` or `drive:<id>`; its expected account ID is the
 stable Drive `permissionId`, not an email address. Gmail requires
 `gmail.readonly`, a normalized expected mailbox address, and `label:<id>`
-mapping keys. Google enqueue is rejected while
-`live_enabled` is false; provider verification and historical ingestion are not
-claimed while that gate is closed.
+mapping keys. Google enqueue is available when `live_enabled` is true and the
+integration has been provider-verified; historical ingestion remains blocked
+until that verification succeeds.
 
 A bound Google environment reference must resolve to a strict JSON credential
 bundle with exactly `client_id`, `client_secret`, and `refresh_token`. The
-closed-gate execution path refreshes access in memory and fails when Google does
+execution path refreshes access in memory and fails when Google does
 not return authoritative granted-scope evidence; credential components and
 ephemeral access tokens are not returned or persisted.
 

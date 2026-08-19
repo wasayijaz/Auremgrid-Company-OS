@@ -18,7 +18,7 @@ Agency work is usually split across conversations, task boards, documents, desig
 - Durable jobs and connector sync that can restart without silently advancing a cursor or claiming a provider is healthy when it is not.
 - A local dashboard, REST API, MCP-style tools, and CLI over the same policy and canonical ledger.
 
-This is an operating control plane, not a replacement for every specialist tool. Slack and ClickUp have credential-backed read synchronization. Google Drive and Gmail adapters are tested but deliberately disabled for live sync until routing, backfill, account verification, and error classification meet the same safety gates.
+This is an operating control plane, not a replacement for every specialist tool. Slack, ClickUp, Google Drive, and Gmail have credential-backed read synchronization with explicit mappings, provider verification, durable backfill, fenced workers, and lifecycle-aware evidence.
 
 ## Who it serves—and who it does not
 
@@ -59,7 +59,7 @@ This is an operating control plane, not a replacement for every specialist tool.
 | People and capacity | Skills, availability, leave, capacity snapshots, utilization contracts | Implemented |
 | Finance | Connection state, invoices, revenue, costs, budgets, software/AI cost records, client economics | Implemented schema and sourced records; never fabricates values |
 | Agents and automations | Agent records, scoped roles, tasks, queues, runs, tool calls, outputs, costs, traces, training-mode automations | Implemented; unattended automation remains experimental |
-| Integrations | Explicit mappings, external secret references, verification, sync runs, connector inbox/dedupe | Slack and ClickUp live read sync; Google Drive/Gmail have strict configuration contracts but remain disabled live and ingest no historical content; other providers catalog-only |
+| Integrations | Explicit mappings, external secret references, verification, sync runs, connector inbox/dedupe | Slack, ClickUp, Google Drive, and Gmail live read sync; Drive/Gmail use folder/drive and label mappings with redacted overlap quarantine; other providers catalog-only |
 | Jobs, outbox, recovery | Atomic claims, leases, fencing, progress, retry/backoff, dead letters, cancellation, idempotency, append-only events, recovery mode | Implemented; outbound sends remain a future gate |
 | Interfaces | Local dashboard, REST API, MCP-style router, CLI | Implemented; all policy remains service-side |
 | Storage and projections | Versioned SQLite migrations, online backups, checksums, integrity/FK verification, restart-safe rebuilds | Implemented; external binary assets require separate backup |
@@ -142,7 +142,8 @@ flowchart LR
     Local[Local evaluation<br/>SQLite + dashboard + fixtures] --> Controlled[Controlled operation<br/>principals + approvals + backups]
     Controlled --> Durable[Durable operation<br/>jobs + fencing + recovery]
     Durable --> Live[Live read sync<br/>verified Slack / ClickUp mappings]
-    Live -. roadmap .-> Planned[Planned<br/>OAuth + webhooks + Google live sync]
+    Live --> Google[Verified Google<br/>Drive + Gmail sync]
+    Live -. roadmap .-> Planned[Planned<br/>OAuth + webhooks + more providers]
 ```
 
 The last line is a roadmap, not a current capability claim.
@@ -269,7 +270,7 @@ Run the web process and `worker-once` jobs as separate processes against a durab
 
 ### External-provider read sync
 
-Bind an external environment reference, verify the provider account and mapped streams, then enqueue a `connector.sync` job. Slack and ClickUp are supported for read synchronization; Google Drive and Gmail remain disabled live. The worker resolves the secret at execution time and records sanitized state only.
+Bind an external environment reference, verify the provider account and mapped streams, then enqueue a `connector.sync` job. Slack, ClickUp, Google Drive, and Gmail are supported for read synchronization. The worker resolves the secret at execution time and records sanitized state only.
 
 ### CI and development
 
@@ -302,13 +303,13 @@ The offline suite must not require Docker, provider credentials, a private vault
 ## Current limitations and roadmap
 
 - No in-product OAuth installation/callback flow, webhook ingestion, or refresh-token rotation; credential binding is manual and environment-backed.
-- Google Drive and Gmail change-feed contracts exist but are not live because initial backfill, folder/label routing, and immutable account verification are not complete.
+- Google Drive bootstraps from a captured changes token, walks mapped folders/shared drives through durable continuation tasks, reconciles parent chains and descendants after moves, and retires objects only after ancestry is resolved. Gmail captures a history baseline before label backfill and maintains label membership lifecycle. Objects that match mappings owned by different workspaces create an organization-level redacted quarantine, block cursor promotion, and write no workspace evidence.
 - Figma, GitHub, Fireflies, advertising, and accounting systems are catalog contracts only and do not report connected.
 - Unattended automations, external semantic providers, upstream OSS engines, and externally visible sends remain experimental or future gates.
 - SQLite is local-first, not a multi-region distributed database. External binary assets require a separate backup policy.
 - The standard-library HTTP server is appropriate for local/private operation; hardened public deployment needs an explicit reverse proxy, TLS, and access review.
 
-The next safe increments are OAuth/PKCE with a write-capable secret backend, webhooks and multiple provider installations, Google routing/backfill, a transactional outbox boundary for externally visible sends, and a documented asset backup policy.
+The next safe increments are OAuth/PKCE with a write-capable secret backend, webhooks and multiple provider installations, a transactional outbox boundary for externally visible sends, and a documented asset backup policy.
 
 ## Documentation map
 

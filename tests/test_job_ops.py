@@ -28,7 +28,7 @@ class JobOperationTests(unittest.TestCase):
         self.os.close()
 
     def test_schema_v11_auth_control_tables_exist_without_secret_values(self) -> None:
-        self.assertEqual(self.os.store.schema_version, 14)
+        self.assertEqual(self.os.store.schema_version, 15)
         secret_columns = [
             row["name"]
             for row in self.os.store.conn.execute("PRAGMA table_info(secret_bindings)").fetchall()
@@ -81,7 +81,7 @@ class JobOperationTests(unittest.TestCase):
             connection.close()
 
             upgraded = CompanyOS(path)
-            self.assertEqual(upgraded.store.schema_version, 14)
+            self.assertEqual(upgraded.store.schema_version, 15)
             restored = upgraded.workflow_ops.summary(org.id, ws.id, person.id, run["id"])
             self.assertEqual(restored["run"]["definition_key"], "client_request")
             upgraded.close()
@@ -119,7 +119,7 @@ class JobOperationTests(unittest.TestCase):
         self.assertIsNotNone(first["lease_token"])
 
     def test_expired_lease_recovery_fences_stale_worker(self) -> None:
-        now = datetime(2026, 8, 19, 12, 0, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc).replace(microsecond=0)
         self.ops.enqueue_job(self.org.id, self.ws.id, self.principal["id"], "sync", {"page": 1})
         first = self.ops.claim_job(self.org.id, self.ws.id, "worker-a", lease_seconds=10, now=now)
         recovered = self.ops.claim_job(
@@ -139,7 +139,7 @@ class JobOperationTests(unittest.TestCase):
             )
 
     def test_retry_wait_then_dead_letter_uses_bounded_backoff(self) -> None:
-        now = datetime(2026, 8, 19, 12, 0, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc).replace(microsecond=0)
         job = self.ops.enqueue_job(self.org.id, self.ws.id, self.principal["id"], "sync", {"page": 1}, max_attempts=2)
         first = self.ops.claim_job(self.org.id, self.ws.id, "worker", now=now)
         retry = self.ops.fail_job(
@@ -200,7 +200,7 @@ class JobOperationTests(unittest.TestCase):
             self.os.store.conn.execute("UPDATE job_events SET event_type='tampered'")
 
     def test_outbox_idempotency_retry_and_fencing(self) -> None:
-        now = datetime(2026, 8, 19, 12, 0, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc).replace(microsecond=0)
         first = self.ops.add_outbox_event(
             self.org.id, self.ws.id, "job", "job_1", "job.completed", {"ok": True}, idempotency_key="event-1"
         )
