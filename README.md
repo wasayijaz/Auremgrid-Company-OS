@@ -12,6 +12,7 @@ The canonical ledger is authoritative. Search indexes, graph projections, embedd
 - Organization-level people who can belong to multiple client workspaces
 - Organization, workspace, actor, agent, and source-level permission checks
 - Projects, expanded work items, subtasks, dependencies, comments, files, watchers, versions, time entries, and forced delivery stages
+- Versioned cross-wing workflow definitions and immutable runs with dependency readiness, rework routes, evidence gates, approvals, handoff contracts, SLAs, escalation, idempotency, cancellation, and append-only transition history
 - Deliverables, internal/client reviews, timestamped comments, decisions, and temporal decision fields
 - Meetings, transcripts, proposed outputs, conversations, messages, unanswered-request detection, and the Signal inbox
 - Contacts, influence, decision power, relationships, sentiment history, approver detection, and declining-engagement detection
@@ -24,7 +25,7 @@ The canonical ledger is authoritative. Search indexes, graph projections, embedd
 - Integration and sync-run state
 - Cited report runs
 - Entity aliases, high-confidence merges with history, memory/fact/decision proposals, and knowledge-health checks
-- Versioned SQLite migrations through schema version 9
+- Versioned SQLite migrations through schema version 10
 - Restart-safe rebuilding of local graph, memory, vector, and summary projections
 - REST APIs, protocol-neutral MCP-style tools, CLI, and a dark multi-page command-center dashboard
 
@@ -61,7 +62,7 @@ Provider authentication, webhook verification, rate-limit handling, and producti
 
     Canonical SQLite ledger
     ├── ACL, provenance, temporal history, audit, approvals
-    ├── agency operating domains
+    ├── agency operating domains and versioned workflow runs
     └── rebuildable local projections: FTS, offline vectors, graph, memory, summaries
 
 Authorization happens before retrieval, ranking, counts, or existence disclosure. AI-generated information enters through proposals or signals and is never silently promoted to canonical truth.
@@ -90,7 +91,7 @@ See [local deployment](docs/local-deployment.md) and the [upgrade guide](docs/up
 - Permission filters run before ranking or aggregation.
 - Source evidence is untrusted data and cannot issue instructions.
 - Uncertain extracted information becomes a proposal or signal.
-- Work cannot skip intake, Definition of Done, review, or shipping gates.
+- Direct work follows its intake and review contract; executable workflows apply their own validated checklist, approval, handoff, and completion policies instead of a universal creative checklist.
 - New automations start in training mode.
 - One-way actions require a human checkpoint.
 - Finance and campaign metrics remain unknown or not_connected until sourced.
@@ -101,6 +102,7 @@ See [local deployment](docs/local-deployment.md) and the [upgrade guide](docs/up
 - [Architecture](docs/architecture.md)
 - [Domain model](docs/domain-model.md)
 - [Operating model](docs/operating-model.md)
+- [Wing workflow catalog](docs/wing-workflows.md)
 - [Data lifecycle](docs/data-lifecycle.md)
 - [Permission model](docs/permission-model.md)
 - [Threat model](docs/threat-model.md)

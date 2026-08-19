@@ -179,6 +179,24 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200,self.os.brain_ops.knowledge_health(_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id"))); return
             if parsed.path == "/work/detail":
                 self._json(200,self.os.work_ops.detail(_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id"),_need(params,"work_item_id"))); return
+            if parsed.path == "/workflows/templates":
+                organization_id,person_id=_need(params,"organization_id"),_need(params,"person_id")
+                if self.os.company.org_membership(organization_id,person_id) is None: raise AuthorizationError("organization membership required")
+                templates=self.os.workflow_catalog.for_wing(params["wing"]) if params.get("wing") else self.os.workflow_catalog.all()
+                self._json(200,{"templates":[item.to_dict() for item in templates]}); return
+            if parsed.path == "/workflows/runs":
+                organization_id,workspace_id,person_id=_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id")
+                self.os._require_person_access(organization_id,workspace_id,person_id)
+                rows=self.os.store.conn.execute("""SELECT id,definition_key,definition_name,definition_version,status,due_at,
+                    escalation_at,created_at,updated_at FROM workflow_runs WHERE organization_id=? AND workspace_id=? ORDER BY updated_at DESC""",
+                    (organization_id,workspace_id)).fetchall()
+                self._json(200,{"runs":[dict(row) for row in rows]}); return
+            if parsed.path == "/workflows/runs/get":
+                self._json(200,self.os.workflow_ops.summary(_need(params,"organization_id"),_need(params,"workspace_id"),
+                    _need(params,"person_id"),_need(params,"run_id"))); return
+            if parsed.path == "/workflows/escalations":
+                self._json(200,self.os.workflow_ops.overdue_escalations(_need(params,"organization_id"),_need(params,"workspace_id"),
+                    _need(params,"person_id"),params.get("as_of"))); return
             self._json(404, {"error": "not_found"})
         except Exception as exc:
             self._handle_error(exc)
@@ -353,6 +371,50 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(201,self.os.work_ops.add_comment(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"work_item_id"),_need(payload,"body")));return
             if parsed.path == "/work/time":
                 self._json(201,self.os.work_ops.log_time(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"work_item_id"),_required_dt(payload.get("started_at"),"started_at"),_required_dt(payload.get("ended_at"),"ended_at"),str(payload.get("notes","")),bool(payload.get("billable",True))));return
+            if parsed.path == "/workflows/runs":
+                template=self.os.workflow_catalog.get(_need(payload,"template_id"))
+                item=self.os.workflow_ops.create_run(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),
+                    template,_optional_str(payload.get("due_at")),_optional_int(payload.get("sla_minutes")),_optional_str(payload.get("idempotency_key")))
+                self._json(201,item); return
+            if parsed.path == "/workflows/stages/start":
+                item=self.os.workflow_ops.start_stage(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),
+                    _need(payload,"run_id"),_need(payload,"stage_id"),_optional_int(payload.get("expected_version")),_optional_str(payload.get("idempotency_key")))
+                self._json(200,item); return
+            if parsed.path == "/workflows/evidence":
+                item=self.os.workflow_ops.submit_evidence(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),
+                    _need(payload,"run_id"),_need(payload,"stage_id"),_need(payload,"kind"),_optional_str(payload.get("uri")),
+                    _optional_str(payload.get("text")),payload.get("metadata") or {},_optional_str(payload.get("object_type")),
+                    _optional_str(payload.get("object_id")),_optional_str(payload.get("locator")),_optional_str(payload.get("content_hash")),
+                    _optional_str(payload.get("idempotency_key")))
+                self._json(201,item); return
+            if parsed.path == "/workflows/approvals/request":
+                item=self.os.workflow_ops.request_approval(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),
+                    _need(payload,"run_id"),_need(payload,"stage_id"),_need(payload,"reason"),_optional_str(payload.get("approval_request_id")),
+                    _optional_int(payload.get("expected_version")),_optional_str(payload.get("idempotency_key")))
+                self._json(200,item); return
+            if parsed.path == "/workflows/approvals/decide":
+                item=self.os.workflow_ops.decide_approval(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),
+                    _need(payload,"run_id"),_need(payload,"stage_id"),_need(payload,"decision"),_need(payload,"reason"),
+                    _optional_str(payload.get("approval_request_id")),_optional_str(payload.get("idempotency_key")))
+                self._json(200,item); return
+            if parsed.path == "/workflows/handoffs/acknowledge":
+                item=self.os.workflow_ops.acknowledge_handoff(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),
+                    _need(payload,"run_id"),_need(payload,"from_stage_id"),_need(payload,"to_stage_id"),_need(payload,"artifact_contract"),
+                    str(payload.get("reason","")),_optional_str(payload.get("idempotency_key")))
+                self._json(201,item); return
+            if parsed.path == "/workflows/stages/complete":
+                item=self.os.workflow_ops.complete_stage(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),
+                    _need(payload,"run_id"),_need(payload,"stage_id"),str(payload.get("reason","")),
+                    _optional_int(payload.get("expected_version")),_optional_str(payload.get("idempotency_key")))
+                self._json(200,item); return
+            if parsed.path == "/workflows/stages/block":
+                item=self.os.workflow_ops.block_stage(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),
+                    _need(payload,"run_id"),_need(payload,"stage_id"),_need(payload,"reason"),_optional_int(payload.get("expected_version")))
+                self._json(200,item); return
+            if parsed.path == "/workflows/runs/cancel":
+                item=self.os.workflow_ops.cancel_run(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),
+                    _need(payload,"run_id"),_need(payload,"reason"),_optional_int(payload.get("expected_version")))
+                self._json(200,item); return
             work_action = {
                 "/work/capture": "capture_work",
                 "/work/capture_work": "capture_work",
@@ -498,6 +560,10 @@ def _int(value: Any, key: str) -> int:
 
 def _optional_float(value: Any) -> float | None:
     return float(value) if value is not None else None
+
+
+def _optional_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
 
 
 def _bool(value: Any, key: str) -> bool:

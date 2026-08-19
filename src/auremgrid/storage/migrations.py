@@ -515,6 +515,294 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        10,
+        "workflow_run_engine",
+        """
+        CREATE TABLE IF NOT EXISTS workflow_definitions (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(organization_id, key)
+        );
+        CREATE TABLE IF NOT EXISTS workflow_definition_versions (
+            id TEXT PRIMARY KEY,
+            definition_id TEXT NOT NULL,
+            version TEXT NOT NULL,
+            snapshot TEXT NOT NULL,
+            created_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(definition_id) REFERENCES workflow_definitions(id),
+            UNIQUE(definition_id, version)
+        );
+        CREATE TABLE IF NOT EXISTS workflow_definition_steps (
+            id TEXT PRIMARY KEY,
+            definition_version_id TEXT NOT NULL,
+            step_key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            assignee_wing TEXT NOT NULL,
+            assignee_role TEXT NOT NULL,
+            required_evidence TEXT NOT NULL,
+            requires_approval INTEGER NOT NULL,
+            handoff_contract TEXT NOT NULL,
+            on_reject_step_key TEXT,
+            FOREIGN KEY(definition_version_id) REFERENCES workflow_definition_versions(id),
+            UNIQUE(definition_version_id, step_key)
+        );
+        CREATE TABLE IF NOT EXISTS workflow_definition_edges (
+            id TEXT PRIMARY KEY,
+            definition_version_id TEXT NOT NULL,
+            from_step_key TEXT NOT NULL,
+            to_step_key TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            FOREIGN KEY(definition_version_id) REFERENCES workflow_definition_versions(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS workflow_runs (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            definition_id TEXT NOT NULL,
+            definition_version_id TEXT NOT NULL,
+            definition_key TEXT NOT NULL,
+            definition_version TEXT NOT NULL,
+            definition_name TEXT NOT NULL,
+            template_snapshot TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','in_progress','waiting_approval','blocked','completed','cancelled')),
+            created_by_person_id TEXT NOT NULL,
+            idempotency_key TEXT,
+            due_at TEXT,
+            sla_minutes INTEGER,
+            escalation_at TEXT,
+            blocked_reason TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            cancelled_at TEXT,
+            version INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_idempotency
+            ON workflow_runs(organization_id, idempotency_key)
+            WHERE idempotency_key IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_workflow_runs_active
+            ON workflow_runs(organization_id, workspace_id, status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_workflow_runs_overdue
+            ON workflow_runs(organization_id, status, due_at, escalation_at);
+
+        CREATE TABLE IF NOT EXISTS workflow_stage_runs (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            stage_key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','in_progress','waiting_approval','blocked','completed','cancelled')),
+            assignee_wing TEXT NOT NULL,
+            assignee_role TEXT NOT NULL,
+            assignee_person_id TEXT,
+            required_evidence TEXT NOT NULL,
+            requires_approval INTEGER NOT NULL,
+            handoff_to_wing TEXT,
+            handoff_to_role TEXT,
+            handoff_to_person_id TEXT,
+            on_reject_stage_key TEXT,
+            due_at TEXT,
+            blocked_reason TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            cancelled_at TEXT,
+            version INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(run_id) REFERENCES workflow_runs(id),
+            UNIQUE(run_id, stage_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_stage_runs_run
+            ON workflow_stage_runs(run_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_workflow_stage_runs_status
+            ON workflow_stage_runs(status, due_at);
+
+        CREATE TABLE IF NOT EXISTS workflow_stage_dependencies (
+            run_id TEXT NOT NULL,
+            stage_run_id TEXT NOT NULL,
+            depends_on_stage_run_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(stage_run_id, depends_on_stage_run_id),
+            FOREIGN KEY(run_id) REFERENCES workflow_runs(id),
+            FOREIGN KEY(stage_run_id) REFERENCES workflow_stage_runs(id),
+            FOREIGN KEY(depends_on_stage_run_id) REFERENCES workflow_stage_runs(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS workflow_evidence (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            stage_run_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            uri TEXT,
+            text TEXT,
+            metadata TEXT NOT NULL,
+            object_type TEXT,
+            object_id TEXT,
+            locator TEXT,
+            content_hash TEXT,
+            submitted_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES workflow_runs(id),
+            FOREIGN KEY(stage_run_id) REFERENCES workflow_stage_runs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_evidence_stage
+            ON workflow_evidence(stage_run_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS workflow_approval_decisions (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            stage_run_id TEXT NOT NULL,
+            approval_request_id TEXT,
+            decision TEXT NOT NULL CHECK(decision IN ('approve','reject','request_changes')),
+            approver_person_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES workflow_runs(id),
+            FOREIGN KEY(stage_run_id) REFERENCES workflow_stage_runs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_approval_stage
+            ON workflow_approval_decisions(stage_run_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS workflow_handoff_acknowledgements (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            from_stage_run_id TEXT NOT NULL,
+            to_stage_run_id TEXT,
+            acknowledged_by_person_id TEXT NOT NULL,
+            from_wing TEXT NOT NULL,
+            from_role TEXT NOT NULL,
+            from_person_id TEXT,
+            source_stage_version INTEGER NOT NULL,
+            to_wing TEXT NOT NULL,
+            to_role TEXT NOT NULL,
+            to_person_id TEXT,
+            artifact_contract TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES workflow_runs(id),
+            FOREIGN KEY(from_stage_run_id) REFERENCES workflow_stage_runs(id),
+            FOREIGN KEY(to_stage_run_id) REFERENCES workflow_stage_runs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_handoff_stage
+            ON workflow_handoff_acknowledgements(from_stage_run_id, to_stage_run_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS workflow_transition_history (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            stage_run_id TEXT,
+            actor_person_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            from_status TEXT,
+            to_status TEXT,
+            reason TEXT NOT NULL,
+            metadata TEXT NOT NULL,
+            idempotency_key TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES workflow_runs(id),
+            FOREIGN KEY(stage_run_id) REFERENCES workflow_stage_runs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workflow_history_run
+            ON workflow_transition_history(run_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS workflow_idempotency_keys (
+            organization_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            result_type TEXT NOT NULL,
+            result_id TEXT NOT NULL,
+            response TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(organization_id, key, operation)
+        );
+
+        CREATE TRIGGER IF NOT EXISTS workflow_definition_version_no_update
+        BEFORE UPDATE ON workflow_definition_versions
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow definition versions are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_definition_version_no_delete
+        BEFORE DELETE ON workflow_definition_versions
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow definition versions are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_definition_step_no_update
+        BEFORE UPDATE ON workflow_definition_steps
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow definition steps are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_definition_step_no_delete
+        BEFORE DELETE ON workflow_definition_steps
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow definition steps are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_definition_edge_no_update
+        BEFORE UPDATE ON workflow_definition_edges
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow definition edges are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_definition_edge_no_delete
+        BEFORE DELETE ON workflow_definition_edges
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow definition edges are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_run_snapshot_no_update
+        BEFORE UPDATE OF definition_id, definition_version_id, definition_key, definition_version,
+            definition_name, template_snapshot ON workflow_runs
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow run snapshots are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_stage_contract_no_update
+        BEFORE UPDATE OF run_id, stage_key, name, sequence, assignee_wing, assignee_role,
+            required_evidence, requires_approval, handoff_to_wing, handoff_to_role,
+            on_reject_stage_key ON workflow_stage_runs
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow stage contracts are immutable');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS workflow_evidence_no_update BEFORE UPDATE ON workflow_evidence
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow evidence is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_evidence_no_delete BEFORE DELETE ON workflow_evidence
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow evidence is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_approval_no_update BEFORE UPDATE ON workflow_approval_decisions
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow approval decisions are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_approval_no_delete BEFORE DELETE ON workflow_approval_decisions
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow approval decisions are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_handoff_no_update BEFORE UPDATE ON workflow_handoff_acknowledgements
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow handoff acknowledgements are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_handoff_no_delete BEFORE DELETE ON workflow_handoff_acknowledgements
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow handoff acknowledgements are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_history_no_update BEFORE UPDATE ON workflow_transition_history
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow transition history is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS workflow_history_no_delete BEFORE DELETE ON workflow_transition_history
+        BEGIN
+            SELECT RAISE(ABORT, 'workflow transition history is immutable');
+        END;
+        """,
+    ),
 )
 
 

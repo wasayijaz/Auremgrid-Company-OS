@@ -20,6 +20,7 @@ class DashboardService:
         active_clients=sum(row["kind"]=="client" for row in workspaces); open_work=count("work_items","status!='shipped'")
         overdue=count("work_items","status!='shipped' AND needed_by IS NOT NULL AND needed_by < date('now')")
         review=count("reviews","status='open'"); risks=count("risks","status='open'")
+        active_workflows=count("workflow_runs","status NOT IN ('completed','cancelled')")
         agents=[dict(r) for r in self.conn.execute("SELECT * FROM agents WHERE organization_id=? ORDER BY name",(organization_id,)).fetchall()]
         automation_count=self.conn.execute("SELECT COUNT(*) FROM automation_runs ar JOIN automations a ON a.id=ar.automation_id WHERE a.organization_id=? AND ar.started_at>=date('now')",(organization_id,)).fetchone()[0]
         finance=self.os.agency_ops.finance_status(organization_id,person_id)
@@ -58,7 +59,7 @@ class DashboardService:
         for row in self.conn.execute("SELECT workspace_id,action,target,detail,recorded_at FROM audit_events WHERE workspace_id IN ("+placeholders+") ORDER BY recorded_at DESC LIMIT 12",ids).fetchall() if ids else []:
             pulse.append(dict(row))
         return {"generated_at":datetime.now(timezone.utc).isoformat(),"metrics":{"active_clients":active_clients,"mrr":finance.get("mrr") if finance["status"]=="connected" else None,
-            "finance_status":finance["status"],"open_work":open_work,"overdue_work":overdue,"in_review":review,"agents_running":sum(a["status"]=="running" for a in agents),
+            "finance_status":finance["status"],"open_work":open_work,"overdue_work":overdue,"in_review":review,"active_workflows":active_workflows,"agents_running":sum(a["status"]=="running" for a in agents),
             "automations_today":automation_count,"open_risks":risks},"attention":attention,"clients":clients,"agents":agents,"pulse":pulse,
             "workspaces":[dict(row) for row in workspaces]}
 
@@ -74,6 +75,8 @@ class DashboardService:
             "campaigns":[dict(r) for r in self.conn.execute("SELECT * FROM campaigns WHERE workspace_id=? ORDER BY updated_at DESC",(workspace_id,)).fetchall()],
             "content":[dict(r) for r in self.conn.execute("SELECT * FROM content_items WHERE workspace_id=? ORDER BY updated_at DESC",(workspace_id,)).fetchall()],
             "creative":[dict(r) for r in self.conn.execute("SELECT * FROM creative_assets WHERE workspace_id=? ORDER BY created_at DESC",(workspace_id,)).fetchall()],
+            "workflows":[dict(r) for r in self.conn.execute("""SELECT id,definition_key,definition_name,definition_version,status,due_at,updated_at
+                FROM workflow_runs WHERE workspace_id=? ORDER BY updated_at DESC""",(workspace_id,)).fetchall()],
             "files":[dict(r) for r in self.conn.execute("""SELECT wf.id,wf.title,wf.url,wf.source,wf.created_at FROM work_files wf JOIN work_items wi ON wi.id=wf.work_item_id WHERE wi.workspace_id=?
                 UNION ALL SELECT df.id,df.title,df.url,df.kind,df.created_at FROM deliverable_files df JOIN deliverables d ON d.id=df.deliverable_id WHERE d.workspace_id=?""",(workspace_id,workspace_id)).fetchall()],
             "meetings":[dict(r) for r in self.conn.execute("SELECT * FROM meetings WHERE workspace_id=? ORDER BY occurred_at DESC",(workspace_id,)).fetchall()],
@@ -93,6 +96,7 @@ class DashboardService:
             "Automations":("automations","SELECT id,name,status,approval_policy,created_at FROM automations WHERE organization_id=? ORDER BY created_at DESC"),
             "Reports":("report_runs","SELECT id,type,status,generated_at FROM report_runs WHERE organization_id=? ORDER BY generated_at DESC"),
             "Integrations":("integrations","SELECT id,source,status,last_sync_at,last_error,object_count,health FROM integrations WHERE organization_id=? ORDER BY source"),
+            "Workflows":("workflow_runs","SELECT id,definition_name,definition_version,status,due_at,updated_at FROM workflow_runs WHERE workspace_id=? ORDER BY updated_at DESC"),
         }
         if module not in queries:return {"module":module,"items":[]}
         table,sql=queries[module];scope=organization_id if module in {"Automations","Reports","Integrations"} else workspace_id

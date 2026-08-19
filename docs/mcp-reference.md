@@ -14,5 +14,9 @@ McpToolRouter is transport-neutral. It exposes:
 - agents.list, agents.runs
 - notifications.list
 - reports.generate
+- workflows.templates, workflows.runs.get, workflows.runs.create
+- workflows.stages.start, workflows.stages.complete, workflows.evidence.add
+- workflows.approvals.request, workflows.approvals.decide
+- workflows.handoffs.acknowledge
 
 The original short tool names remain internal aliases for the same handlers. Permissions are enforced by the service layer, not by tool naming.

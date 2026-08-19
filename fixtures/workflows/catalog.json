@@ -1,0 +1,137 @@
+{
+  "templates": [
+    {
+      "id": "campaign_launch",
+      "name": "Campaign launch",
+      "wings": ["Client Strategy/Marketing", "Paid Media", "Design", "Operations"],
+      "description": "Plan, build, approve, and release a measurable channel campaign.",
+      "cadence": "per launch",
+      "dependencies": ["approved brief", "tracking plan"],
+      "quality_checklist": ["objective is measurable", "audience and budget are explicit", "tracking is tested"],
+      "post_launch_review": "Review delivery and outcome signals after seven days.",
+      "completion_outcomes": ["campaign is live with verified tracking"],
+      "stages": [
+        {"id": "campaign_launch_brief", "order": 1, "name": "Confirm brief", "owner_wing": "Client Strategy/Marketing", "owner_role": "Strategy lead", "handoff_target": "Paid Media planner", "approval_gate": "internal", "approver_role": "Account lead", "required_evidence": ["approved brief", "budget and audience"], "sla_hours": 24, "expected_duration_hours": 4, "escalation_trigger": "brief unanswered for one business day", "cadence": "per launch", "dependencies": [], "quality_checklist": ["objective measurable", "audience defined"]},
+        {"id": "campaign_launch_build", "order": 2, "name": "Build campaign assets", "owner_wing": "Paid Media", "owner_role": "Channel planner", "handoff_target": "Design reviewer", "on_reject_stage_id": "campaign_launch_brief", "approval_gate": "internal", "approver_role": "Performance lead", "required_evidence": ["channel setup", "tracking test"], "sla_hours": 48, "expected_duration_hours": 16, "escalation_trigger": "setup blocked by missing access", "cadence": "per launch", "dependencies": ["campaign_launch_brief"], "quality_checklist": ["naming consistent", "budget caps set"]},
+        {"id": "campaign_launch_approve", "order": 3, "name": "Approve and release", "owner_wing": "Operations", "owner_role": "Release coordinator", "handoff_target": null, "approval_gate": "launch", "approver_role": "Client approver", "required_evidence": ["final preview", "tracking proof", "approval record"], "sla_hours": 24, "expected_duration_hours": 2, "escalation_trigger": "approval missed launch window", "cadence": "per launch", "dependencies": ["campaign_launch_build"], "quality_checklist": ["links resolve", "exclusions applied"], "post_launch_review": "Seven-day performance review", "completion_outcome": "campaign live"}
+      ]
+    },
+    {
+      "id": "landing_page",
+      "name": "Landing page delivery",
+      "wings": ["Client Strategy/Marketing", "Design", "Product & Engineering", "Operations"],
+      "description": "Turn a conversion brief into a tested, approved landing page release.",
+      "cadence": "per page",
+      "dependencies": ["conversion brief", "brand guidance"],
+      "quality_checklist": ["mobile layout checked", "copy proofread", "analytics events mapped"],
+      "post_launch_review": "Compare conversion and usability signals after fourteen days.",
+      "completion_outcomes": ["page deployed with analytics events verified"],
+      "stages": [
+        {"id": "landing_page_brief", "order": 1, "name": "Shape page brief", "owner_wing": "Client Strategy/Marketing", "owner_role": "Content strategist", "handoff_target": "Design lead", "approval_gate": "client", "approver_role": "Client reviewer", "required_evidence": ["signed brief", "message hierarchy"], "sla_hours": 48, "expected_duration_hours": 8, "escalation_trigger": "feedback unresolved after two rounds", "cadence": "per page", "dependencies": [], "quality_checklist": ["CTA defined", "audience intent stated"]},
+        {"id": "landing_page_design", "order": 2, "name": "Design page", "owner_wing": "Design", "owner_role": "Interface designer", "handoff_target": "Product engineer", "on_reject_stage_id": "landing_page_brief", "approval_gate": "internal", "approver_role": "Design lead", "required_evidence": ["responsive mockup", "content specification"], "sla_hours": 72, "expected_duration_hours": 24, "escalation_trigger": "missing component or asset", "cadence": "per page", "dependencies": ["landing_page_brief"], "quality_checklist": ["responsive states", "accessible contrast"]},
+        {"id": "landing_page_build", "order": 3, "name": "Build and test", "owner_wing": "Product & Engineering", "owner_role": "Product engineer", "handoff_target": "Operations release coordinator", "approval_gate": "internal", "approver_role": "Engineering reviewer", "required_evidence": ["staging URL", "test checklist", "event payload"], "sla_hours": 72, "expected_duration_hours": 32, "escalation_trigger": "critical defect or environment outage", "cadence": "per page", "dependencies": ["landing_page_design"], "quality_checklist": ["mobile QA", "performance budget", "analytics events"]},
+        {"id": "landing_page_release", "order": 4, "name": "Release page", "owner_wing": "Operations", "owner_role": "Release coordinator", "handoff_target": null, "approval_gate": "launch", "approver_role": "Account lead", "required_evidence": ["staging sign-off", "rollback note"], "sla_hours": 24, "expected_duration_hours": 2, "escalation_trigger": "launch window at risk", "cadence": "per page", "dependencies": ["landing_page_build"], "quality_checklist": ["links tested", "monitoring enabled"], "post_launch_review": "Fourteen-day conversion review", "completion_outcome": "page live"}
+      ]
+    },
+    {
+      "id": "creative_production",
+      "name": "Creative production",
+      "wings": ["Client Strategy/Marketing", "Design", "Paid Media", "Operations"],
+      "description": "Produce channel-ready creative from a validated concept and brief.",
+      "cadence": "per asset batch",
+      "dependencies": ["creative brief", "reference assets"],
+      "quality_checklist": ["format specs met", "safe areas checked", "source files organized"],
+      "post_launch_review": "Review asset-level signal and revision learnings after launch.",
+      "completion_outcomes": ["approved asset package delivered"],
+      "stages": [
+        {"id": "creative_production_brief", "order": 1, "name": "Approve creative brief", "owner_wing": "Client Strategy/Marketing", "owner_role": "Creative strategist", "handoff_target": "Design producer", "approval_gate": "client", "approver_role": "Client reviewer", "required_evidence": ["brief approval", "message and CTA"], "sla_hours": 48, "expected_duration_hours": 6, "escalation_trigger": "brief feedback idle for one day", "cadence": "per asset batch", "dependencies": [], "quality_checklist": ["audience clear", "usage defined"]},
+        {"id": "creative_production_make", "order": 2, "name": "Produce variants", "owner_wing": "Design", "owner_role": "Visual designer", "handoff_target": "Paid Media QA", "on_reject_stage_id": "creative_production_brief", "approval_gate": "internal", "approver_role": "Design lead", "required_evidence": ["preview grid", "editable source"], "sla_hours": 96, "expected_duration_hours": 32, "escalation_trigger": "asset or review capacity shortfall", "cadence": "per asset batch", "dependencies": ["creative_production_brief"], "quality_checklist": ["brand tokens", "platform dimensions"]},
+        {"id": "creative_production_traffic", "order": 3, "name": "Traffic and archive", "owner_wing": "Paid Media", "owner_role": "Channel QA", "handoff_target": "Operations coordinator", "approval_gate": "internal", "approver_role": "Performance lead", "required_evidence": ["spec QA", "upload confirmation"], "sla_hours": 48, "expected_duration_hours": 8, "escalation_trigger": "platform rejection", "cadence": "per asset batch", "dependencies": ["creative_production_make"], "quality_checklist": ["file naming", "destination URL"]},
+        {"id": "creative_production_done", "order": 4, "name": "Record delivery", "owner_wing": "Operations", "owner_role": "Delivery coordinator", "handoff_target": null, "approval_gate": "none", "approver_role": null, "required_evidence": ["asset manifest", "delivery link"], "sla_hours": 24, "expected_duration_hours": 2, "escalation_trigger": "delivery link unavailable", "cadence": "per asset batch", "dependencies": ["creative_production_traffic"], "quality_checklist": ["archive complete"], "post_launch_review": "Asset performance retro", "completion_outcome": "asset package delivered"}
+      ]
+    },
+    {
+      "id": "video_production",
+      "name": "Video production",
+      "wings": ["Client Strategy/Marketing", "Video Production", "Design", "Operations"],
+      "description": "Develop, shoot, edit, and release a short-form video package.",
+      "cadence": "per production",
+      "dependencies": ["approved concept", "production access"],
+      "quality_checklist": ["rights cleared", "captions included", "delivery specs met"],
+      "post_launch_review": "Review watch-through and audience response after seven days.",
+      "completion_outcomes": ["captioned master and cutdowns delivered"],
+      "stages": [
+        {"id": "video_production_script", "order": 1, "name": "Lock concept and script", "owner_wing": "Client Strategy/Marketing", "owner_role": "Content lead", "handoff_target": "Video producer", "approval_gate": "client", "approver_role": "Client reviewer", "required_evidence": ["script", "shot list", "approval record"], "sla_hours": 72, "expected_duration_hours": 16, "escalation_trigger": "script feedback exceeds two rounds", "cadence": "per production", "dependencies": [], "quality_checklist": ["hook clear", "claims substantiated"]},
+        {"id": "video_production_edit", "order": 2, "name": "Produce and edit", "owner_wing": "Video Production", "owner_role": "Video producer", "handoff_target": "Design finishing", "on_reject_stage_id": "video_production_script", "approval_gate": "internal", "approver_role": "Production lead", "required_evidence": ["rough cut", "music and rights log"], "sla_hours": 120, "expected_duration_hours": 48, "escalation_trigger": "shoot or edit dependency slips", "cadence": "per production", "dependencies": ["video_production_script"], "quality_checklist": ["audio clean", "story coherent"]},
+        {"id": "video_production_finish", "order": 3, "name": "Finish and caption", "owner_wing": "Design", "owner_role": "Motion finisher", "handoff_target": "Operations release coordinator", "approval_gate": "internal", "approver_role": "Creative lead", "required_evidence": ["final master", "caption file", "thumbnail"], "sla_hours": 48, "expected_duration_hours": 16, "escalation_trigger": "missing brand or accessibility asset", "cadence": "per production", "dependencies": ["video_production_edit"], "quality_checklist": ["safe zones", "captions synced"]},
+        {"id": "video_production_release", "order": 4, "name": "Release package", "owner_wing": "Operations", "owner_role": "Delivery coordinator", "handoff_target": null, "approval_gate": "launch", "approver_role": "Account lead", "required_evidence": ["delivery manifest", "final approval"], "sla_hours": 24, "expected_duration_hours": 2, "escalation_trigger": "scheduled publish at risk", "cadence": "per production", "dependencies": ["video_production_finish"], "quality_checklist": ["versions labeled"], "post_launch_review": "Seven-day audience review", "completion_outcome": "video package released"}
+      ]
+    },
+    {
+      "id": "development_release",
+      "name": "Development and release",
+      "wings": ["Client Strategy/Marketing", "Product & Engineering", "Design", "Operations"],
+      "description": "Move a scoped product change from acceptance criteria through production release.",
+      "cadence": "per release",
+      "dependencies": ["prioritized scope", "release window"],
+      "quality_checklist": ["acceptance criteria pass", "security checks complete", "rollback ready"],
+      "post_launch_review": "Review defects and adoption after the first release cycle.",
+      "completion_outcomes": ["change released and monitored"],
+      "stages": [
+        {"id": "development_release_scope", "order": 1, "name": "Define acceptance", "owner_wing": "Client Strategy/Marketing", "owner_role": "Product strategist", "handoff_target": "Product engineer", "approval_gate": "internal", "approver_role": "Product lead", "required_evidence": ["acceptance criteria", "priority decision"], "sla_hours": 48, "expected_duration_hours": 8, "escalation_trigger": "scope ambiguity after refinement", "cadence": "per release", "dependencies": [], "quality_checklist": ["outcome measurable"]},
+        {"id": "development_release_build", "order": 2, "name": "Implement and verify", "owner_wing": "Product & Engineering", "owner_role": "Product engineer", "handoff_target": "Design reviewer", "on_reject_stage_id": "development_release_scope", "approval_gate": "internal", "approver_role": "Engineering reviewer", "required_evidence": ["change set", "automated test result", "staging URL"], "sla_hours": 120, "expected_duration_hours": 48, "escalation_trigger": "critical defect or blocked dependency", "cadence": "per release", "dependencies": ["development_release_scope"], "quality_checklist": ["tests pass", "observability added"]},
+        {"id": "development_release_qa", "order": 3, "name": "Experience QA", "owner_wing": "Design", "owner_role": "Experience reviewer", "handoff_target": "Operations release coordinator", "approval_gate": "internal", "approver_role": "Design lead", "required_evidence": ["QA checklist", "responsive captures"], "sla_hours": 48, "expected_duration_hours": 12, "escalation_trigger": "blocking usability defect", "cadence": "per release", "dependencies": ["development_release_build"], "quality_checklist": ["key states reviewed"]},
+        {"id": "development_release_ship", "order": 4, "name": "Ship and monitor", "owner_wing": "Operations", "owner_role": "Release coordinator", "handoff_target": null, "approval_gate": "launch", "approver_role": "Release approver", "required_evidence": ["release notes", "rollback plan", "health check"], "sla_hours": 24, "expected_duration_hours": 4, "escalation_trigger": "health check fails", "cadence": "per release", "dependencies": ["development_release_qa"], "quality_checklist": ["alerts armed"], "post_launch_review": "First-cycle release retro", "completion_outcome": "production release healthy"}
+      ]
+    },
+    {
+      "id": "performance_monitoring",
+      "name": "Performance monitoring",
+      "wings": ["Paid Media", "Client Strategy/Marketing", "Operations"],
+      "description": "Review recurring performance signals, diagnose variance, and assign action.",
+      "cadence": "weekly",
+      "dependencies": ["connected measurement sources", "baseline targets"],
+      "quality_checklist": ["data freshness checked", "variance explained", "next action owned"],
+      "post_launch_review": "Fold learning into the next planning cycle.",
+      "completion_outcomes": ["weekly readout accepted with owned actions"],
+      "stages": [
+        {"id": "performance_monitoring_collect", "order": 1, "name": "Collect signals", "owner_wing": "Operations", "owner_role": "Reporting coordinator", "handoff_target": "Paid Media analyst", "approval_gate": "none", "approver_role": null, "required_evidence": ["fresh data extract"], "sla_hours": 12, "expected_duration_hours": 2, "escalation_trigger": "source stale beyond SLA", "cadence": "weekly", "dependencies": [], "quality_checklist": ["date range aligned"]},
+        {"id": "performance_monitoring_diagnose", "order": 2, "name": "Diagnose variance", "owner_wing": "Paid Media", "owner_role": "Performance analyst", "handoff_target": "Client strategy lead", "approval_gate": "internal", "approver_role": "Performance lead", "required_evidence": ["variance notes", "annotated metrics"], "sla_hours": 24, "expected_duration_hours": 6, "escalation_trigger": "material decline without explanation", "cadence": "weekly", "dependencies": ["performance_monitoring_collect"], "quality_checklist": ["causes separated from symptoms"]},
+        {"id": "performance_monitoring_decide", "order": 3, "name": "Agree actions", "owner_wing": "Client Strategy/Marketing", "owner_role": "Account strategist", "handoff_target": "Operations coordinator", "approval_gate": "client", "approver_role": "Client sponsor", "required_evidence": ["readout", "decision log", "action owners"], "sla_hours": 48, "expected_duration_hours": 4, "escalation_trigger": "decision deferred two cycles", "cadence": "weekly", "dependencies": ["performance_monitoring_diagnose"], "quality_checklist": ["actions measurable"], "post_launch_review": "Next-week action check", "completion_outcome": "actions accepted"},
+        {"id": "performance_monitoring_record", "order": 4, "name": "Record and notify", "owner_wing": "Operations", "owner_role": "Operations coordinator", "handoff_target": null, "approval_gate": "none", "approver_role": null, "required_evidence": ["published readout"], "sla_hours": 12, "expected_duration_hours": 1, "escalation_trigger": "readout not distributed", "cadence": "weekly", "dependencies": ["performance_monitoring_decide"], "quality_checklist": ["archive linked"]}
+      ]
+    },
+    {
+      "id": "client_request",
+      "name": "Client request handling",
+      "wings": ["Client Strategy/Marketing", "Operations", "Product & Engineering"],
+      "description": "Capture, qualify, route, and close a new client request with a clear decision.",
+      "cadence": "as requested",
+      "dependencies": ["request channel", "scope guardrails"],
+      "quality_checklist": ["request restated", "impact and urgency scored", "decision recorded"],
+      "post_launch_review": "Review request patterns during the account review.",
+      "completion_outcomes": ["request accepted with owner or declined with rationale"],
+      "stages": [
+        {"id": "client_request_capture", "order": 1, "name": "Capture request", "owner_wing": "Client Strategy/Marketing", "owner_role": "Account coordinator", "handoff_target": "Operations triage", "approval_gate": "none", "approver_role": null, "required_evidence": ["request summary", "requested date"], "sla_hours": 8, "expected_duration_hours": 1, "escalation_trigger": "request lacks acceptance criteria", "cadence": "as requested", "dependencies": [], "quality_checklist": ["source linked"]},
+        {"id": "client_request_triage", "order": 2, "name": "Triage and estimate", "owner_wing": "Operations", "owner_role": "Workflow coordinator", "handoff_target": "Product engineering lead", "approval_gate": "internal", "approver_role": "Delivery lead", "required_evidence": ["estimate", "capacity check", "risk note"], "sla_hours": 24, "expected_duration_hours": 4, "escalation_trigger": "capacity conflict or scope risk", "cadence": "as requested", "dependencies": ["client_request_capture"], "quality_checklist": ["priority consistent", "dependencies listed"]},
+        {"id": "client_request_decide", "order": 3, "name": "Decide and communicate", "owner_wing": "Client Strategy/Marketing", "owner_role": "Account strategist", "handoff_target": null, "approval_gate": "client", "approver_role": "Client sponsor", "required_evidence": ["decision record", "scope and timing"], "sla_hours": 24, "expected_duration_hours": 2, "escalation_trigger": "decision overdue", "cadence": "as requested", "dependencies": ["client_request_triage"], "quality_checklist": ["next step explicit"], "post_launch_review": "Pattern review at account cadence", "completion_outcome": "request decision communicated"}
+      ]
+    },
+    {
+      "id": "account_project_review",
+      "name": "Account and project review",
+      "wings": ["Client Strategy/Marketing", "Operations", "Paid Media", "Product & Engineering", "Design", "Video Production"],
+      "description": "Run a cross-wing review of outcomes, health, risks, and next-period commitments.",
+      "cadence": "monthly",
+      "dependencies": ["current scorecard", "open risk register"],
+      "quality_checklist": ["outcomes tied to goals", "risks have owners", "next period is scoped"],
+      "post_launch_review": "Carry review decisions into the next operating cycle.",
+      "completion_outcomes": ["review accepted with prioritized next-period plan"],
+      "stages": [
+        {"id": "account_project_review_prepare", "order": 1, "name": "Prepare scorecard", "owner_wing": "Operations", "owner_role": "Operations lead", "handoff_target": "Account strategist", "approval_gate": "none", "approver_role": null, "required_evidence": ["scorecard", "risk register", "delivery summary"], "sla_hours": 48, "expected_duration_hours": 8, "escalation_trigger": "missing source data", "cadence": "monthly", "dependencies": [], "quality_checklist": ["periods reconciled"]},
+        {"id": "account_project_review_analyze", "order": 2, "name": "Analyze outcomes", "owner_wing": "Client Strategy/Marketing", "owner_role": "Account strategist", "handoff_target": "Wing leads", "approval_gate": "internal", "approver_role": "Account director", "required_evidence": ["narrative readout", "variance analysis"], "sla_hours": 48, "expected_duration_hours": 8, "escalation_trigger": "material outcome miss", "cadence": "monthly", "dependencies": ["account_project_review_prepare"], "quality_checklist": ["causes and actions separated"]},
+        {"id": "account_project_review_commit", "order": 3, "name": "Commit next period", "owner_wing": "Operations", "owner_role": "Portfolio coordinator", "handoff_target": null, "approval_gate": "client", "approver_role": "Client sponsor", "required_evidence": ["decision log", "prioritized plan", "capacity view"], "sla_hours": 48, "expected_duration_hours": 4, "escalation_trigger": "no decision by review close", "cadence": "monthly", "dependencies": ["account_project_review_analyze"], "quality_checklist": ["owners and dates explicit"], "post_launch_review": "Check commitments at next monthly review", "completion_outcome": "next-period plan accepted"}
+      ]
+    }
+  ]
+}

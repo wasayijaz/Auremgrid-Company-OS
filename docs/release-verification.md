@@ -23,9 +23,11 @@ This matrix maps the product definition of complete to authoritative implementat
 | 17. MCP/API cover major domains | ExpandedApiTests and namespaced MCP discovery test |
 | 18. Dashboard surfaces major operations | browser verification: 17 destinations, 8 metrics, 3 attention items, 15 Client HQ tabs, live work/people/module data, zero console errors |
 | 19. Projections rebuild after restart | ProjectionRestartTests and live rebuild report |
-| 20. Tests prove isolation, persistence, permissions, and workflows | 79 offline behavior tests |
+| 20. Tests prove isolation, persistence, permissions, and workflows | 101 offline behavior tests |
 | 21. README accurately describes reality | implemented/local fallback/optional/experimental/planned status sections |
-| 22. Existing data migrates forward | legacy-v1 migration test and migrated auremgrid-demo.sqlite at schema 9 |
+| 22. Existing data migrates forward | legacy-v1 migration test and schema 10 migration chain |
+| 23. Wings coordinate through executable operating contracts | eight neutral templates, immutable definition versions/run snapshots, dependency and rework behavior, evidence/approval/handoff gates, REST/MCP parity, dashboard status, and workflow isolation tests |
+| 24. Repository changes are continuously verified | read-only GitHub Actions workflow compiles source/tests and runs the complete unittest suite on pushes and pull requests |
 
 Release checks:
 

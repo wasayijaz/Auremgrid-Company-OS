@@ -1,6 +1,6 @@
 # Upgrade guide
 
-Opening a database runs ordered, append-only schema migrations recorded in schema_migrations. Current schema version is 9.
+Opening a database runs ordered, append-only schema migrations recorded in schema_migrations. Current schema version is 10.
 
 Before upgrading:
 

@@ -19,15 +19,15 @@ class BrainMaturityTests(unittest.TestCase):
     def tearDown(self) -> None: self.os.close()
 
     def test_low_confidence_alias_is_not_silently_resolved(self) -> None:
-        entity=self.os.brain_ops.create_entity(self.org.id,self.ws.id,self.owner.id,"Prime Clinics","client")
+        entity=self.os.brain_ops.create_entity(self.org.id,self.ws.id,self.owner.id,"Northstar Labs","client")
         alias=self.os.brain_ops.propose_alias(self.org.id,self.ws.id,self.owner.id,entity["id"],"Prime Canada",0.7)
         self.assertEqual(alias["status"],"proposed")
         self.assertEqual(self.os.brain_ops.resolve_entity(self.org.id,self.ws.id,self.owner.id,"Prime Canada")["status"],"unknown")
-        self.assertEqual(self.os.brain_ops.resolve_entity(self.org.id,self.ws.id,self.owner.id,"Prime Clinics")["status"],"resolved")
+        self.assertEqual(self.os.brain_ops.resolve_entity(self.org.id,self.ws.id,self.owner.id,"Northstar Labs")["status"],"resolved")
 
     def test_low_confidence_entities_cannot_merge(self) -> None:
         first=self.os.brain_ops.create_entity(self.org.id,self.ws.id,self.owner.id,"Prime","client")
-        second=self.os.brain_ops.create_entity(self.org.id,self.ws.id,self.owner.id,"Prime Clinics","client")
+        second=self.os.brain_ops.create_entity(self.org.id,self.ws.id,self.owner.id,"Northstar Labs","client")
         with self.assertRaises(ValidationError):
             self.os.brain_ops.merge_entities(self.org.id,self.ws.id,self.owner.id,first["id"],second["id"],0.6,"Name similarity")
         merge=self.os.brain_ops.merge_entities(self.org.id,self.ws.id,self.owner.id,first["id"],second["id"],0.98,"Confirmed same legal entity")

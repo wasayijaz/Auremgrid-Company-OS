@@ -48,6 +48,15 @@ class McpToolRouter:
             {"name": "agents.list", "description": "Return agents and recent auditable runs."},
             {"name": "notifications.list", "description": "Return relevance-ranked attention items."},
             {"name": "reports.generate", "description": "Generate a report with canonical citations."},
+            {"name": "workflows.templates", "description": "List validated cross-wing workflow templates."},
+            {"name": "workflows.runs.get", "description": "Get a workflow run, stages, progress, and audit history."},
+            {"name": "workflows.runs.create", "description": "Start an immutable run from a validated workflow template."},
+            {"name": "workflows.stages.start", "description": "Start a dependency-ready workflow stage."},
+            {"name": "workflows.stages.complete", "description": "Complete a stage after evidence and approval gates pass."},
+            {"name": "workflows.evidence.add", "description": "Attach canonical or locator-backed evidence to a workflow stage."},
+            {"name": "workflows.approvals.request", "description": "Move an evidence-complete workflow stage to approval."},
+            {"name": "workflows.approvals.decide", "description": "Approve or return a gated workflow stage with a reason."},
+            {"name": "workflows.handoffs.acknowledge", "description": "Accept a cross-wing artifact handoff contract."},
         ]
         namespaced = {
             "brain.search":"Search cited evidence.","brain.entity":"Get a brain entity.","brain.history":"Get temporal fact history.",
@@ -70,7 +79,10 @@ class McpToolRouter:
             name=aliases.get(name,name)
             company_tools={"projects.list","projects.get","decisions.list","decisions.create","people.list","clients.list",
                 "clients.health","meetings.list","meetings.get","campaigns.list","campaigns.get","campaigns.performance",
-                "people.capacity","risks.list","opportunities.list","agents.list","agents.runs","notifications.list","reports.generate"}
+                "people.capacity","risks.list","opportunities.list","agents.list","agents.runs","notifications.list","reports.generate",
+                "workflows.templates","workflows.runs.get","workflows.runs.create","workflows.stages.start",
+                "workflows.stages.complete","workflows.evidence.add","workflows.approvals.request",
+                "workflows.approvals.decide","workflows.handoffs.acknowledge"}
             if name in company_tools:
                 return self._call_company_tool(name, arguments)
             workspace_id = _required(arguments, "workspace_id")
@@ -257,6 +269,44 @@ class McpToolRouter:
         if name in {"agents.list","agents.runs"}: return self.os.agent_ops.command_center(organization_id,person_id)
         if name == "notifications.list": return {"notifications":self.os.agency_ops.attention(organization_id,person_id,int(arguments.get("limit",20)))}
         if name == "reports.generate": return self.os.agent_ops.generate_report(organization_id,person_id,_required(arguments,"type"),workspace_id)
+        if name == "workflows.templates":
+            templates=self.os.workflow_catalog.for_wing(str(arguments["wing"])) if arguments.get("wing") else self.os.workflow_catalog.all()
+            return {"templates":[item.to_dict() for item in templates]}
+        if name == "workflows.runs.get":
+            return self.os.workflow_ops.summary(organization_id,_required(arguments,"workspace_id"),person_id,_required(arguments,"run_id"))
+        if name == "workflows.runs.create":
+            template=self.os.workflow_catalog.get(_required(arguments,"template_id"))
+            return self.os.workflow_ops.create_run(organization_id,_required(arguments,"workspace_id"),person_id,template,
+                _optional_str(arguments.get("due_at")),_optional_int(arguments.get("sla_minutes")),_optional_str(arguments.get("idempotency_key")))
+        if name == "workflows.stages.start":
+            return self.os.workflow_ops.start_stage(organization_id,_required(arguments,"workspace_id"),person_id,
+                _required(arguments,"run_id"),_required(arguments,"stage_id"),_optional_int(arguments.get("expected_version")),
+                _optional_str(arguments.get("idempotency_key")))
+        if name == "workflows.stages.complete":
+            return self.os.workflow_ops.complete_stage(organization_id,_required(arguments,"workspace_id"),person_id,
+                _required(arguments,"run_id"),_required(arguments,"stage_id"),str(arguments.get("reason","")),
+                _optional_int(arguments.get("expected_version")),_optional_str(arguments.get("idempotency_key")))
+        if name == "workflows.evidence.add":
+            return self.os.workflow_ops.submit_evidence(organization_id,_required(arguments,"workspace_id"),person_id,
+                _required(arguments,"run_id"),_required(arguments,"stage_id"),_required(arguments,"kind"),
+                _optional_str(arguments.get("uri")),_optional_str(arguments.get("text")),arguments.get("metadata") or {},
+                _optional_str(arguments.get("object_type")),_optional_str(arguments.get("object_id")),
+                _optional_str(arguments.get("locator")),_optional_str(arguments.get("content_hash")),
+                _optional_str(arguments.get("idempotency_key")))
+        if name == "workflows.approvals.request":
+            return self.os.workflow_ops.request_approval(organization_id,_required(arguments,"workspace_id"),person_id,
+                _required(arguments,"run_id"),_required(arguments,"stage_id"),_required(arguments,"reason"),
+                _optional_str(arguments.get("approval_request_id")),_optional_int(arguments.get("expected_version")),
+                _optional_str(arguments.get("idempotency_key")))
+        if name == "workflows.approvals.decide":
+            return self.os.workflow_ops.decide_approval(organization_id,_required(arguments,"workspace_id"),person_id,
+                _required(arguments,"run_id"),_required(arguments,"stage_id"),_required(arguments,"decision"),
+                _required(arguments,"reason"),_optional_str(arguments.get("approval_request_id")),
+                _optional_str(arguments.get("idempotency_key")))
+        if name == "workflows.handoffs.acknowledge":
+            return self.os.workflow_ops.acknowledge_handoff(organization_id,_required(arguments,"workspace_id"),person_id,
+                _required(arguments,"run_id"),_required(arguments,"from_stage_id"),_required(arguments,"to_stage_id"),
+                _required(arguments,"artifact_contract"),str(arguments.get("reason","")),_optional_str(arguments.get("idempotency_key")))
         raise AuremgridError(f"unknown tool: {name}")
 
 
@@ -277,6 +327,10 @@ def _optional_str(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
 
 
 def _bool(value: Any, key: str) -> bool:

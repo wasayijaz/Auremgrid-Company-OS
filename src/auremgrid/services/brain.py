@@ -50,6 +50,8 @@ from auremgrid.services.agent_ops import AgentOperations
 from auremgrid.services.brain_ops import BrainOperations
 from auremgrid.services.dashboard import DashboardService
 from auremgrid.services.work_ops import WorkOperations
+from auremgrid.services.workflow_catalog import load_workflow_catalog
+from auremgrid.services.workflow_ops import WorkflowOperations
 from auremgrid.adapters.semantic import DeterministicFallbackEmbeddingProvider, LocalVectorIndex
 
 
@@ -85,6 +87,8 @@ class CompanyOS:
         self.brain_ops = BrainOperations(self)
         self.dashboard = DashboardService(self)
         self.work_ops = WorkOperations(self.store,self.company,new_id,self._require_person_access)
+        self.workflow_catalog = load_workflow_catalog()
+        self.workflow_ops = WorkflowOperations(self.store.conn, new_id, self._require_person_access)
         self.rebuild_projections()
 
     def close(self) -> None:
