@@ -128,6 +128,110 @@ class CompanyOSTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_mcp_work_lifecycle_tools(self) -> None:
+        router = McpToolRouter(self.os)
+        common = {"workspace_id": "ws_beta", "actor_id": "act_beta_admin"}
+        item = router.call(
+            "capture_work",
+            {
+                **common,
+                "title": "MCP request",
+                "request": "Build a reviewable asset",
+                "requested_by": "Studio lead",
+            },
+        )
+        self.assertEqual(item["status"], "captured")
+        item = router.call(
+            "assign_work",
+            {**common, "work_item_id": item["id"], "assignee_id": "act_beta_admin"},
+        )
+        self.assertEqual(item["status"], "assigned")
+        item = router.call("start_work", {**common, "work_item_id": item["id"]})
+        self.assertEqual(item["status"], "in_progress")
+        item = router.call(
+            "mark_dod",
+            {
+                **common,
+                "work_item_id": item["id"],
+                "checks": {key: True for key in item["definition_of_done"]},
+            },
+        )
+        self.assertTrue(item["dod_complete"])
+        item = router.call("submit_review", {**common, "work_item_id": item["id"]})
+        self.assertEqual(item["status"], "review")
+        item = router.call(
+            "close_review",
+            {**common, "work_item_id": item["id"], "approved": True},
+        )
+        self.assertEqual(item["status"], "client_review")
+        item = router.call("ship_work", {**common, "work_item_id": item["id"]})
+        self.assertEqual(item["status"], "shipped")
+
+    def test_dashboard_route_serves_operating_surface(self) -> None:
+        server = serve(self.os, host="127.0.0.1", port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = server.server_address
+            conn = HTTPConnection(host, port, timeout=5)
+            conn.request("GET", "/dashboard")
+            response = conn.getresponse()
+            body = response.read().decode("utf-8")
+            conn.close()
+            self.assertEqual(response.status, 200)
+            self.assertIn("text/html", response.getheader("Content-Type", ""))
+            self.assertEqual(body.count("<h1>"), 1)
+            for marker in ("health-score", "capture-modal", "command-form", "Client brain coverage"):
+                self.assertIn(marker, body)
+            self.assertNotIn("<pre", body)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_http_work_route_validates_workspace_and_json(self) -> None:
+        server = serve(self.os, host="127.0.0.1", port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = server.server_address
+            conn = HTTPConnection(host, port, timeout=5)
+            body = json.dumps(
+                {
+                    "workspace_id": "ws_beta",
+                    "actor_id": "act_beta_admin",
+                    "title": "HTTP request",
+                    "request": "Build a reviewable asset",
+                    "requested_by": "Studio lead",
+                }
+            )
+            conn.request("POST", "/work/capture", body=body, headers={"Content-Type": "application/json"})
+            response = conn.getresponse()
+            item = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(response.status, 200)
+            self.assertEqual(item["status"], "captured")
+
+            cross_workspace = json.dumps(
+                {
+                    "workspace_id": "ws_beta",
+                    "actor_id": "act_beta_admin",
+                    "work_item_id": item["id"],
+                    "assignee_id": "act_alpha_operator",
+                }
+            )
+            conn.request("POST", "/work/assign", body=cross_workspace, headers={"Content-Type": "application/json"})
+            response = conn.getresponse()
+            error = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(response.status, 404)
+            self.assertEqual(error["error"], "not_found")
+
+            conn.request("POST", "/work/close-review", body="not-json", headers={"Content-Type": "application/json"})
+            response = conn.getresponse()
+            self.assertEqual(response.status, 400)
+            conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_offline_sqlite_file_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "company-os.sqlite"

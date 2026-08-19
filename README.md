@@ -185,7 +185,17 @@ python -m auremgrid.cli serve --host 127.0.0.1 --port 8791 --db auremgrid-demo.s
 
 Then open http://127.0.0.1:8791/.
 
-The dashboard is the human view of the same brief. The raw JSON endpoints are linked on the left so you can inspect search, work, and the cross-workspace leak test.
+The dashboard is the human operating view of the same brief. It is organized around the reference UI's calm light canvas and dense card system:
+
+- **Overview:** derived health score, open work, review queue, and client silence.
+- **Needs your attention:** overdue work, review pressure, and stale touchpoints with dismissible alerts.
+- **Client brain coverage:** snapshot/rules completeness, open loops, and visible source count.
+- **Work board:** filter by all, review, or blocked; open a work item to assign it, start it, submit review, approve/return review, or ship it through the existing work-loop rules.
+- **Command bar / Ask the client brain:** search approved evidence and see the citation source and locator in the result.
+- **Signal map and recent memory:** a compact operating-density view plus the latest ingested source activity.
+- **Export:** download the current overview as a local JSON snapshot for a handoff or review.
+
+The dashboard only shows data the current workspace and actor can access. Finance, campaign performance, agent queues, automations, capacity, and multi-client portfolio metrics are deliberately labeled **Not connected** until their source contracts exist. The UI is not a fake SaaS shell: capture and work actions call the same validated local service methods used by the tests and MCP tools.
 
 ### 4. Ask the brain a question
 

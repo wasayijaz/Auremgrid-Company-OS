@@ -25,10 +25,19 @@ class McpToolRouter:
             {"name": "brief", "description": "Assemble the client brief: brain, playbooks, open work, and last touchpoint."},
             {"name": "engines", "description": "Show what each open-source engine contributed for a query."},
             {"name": "work", "description": "List open or all work items in a workspace."},
+            {"name": "capture_work", "description": "Capture a new request at the front door of the work loop."},
+            {"name": "assign_work", "description": "Assign a captured work item to an actor in the same workspace."},
+            {"name": "start_work", "description": "Move an assigned work item into production."},
+            {"name": "mark_dod", "description": "Update definition-of-done checks for a work item."},
+            {"name": "submit_review", "description": "Submit a complete work item for internal review."},
+            {"name": "close_review", "description": "Approve or return an item from internal review."},
+            {"name": "ship_work", "description": "Ship an item after client review is complete."},
         ]
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         try:
+            if not isinstance(arguments, dict):
+                raise AuremgridError("arguments must be an object")
             workspace_id = _required(arguments, "workspace_id")
             actor_id = _required(arguments, "actor_id")
             if name == "search":
@@ -92,8 +101,64 @@ class McpToolRouter:
                     actor_id,
                     _required(arguments, "query"),
                 )
+            if name == "capture_work":
+                return self.os.capture_work(
+                    workspace_id,
+                    actor_id,
+                    _required(arguments, "title"),
+                    _required(arguments, "request"),
+                    _required(arguments, "requested_by"),
+                    needed_by=_optional_str(arguments.get("needed_by")),
+                    playbook_id=_optional_str(arguments.get("playbook_id")),
+                    decision_maker=_optional_str(arguments.get("decision_maker")),
+                ).to_dict()
+            if name == "assign_work":
+                return self.os.assign_work(
+                    workspace_id,
+                    actor_id,
+                    _required(arguments, "work_item_id"),
+                    _required(arguments, "assignee_id"),
+                    decision_maker=_optional_str(arguments.get("decision_maker")),
+                ).to_dict()
+            if name == "start_work":
+                return self.os.start_work(
+                    workspace_id,
+                    actor_id,
+                    _required(arguments, "work_item_id"),
+                ).to_dict()
+            if name == "mark_dod":
+                checks = arguments.get("checks")
+                if not isinstance(checks, dict):
+                    raise AuremgridError("checks must be an object")
+                return self.os.mark_dod(
+                    workspace_id,
+                    actor_id,
+                    _required(arguments, "work_item_id"),
+                    {str(key): _bool(value, f"checks.{key}") for key, value in checks.items()},
+                ).to_dict()
+            if name == "submit_review":
+                return self.os.submit_review(
+                    workspace_id,
+                    actor_id,
+                    _required(arguments, "work_item_id"),
+                ).to_dict()
+            if name == "close_review":
+                return self.os.close_review(
+                    workspace_id,
+                    actor_id,
+                    _required(arguments, "work_item_id"),
+                    _bool(arguments.get("approved"), "approved"),
+                    note=str(arguments.get("note", "")),
+                ).to_dict()
+            if name == "ship_work":
+                return self.os.ship_work(
+                    workspace_id,
+                    actor_id,
+                    _required(arguments, "work_item_id"),
+                    note=str(arguments.get("note", "")),
+                ).to_dict()
             raise AuremgridError(f"unknown tool: {name}")
-        except AuremgridError as exc:
+        except (AuremgridError, ValueError, TypeError) as exc:
             return {"error": exc.__class__.__name__, "message": str(exc)}
 
 
@@ -108,3 +173,15 @@ def _optional_dt(value: Any) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(str(value))
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _bool(value: Any, key: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise AuremgridError(f"{key} must be a boolean")
