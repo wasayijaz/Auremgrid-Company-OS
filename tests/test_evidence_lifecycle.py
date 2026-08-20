@@ -33,7 +33,7 @@ class EvidenceLifecycleTests(unittest.TestCase):
         ).source
 
     def test_schema_13_has_durable_lifecycle_route_and_queue_tables(self) -> None:
-        self.assertEqual(self.os.store.schema_version, 18)
+        self.assertEqual(self.os.store.schema_version, 19)
         names = {row["name"] for row in self.os.store.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({
             "source_lifecycle_intervals", "provider_object_routes", "provider_object_route_events",

@@ -2,7 +2,105 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
+
+
+class AgentLevel(StrEnum):
+    L0_EXECUTE = "L0"
+    L1_OPERATE = "L1"
+    L2_BUILD = "L2"
+    L3_REASON = "L3"
+
+
+AGENT_LEVEL_ORDER: tuple[AgentLevel, ...] = (
+    AgentLevel.L0_EXECUTE,
+    AgentLevel.L1_OPERATE,
+    AgentLevel.L2_BUILD,
+    AgentLevel.L3_REASON,
+)
+
+
+@dataclass(frozen=True)
+class LevelDefinition:
+    level: AgentLevel
+    name: str
+    intent: str
+    cost_weight: float
+    capability_tags: tuple[str, ...]
+    can_handle: tuple[AgentLevel, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "level": self.level.value,
+            "name": self.name,
+            "intent": self.intent,
+            "cost_weight": self.cost_weight,
+            "capability_tags": list(self.capability_tags),
+            "can_handle": [level.value for level in self.can_handle],
+        }
+
+
+LEVEL_DEFINITIONS: dict[AgentLevel, LevelDefinition] = {
+    AgentLevel.L0_EXECUTE: LevelDefinition(
+        level=AgentLevel.L0_EXECUTE,
+        name="Execute",
+        intent="Fast, high-throughput execution of well-defined, repeatable tasks",
+        cost_weight=0.25,
+        capability_tags=("execute", "format", "extract", "summarize", "draft"),
+        can_handle=(AgentLevel.L0_EXECUTE,),
+    ),
+    AgentLevel.L1_OPERATE: LevelDefinition(
+        level=AgentLevel.L1_OPERATE,
+        name="Operate",
+        intent="Standard operational judgment, routing, communication, and coordination",
+        cost_weight=0.5,
+        capability_tags=("reason", "produce", "communicate", "route", "schedule"),
+        can_handle=(AgentLevel.L0_EXECUTE, AgentLevel.L1_OPERATE),
+    ),
+    AgentLevel.L2_BUILD: LevelDefinition(
+        level=AgentLevel.L2_BUILD,
+        name="Build",
+        intent="Deep analysis, implementation, and verification requiring sustained reasoning",
+        cost_weight=1.0,
+        capability_tags=("build", "verify", "review", "diagnose", "implement"),
+        can_handle=(AgentLevel.L0_EXECUTE, AgentLevel.L1_OPERATE, AgentLevel.L2_BUILD),
+    ),
+    AgentLevel.L3_REASON: LevelDefinition(
+        level=AgentLevel.L3_REASON,
+        name="Reason",
+        intent="Strategic decisions, complex synthesis, architecture, and risk detection",
+        cost_weight=2.0,
+        capability_tags=("strategize", "architect", "assess_risk", "synthesize", "decide"),
+        can_handle=(
+            AgentLevel.L0_EXECUTE,
+            AgentLevel.L1_OPERATE,
+            AgentLevel.L2_BUILD,
+            AgentLevel.L3_REASON,
+        ),
+    ),
+}
+
+CAPABILITY_LEVELS: dict[str, AgentLevel] = {
+    tag: definition.level
+    for definition in LEVEL_DEFINITIONS.values()
+    for tag in definition.capability_tags
+}
+
+
+def normalize_agent_level(value: AgentLevel | str) -> AgentLevel:
+    try:
+        return value if isinstance(value, AgentLevel) else AgentLevel(str(value))
+    except ValueError as exc:
+        raise ValueError(f"unknown agent level: {value}") from exc
+
+
+def effective_capability_tags(level: AgentLevel | str) -> tuple[str, ...]:
+    normalized = normalize_agent_level(level)
+    tags: list[str] = []
+    for handled_level in LEVEL_DEFINITIONS[normalized].can_handle:
+        tags.extend(LEVEL_DEFINITIONS[handled_level].capability_tags)
+    return tuple(dict.fromkeys(tags))
 
 
 def iso(value: datetime | None) -> str | None:

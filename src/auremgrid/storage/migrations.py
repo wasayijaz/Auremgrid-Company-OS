@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from dataclasses import dataclass
 
 
@@ -1719,7 +1720,84 @@ MIGRATIONS = (
             SELECT RAISE(ABORT,'memory proposals are append-only'); END;
         """,
     ),
+    Migration(
+        19,
+        "agent_level_routing",
+        """
+        ALTER TABLE agents ADD COLUMN level TEXT NOT NULL DEFAULT 'L1';
+        ALTER TABLE agents ADD COLUMN capability_tags TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE agent_tasks ADD COLUMN intent_tags TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE agent_tasks ADD COLUMN recommended_level TEXT NOT NULL DEFAULT 'L0';
+        ALTER TABLE agent_tasks ADD COLUMN selected_level TEXT NOT NULL DEFAULT 'L0';
+        ALTER TABLE agent_tasks ADD COLUMN level_override_reason TEXT;
+        CREATE TABLE IF NOT EXISTS agent_level_overrides (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            requested_by_person_id TEXT NOT NULL,
+            recommended_level TEXT NOT NULL,
+            selected_level TEXT NOT NULL,
+            intent_tags TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(task_id) REFERENCES agent_tasks(id),
+            FOREIGN KEY(requested_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_level_overrides_task
+            ON agent_level_overrides(organization_id,task_id,created_at);
+        CREATE TRIGGER IF NOT EXISTS agent_level_overrides_no_update BEFORE UPDATE ON agent_level_overrides BEGIN
+            SELECT RAISE(ABORT,'agent level overrides are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS agent_level_overrides_no_delete BEFORE DELETE ON agent_level_overrides BEGIN
+            SELECT RAISE(ABORT,'agent level overrides are append-only'); END;
+        """,
+    ),
 )
+
+
+_AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
+    "L0": ("execute", "format", "extract", "summarize", "draft"),
+    "L1": ("execute", "format", "extract", "summarize", "draft", "reason", "produce", "communicate", "route", "schedule"),
+    "L2": (
+        "execute", "format", "extract", "summarize", "draft",
+        "reason", "produce", "communicate", "route", "schedule",
+        "build", "verify", "review", "diagnose", "implement",
+    ),
+    "L3": (
+        "execute", "format", "extract", "summarize", "draft",
+        "reason", "produce", "communicate", "route", "schedule",
+        "build", "verify", "review", "diagnose", "implement",
+        "strategize", "architect", "assess_risk", "synthesize", "decide",
+    ),
+}
+
+
+_PRIMARY_AGENT_LEVELS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("Sol", ("advisor_reviewer", "strategic_reviewer"), "L3"),
+    ("Terra", ("builder",), "L2"),
+    ("Luna", ("executor", "operator"), "L1"),
+)
+
+
+def _json_compact(value: object) -> str:
+    return json.dumps(value, separators=(",", ":"))
+
+
+def _backfill_primary_agent_levels(conn: sqlite3.Connection) -> None:
+    """Upgrade only the stable seeded-agent semantics without changing identity fields."""
+
+    for agent_name, role_names, level in _PRIMARY_AGENT_LEVELS:
+        conn.execute(
+            f"""UPDATE agents
+                SET level=?, capability_tags=?
+                WHERE name=?
+                  AND role_id IN (
+                    SELECT id FROM agent_roles
+                    WHERE agent_roles.organization_id=agents.organization_id
+                      AND name IN ({",".join("?" for _ in role_names)})
+                  )""",
+            (level, _json_compact(list(_AGENT_LEVEL_CAPABILITIES[level])), agent_name, *role_names),
+        )
 
 
 def migrate(conn: sqlite3.Connection) -> int:
@@ -1777,8 +1855,27 @@ def migrate(conn: sqlite3.Connection) -> int:
                         (sequence,None if prior is None else prior[1],row[0]),
                     )
                     prior_by_subject[key]=(sequence,row[0])
+        if migration.version == 19:
+            agent_columns = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+            task_columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_tasks)").fetchall()}
+            for column, definition in (
+                ("level", "TEXT NOT NULL DEFAULT 'L1'"),
+                ("capability_tags", "TEXT NOT NULL DEFAULT '[]'"),
+            ):
+                if column in agent_columns:
+                    sql = sql.replace(f"ALTER TABLE agents ADD COLUMN {column} {definition};", "")
+            for column, definition in (
+                ("intent_tags", "TEXT NOT NULL DEFAULT '[]'"),
+                ("recommended_level", "TEXT NOT NULL DEFAULT 'L0'"),
+                ("selected_level", "TEXT NOT NULL DEFAULT 'L0'"),
+                ("level_override_reason", "TEXT"),
+            ):
+                if column in task_columns:
+                    sql = sql.replace(f"ALTER TABLE agent_tasks ADD COLUMN {column} {definition};", "")
         with conn:
             conn.executescript(sql)
+            if migration.version == 19:
+                _backfill_primary_agent_levels(conn)
             conn.execute(
                 "INSERT INTO schema_migrations(version, name) VALUES (?, ?)",
                 (migration.version, migration.name),

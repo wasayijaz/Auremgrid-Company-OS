@@ -447,7 +447,12 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/agents/seed":
                 self._json(201,{"agents":self.os.agent_ops.seed_primary_agents(_need(payload,"organization_id"),_need(payload,"person_id"))});return
             if parsed.path == "/agents/tasks":
-                self._json(201,self.os.agent_ops.enqueue_task(_need(payload,"organization_id"),_need(payload,"person_id"),_need(payload,"agent_id"),_need(payload,"title"),_need(payload,"instructions"),_optional_str(payload.get("workspace_id")),int(payload.get("priority",50))));return
+                self._json(201,self.os.agent_ops.enqueue_task(
+                    _need(payload,"organization_id"),_need(payload,"person_id"),_need(payload,"agent_id"),
+                    _need(payload,"title"),_need(payload,"instructions"),_optional_str(payload.get("workspace_id")),
+                    int(payload.get("priority",50)),_optional_str_list(payload.get("intent_tags")),
+                    _optional_str(payload.get("selected_level")),_optional_str(payload.get("override_reason")) or "",
+                ));return
             if parsed.path == "/agents/runs/start":
                 self._json(201,self.os.agent_ops.start_run(_need(payload,"organization_id"),_need(payload,"agent_id"),_need(payload,"task_id")));return
             if parsed.path == "/agents/runs/complete":
@@ -713,6 +718,14 @@ def _optional_str(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _optional_str_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValidationError("intent_tags must be a list")
+    return [str(item) for item in value]
 
 
 def _int(value: Any, key: str) -> int:

@@ -141,6 +141,10 @@ Graph projection uses the same boundary: the default local temporal graph is reb
 
 Entity matching is a proposal workflow, not an automatic merge. Candidate aliases and merges are scoped to one organization/workspace and remain pending until an identity with `brain_promote` records an immutable decision. A merge creates a one-way redirect while preserving the original entity, alias owner, evidence, and decision history; alias lifecycle changes are append-only state events. Extracted facts begin as `inferred` knowledge-state events. Incompatible observations remain together with both citations in a conflict group, and a later human resolution appends `verified`/`stale` events without deleting history. Current search and health use the latest effective state; historical `as_of` queries can still inspect prior states. A scoped service/agent identity may propose but cannot promote, and cross-workspace candidates are rejected without disclosure.
 
+### Capability-level routing (schema 19)
+
+Agent work is classified into four provider-neutral capability levels. Tasks persist their intent tags, recommended level, selected level, and any explicit escalation reason. Existing agent identities are upgraded without changing their IDs, under-leveled assignments and de-escalation are rejected, and every override is recorded in an immutable audit table. Business titles and organization permissions remain separate from these execution levels.
+
 ### Authentication, jobs, connectors, and recovery
 
 ```mermaid

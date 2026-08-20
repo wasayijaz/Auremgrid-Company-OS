@@ -128,7 +128,7 @@ class BrainResolutionContractTests(unittest.TestCase):
     def test_schema18_replay_preserves_entity_and_alias_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/"replay.sqlite"; first=CompanyOS(path); org=first.create_organization("ReplayOrg"); ws=first.create_organization_workspace(org.id,"ReplayWs"); person=first.create_person(org.id,"Owner",role="owner"); first.add_person_to_workspace(org.id,ws.id,person.id,"admin"); entity=first.brain_ops.create_entity(org.id,ws.id,person.id,"Replay","client"); first.close(); second=CompanyOS(path)
-            self.assertEqual(second.store.schema_version,18); self.assertIsNotNone(second.store.conn.execute("SELECT 1 FROM entities WHERE id=?",(entity["id"],)).fetchone()); self.assertIsNotNone(second.store.conn.execute("SELECT 1 FROM entity_resolution_decisions LIMIT 1").fetchone()) if False else None; second.close()
+            self.assertEqual(second.store.schema_version,19); self.assertIsNotNone(second.store.conn.execute("SELECT 1 FROM entities WHERE id=?",(entity["id"],)).fetchone()); self.assertIsNotNone(second.store.conn.execute("SELECT 1 FROM entity_resolution_decisions LIMIT 1").fetchone()) if False else None; second.close()
 
     def test_early_schema18_is_evolved_and_backfilled_idempotently(self):
         with tempfile.TemporaryDirectory() as tmp:
