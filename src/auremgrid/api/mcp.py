@@ -75,7 +75,7 @@ class McpToolRouter:
             {"name": "integrations.sync", "description": "Enqueue durable synchronization for a verified integration."},
         ]
         namespaced = {
-            "brain.search":"Search cited evidence.","brain.entity":"Get a brain entity.","brain.history":"Get temporal fact history.",
+            "brain.search":"Search cited evidence.","brain.entity":"Get a brain entity.","brain.entity.candidates":"Discover scoped entity-resolution candidates.","brain.history":"Get temporal fact history.",
             "brain.neighbors":"Get entity neighbors.","brain.sources":"List permitted sources.","brain.recent":"List recent evidence.",
             "clients.brief":"Get a client operating brief.","work.list":"List work.","work.create":"Capture work.",
             "work.assign":"Assign work.","work.update":"Advance work.","work.review":"Submit work for review.",
@@ -89,7 +89,7 @@ class McpToolRouter:
         try:
             if not isinstance(arguments, dict):
                 raise AuremgridError("arguments must be an object")
-            aliases={"brain.search":"search","brain.entity":"entity","brain.history":"history","brain.neighbors":"neighbors",
+            aliases={"brain.search":"search","brain.entity":"entity","brain.entity.candidates":"entity_candidates","brain.history":"history","brain.neighbors":"neighbors",
                 "brain.sources":"sources","brain.recent":"recent","clients.brief":"brief","work.list":"work",
                 "work.create":"capture_work","work.assign":"assign_work","work.update":"start_work","work.review":"submit_review"}
             name=aliases.get(name,name)
@@ -145,6 +145,12 @@ class McpToolRouter:
                     predicate=arguments.get("predicate"),
                     as_of=_optional_dt(arguments.get("as_of")),
                 )
+            if name == "entity_candidates":
+                self.identity.require("brain_propose")
+                return {"candidates": self.os.brain_ops.entity_resolution_candidates(
+                    self.identity.organization_id, workspace_id, self.identity,
+                    _required(arguments, "name"), int(arguments.get("limit", 8)),
+                )}
             if name == "neighbors":
                 actor_id = _required(arguments, "actor_id")
                 return self.os.neighbors(
@@ -481,7 +487,11 @@ def _optional_int(value: Any) -> int | None:
 
 
 def _mcp_capability(name: str) -> str:
-    if name in {"brain.propose"}: return "brain_propose"
+    # Keep the public namespaced candidate tool on the proposal capability
+    # before McpToolRouter aliases it to the internal handler name.  The HTTP
+    # /tools/call boundary authenticates using this function before routing,
+    # so omitting the public name would incorrectly gate it as brain_read.
+    if name in {"brain.propose", "brain.entity.candidates", "entity_candidates"}: return "brain_propose"
     if name in {"brain.promote"}: return "brain_promote"
     if name in {"brain.resolve_conflict"}: return "brain_promote"
     if name in {"search","entity","history","neighbors","sources","recent","brief","engines"} or name.startswith("brain."):

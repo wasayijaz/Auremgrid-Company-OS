@@ -24,6 +24,34 @@ def _transition_now() -> datetime:
 def _norm(value: str) -> str: return re.sub(r"[^a-z0-9]+"," ",value.lower()).strip()
 
 
+_DOMAIN_SUFFIXES = frozenset({"com", "net", "org", "io", "co", "ca", "ai", "app", "dev", "uk", "us"})
+
+
+def _forms(value: str) -> set[str]:
+    """Return conservative comparison forms for a name, email, or locator."""
+    words = _norm(value).split()
+    if not words:
+        return set()
+    forms = {"".join(words)}
+    while words and words[-1] in _DOMAIN_SUFFIXES:
+        words.pop()
+    if words:
+        forms.add("".join(words))
+    return {item for item in forms if item}
+
+
+def _variant_score(left: set[str], right: set[str]) -> float:
+    """Score exact and domain/name variants without treating a token as proof."""
+    score = 0.0
+    for candidate in left:
+        for evidence in right:
+            if candidate == evidence:
+                score = max(score, 1.0)
+            elif min(len(candidate), len(evidence)) >= 5 and (candidate in evidence or evidence in candidate):
+                score = max(score, 0.85 * min(len(candidate), len(evidence)) / max(len(candidate), len(evidence)))
+    return score
+
+
 class BrainOperations:
     def __init__(self, os: Any) -> None: self.os=os; self.conn=os.store.conn
 
@@ -86,6 +114,105 @@ class BrainOperations:
             return {"status":"unknown" if not resolved else "ambiguous","candidates":list(resolved.values())}
         return {"status":"resolved","entity":next(iter(resolved.values()))}
 
+    def entity_resolution_candidates(self, organization_id: str, workspace_id: str,
+        identity: Any, name: str, limit: int = 8) -> list[dict[str, Any]]:
+        """Return conservative, evidence-backed candidates without creating proposals."""
+        self._identity_person(organization_id, workspace_id, identity, "brain_propose")
+        if limit < 1 or limit > 50:
+            raise ValidationError("limit must be between 1 and 50")
+        allowed = self._allowed_source_ids(identity, workspace_id)
+        if not allowed:
+            return []
+        query_forms = _forms(name)
+        if not query_forms:
+            raise ValidationError("entity name is required")
+        sources = self.os.store.allowed_sources(
+            workspace_id,
+            self.os._require_actor(workspace_id, self.os.auth.actor_for_identity(identity, workspace_id)),
+        )
+        source_by_id = {source.id: source for source in sources}
+        marks = ",".join("?" for _ in allowed)
+        documents = self.conn.execute(
+            f"SELECT id,source_id FROM documents WHERE workspace_id=? AND source_id IN ({marks}) ORDER BY recorded_at DESC,id DESC",
+            (workspace_id, *sorted(allowed)),
+        ).fetchall()
+        document_by_source: dict[str, list[str]] = {}
+        for row in documents:
+            document_by_source.setdefault(str(row["source_id"]), []).append(str(row["id"]))
+        facts = self.conn.execute(
+            f"SELECT id,source_id,subject,predicate,object FROM facts WHERE workspace_id=? AND source_id IN ({marks})",
+            (workspace_id, *sorted(allowed)),
+        ).fetchall()
+        relations = self.conn.execute(
+            f"SELECT id,source_id,from_entity,relation,to_entity FROM relations WHERE workspace_id=? AND source_id IN ({marks})",
+            (workspace_id, *sorted(allowed)),
+        ).fetchall()
+        entities = self.conn.execute(
+            "SELECT * FROM entities WHERE organization_id=? AND workspace_id=? AND status='active' ORDER BY id",
+            (organization_id, workspace_id),
+        ).fetchall()
+        output: list[dict[str, Any]] = []
+        for entity in entities:
+            aliases = self.conn.execute(
+                "SELECT * FROM entity_aliases WHERE entity_id=? AND status IN ('approved','proposed') ORDER BY created_at,id",
+                (entity["id"],),
+            ).fetchall()
+            visible_aliases = [row for row in aliases if row["source_id"] is None or str(row["source_id"]) in allowed]
+            names = [str(entity["canonical_name"]), *[str(row["alias"]) for row in visible_aliases]]
+            entity_forms = set().union(*(_forms(value) for value in names)) if names else set()
+            name_score = _variant_score(query_forms, entity_forms)
+            if name_score <= 0:
+                continue
+            refs: dict[str, list[str]] = {"sources": [], "documents": [], "facts": [], "relations": []}
+            reasons: list[str] = ["name_variant"]
+            for source_id, source in source_by_id.items():
+                locator_forms = _forms(f"{source.source_key} {source.locator}")
+                if _variant_score(entity_forms, locator_forms) > 0 and _variant_score(query_forms, locator_forms) > 0:
+                    refs["sources"].append(source_id)
+                    refs["documents"].extend(document_by_source.get(source_id, [])[:1])
+                    reasons.append("source_locator")
+            for row in facts:
+                content_forms = _forms(f"{row['subject']} {row['predicate']} {row['object']}")
+                if _variant_score(entity_forms, content_forms) > 0 and _variant_score(query_forms, content_forms) > 0:
+                    refs["sources"].append(str(row["source_id"])); refs["facts"].append(str(row["id"]))
+                    refs["documents"].extend(document_by_source.get(str(row["source_id"]), [])[:1])
+                    reasons.append("fact_evidence")
+            for row in relations:
+                content_forms = _forms(f"{row['from_entity']} {row['relation']} {row['to_entity']}")
+                if _variant_score(entity_forms, content_forms) > 0 and _variant_score(query_forms, content_forms) > 0:
+                    refs["sources"].append(str(row["source_id"])); refs["relations"].append(str(row["id"]))
+                    refs["documents"].extend(document_by_source.get(str(row["source_id"]), [])[:1])
+                    reasons.append("relation_evidence")
+            refs = {key: sorted(set(value)) for key, value in refs.items()}
+            # Names are only a candidate key.  Returning a row requires
+            # independently visible evidence a proposer can cite.
+            if not refs["sources"]:
+                continue
+            evidence_score = min(0.2, 0.1 * len(refs["sources"]))
+            score = min(0.99, 0.75 * name_score + evidence_score)
+            output.append({
+                "entity": {key: entity[key] for key in ("id", "canonical_name", "type")},
+                "score": round(score, 6), "reasons": sorted(set(reasons)),
+                "evidence_refs": refs,
+                "suggested_proposal": {"kind": "alias", "alias": name.strip(), "target_entity_id": entity["id"]},
+                "allowed_actions": [{
+                    "action": "propose_alias", "label": "Propose alias", "method": "POST", "route": "/brain/propose",
+                    "payload": {
+                        "workspace_id": workspace_id, "kind": "alias", "candidate_entity_ids": [entity["id"]],
+                        "target_id": entity["id"], "alias": name.strip(), "score": round(score, 6),
+                        "rationale": "Evidence-backed entity variant", "evidence": "Entity candidate discovery",
+                        "source_id": refs["sources"][0], "evidence_refs": refs,
+                    },
+                    "required_fields": ["rationale"],
+                }],
+            })
+        return sorted(output, key=lambda item: (-item["score"], item["entity"]["id"]))[:limit]
+
+    def _allowed_source_ids(self, identity: Any, workspace_id: str) -> set[str]:
+        actor_id = self.os.auth.actor_for_identity(identity, workspace_id)
+        actor = self.os._require_actor(workspace_id, actor_id)
+        return {source.id for source in self.os.store.allowed_sources(workspace_id, actor)}
+
     def _entity_redirect(self, organization_id: str, workspace_id: str | None, source_id: str,
         moment: str) -> str | None:
         row=self.conn.execute("""
@@ -106,11 +233,19 @@ class BrainOperations:
         kind: str, candidate_entity_ids: list[str], score: float, rationale: str,
         evidence: str, alias: str | None = None, source_id: str | None = None,
         target_id: str | None = None, evidence_refs: dict[str, list[str]] | None = None) -> dict[str, Any]:
-        person_id = self._identity_person(organization_id,workspace_id,person_id,"brain_propose")
+        identity = person_id
+        person_id = self._identity_person(organization_id,workspace_id,identity,"brain_propose")
         if kind not in {"alias","merge"} or not candidate_entity_ids or not evidence.strip(): raise ValidationError("invalid resolution proposal")
         rows=self.conn.execute(f"SELECT id,workspace_id FROM entities WHERE organization_id=? AND id IN ({','.join('?' for _ in candidate_entity_ids)})",(organization_id,*candidate_entity_ids)).fetchall()
         if len(rows)!=len(set(candidate_entity_ids)) or any(row["workspace_id"]!=workspace_id for row in rows): raise NotFoundError("entity candidate not found")
-        normalized_refs=self._validate_evidence_refs(workspace_id,source_id,evidence_refs)
+        has_cited_evidence = bool(source_id or any((evidence_refs or {}).values()))
+        allowed_source_ids = None
+        if workspace_id is not None and hasattr(identity, "person_id") and has_cited_evidence:
+            try:
+                allowed_source_ids = self._allowed_source_ids(identity, workspace_id)
+            except AuthorizationError as exc:
+                raise NotFoundError("proposal evidence not found") from exc
+        normalized_refs=self._validate_evidence_refs(workspace_id,source_id,evidence_refs,allowed_source_ids)
         proposal={"id":self._id("resolution"),"organization_id":organization_id,"workspace_id":workspace_id,"kind":kind,"alias":alias,"source_entity_id":candidate_entity_ids[0] if kind=="merge" else None,"target_entity_id":target_id or (candidate_entity_ids[1] if kind=="merge" and len(candidate_entity_ids)>1 else candidate_entity_ids[0]),"candidate_entity_ids":json.dumps(candidate_entity_ids),"score":float(score),"rationale":rationale,"status":"pending","proposed_by_person_id":person_id,"reviewed_by_person_id":None,"evidence_source_id":source_id,"evidence":evidence,"evidence_refs":json.dumps(normalized_refs,sort_keys=True),"created_at":_now().isoformat(),"reviewed_at":None}
         self.conn.execute("""INSERT INTO entity_resolution_proposals(
             id,organization_id,workspace_id,kind,alias,source_entity_id,target_entity_id,candidate_entity_ids,
@@ -118,7 +253,7 @@ class BrainOperations:
             evidence_refs,created_at,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",tuple(proposal.values())); self.conn.commit(); return proposal
 
     def _validate_evidence_refs(self, workspace_id: str | None, source_id: str | None,
-        evidence_refs: dict[str, list[str]] | None) -> dict[str, list[str]]:
+        evidence_refs: dict[str, list[str]] | None, allowed_source_ids: set[str] | None = None) -> dict[str, list[str]]:
         allowed={"sources":"sources","documents":"documents","facts":"facts","relations":"relations"}
         if any(key not in allowed or not isinstance(values,list) for key,values in (evidence_refs or {}).items()):
             raise ValidationError("evidence refs are invalid")
@@ -127,14 +262,25 @@ class BrainOperations:
             refs.setdefault("sources",[])
             refs["sources"]=sorted(set(refs["sources"]+[source_id]))
         if workspace_id is None and any(refs.values()): raise NotFoundError("proposal evidence not found")
+        if allowed_source_ids is not None and any(source_id not in allowed_source_ids for source_id in refs.get("sources", [])):
+            raise NotFoundError("proposal evidence not found")
         for key,table in allowed.items():
             ids=refs.get(key,[])
             if not ids: continue
             placeholders=','.join('?' for _ in ids)
-            found={str(row["id"]) for row in self.conn.execute(
-                f"SELECT id FROM {table} WHERE workspace_id=? AND id IN ({placeholders})",
-                (workspace_id,*ids),
-            ).fetchall()}
+            if key == "sources":
+                rows = self.conn.execute(
+                    f"SELECT id FROM sources WHERE workspace_id=? AND id IN ({placeholders})",
+                    (workspace_id,*ids),
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    f"SELECT id,source_id FROM {table} WHERE workspace_id=? AND id IN ({placeholders})",
+                    (workspace_id,*ids),
+                ).fetchall()
+                if allowed_source_ids is not None:
+                    rows = [row for row in rows if str(row["source_id"]) in allowed_source_ids]
+            found={str(row["id"]) for row in rows}
             if found != set(ids): raise NotFoundError("proposal evidence not found")
         return refs
 
@@ -311,11 +457,13 @@ class BrainOperations:
     def create_proposal(self, organization_id: str, workspace_id: str | None, proposer_type: str, proposer_id: str,
         kind: str, content: str, payload: dict[str, Any], evidence: str, confidence: float, source_id: str | None = None) -> dict[str, Any]:
         if not hasattr(proposer_id,"person_id"): raise AuthorizationError("authenticated identity is required")
-        proposer_id.require("brain_propose")
-        if proposer_id.organization_id != organization_id or (workspace_id and proposer_id.workspace_id not in {None,workspace_id}): raise AuthorizationError("identity is outside requested scope")
-        if workspace_id and proposer_id.workspace_id is not None: workspace_id = proposer_id.workspace_id
-        proposer_id = proposer_id.person_id
-        if source_id and workspace_id is not None and self.os.store.get_source(workspace_id,source_id) is None: raise NotFoundError("proposal evidence not found")
+        identity=proposer_id
+        identity.require("brain_propose")
+        if identity.organization_id != organization_id or (workspace_id and identity.workspace_id not in {None,workspace_id}): raise AuthorizationError("identity is outside requested scope")
+        if workspace_id and identity.workspace_id is not None: workspace_id = identity.workspace_id
+        if source_id and workspace_id is not None and self.os.store.get_source(workspace_id,source_id) is None:
+            raise NotFoundError("proposal evidence not found")
+        proposer_id = identity.person_id
         if kind not in {"memory","fact","decision"} or not evidence.strip(): raise ValidationError("proposal kind and evidence are required")
         item={"id":self._id("proposal"),"organization_id":organization_id,"workspace_id":workspace_id,"kind":kind,
             "proposed_by_type":proposer_type,"proposed_by_id":proposer_id,"content":content,"structured_payload":json.dumps(payload),

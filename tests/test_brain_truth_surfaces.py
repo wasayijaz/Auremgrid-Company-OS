@@ -85,6 +85,19 @@ class BrainTruthSurfaceTests(unittest.TestCase):
         self.assertEqual(health["health"], read["health"])
         self.assertEqual(read["current_truths"][0]["state"], "inferred")
 
+    def test_exceptional_extraction_confidence_is_explicit_without_human_verification(self) -> None:
+        result = self.os.ingest_text(
+            self.ws.id, self.actor.id, "strong.md",
+            "META: confidence=0.95\nFACT: Strong Plan | status | confirmed",
+            "memory://strong", allowed_actor_ids=[self.actor.id],
+        )
+        fact_id = result.fact_ids[0]
+        state = self.os.brain_ops.knowledge_state(
+            self.org.id, self.ws.id, self.person.id, "fact", fact_id
+        )
+        self.assertEqual(state["state"], "high_confidence")
+        self.assertNotEqual(state["state"], "verified")
+
     def test_rest_knowledge_health_is_read_only_and_uses_scoped_truth_view(self) -> None:
         before = self.os.store.conn.execute(
             "SELECT COUNT(*) FROM knowledge_health_issues"

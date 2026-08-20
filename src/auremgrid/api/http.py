@@ -31,6 +31,7 @@ def _route_capability(path: str, method: str) -> str:
         if path in {"/agents"}: return "agent_run"
         if path in {"/integrations"}: return "integration_configure"
         if path.startswith("/workflows"): return "workspace_read"
+        if path == "/entity/candidates": return "brain_propose"
         if path in {"/knowledge-health", "/memory-proposals", "/search", "/entity", "/history", "/neighbors", "/sources", "/recent", "/brief"}: return "brain_read"
         if path == "/dashboard/brain": return "brain_read"
         return "workspace_read"
@@ -51,6 +52,7 @@ def _route_capability(path: str, method: str) -> str:
     if path.startswith("/automations"): return "automation_manage"
     if path == "/memory-proposals/review": return "brain_promote"
     if path in {"/brain/promote", "/brain/conflicts/resolve"}: return "brain_promote"
+    if path == "/brain/propose": return "brain_propose"
     if path in {"/memory-proposals", "/remember"}: return "brain_propose"
     if path in {"/people", "/workspace-memberships"}: return "people_manage"
     if path in {"/clients/roster", "/meetings/responsibilities"} and method == "POST": return "people_manage"
@@ -90,6 +92,13 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._json(200, bundle.to_dict())
                 return
+            if parsed.path == "/entity/candidates":
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, {"candidates": self.os.brain_ops.entity_resolution_candidates(
+                    scoped.organization_id, workspace_id, scoped, _need(params, "name"), _int(params.get("limit", "8"), "limit")
+                )}); return
             if parsed.path == "/entity":
                 self._json(
                     200,
@@ -543,6 +552,19 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 else:
                     result = self.os.brain_ops.brain_promote_fact(scoped, proposal_id, action)
                 self._json(200, result); return
+            if parsed.path == "/brain/propose":
+                assert identity is not None
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                result = self.os.brain_ops.brain_propose(
+                    scoped.organization_id, workspace_id, scoped, _need(payload, "kind"),
+                    [str(item) for item in payload.get("candidate_entity_ids", [])],
+                    float(payload.get("score", 0.0)), _need(payload, "rationale"),
+                    _need(payload, "evidence"), _optional_str(payload.get("alias")),
+                    _optional_str(payload.get("source_id")), _optional_str(payload.get("target_id")),
+                    payload.get("evidence_refs") or {},
+                )
+                self._json(201, result); return
             if parsed.path == "/brain/conflicts/resolve":
                 assert identity is not None
                 workspace_id = _need(payload, "workspace_id")

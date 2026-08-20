@@ -5,7 +5,7 @@ McpToolRouter is transport-neutral and requires a trusted
 and legacy actor arguments are checked against that identity before any service
 lookup. It exposes:
 
-- brain.search, brain.entity, brain.history, brain.neighbors, brain.sources, brain.recent
+- brain.search, brain.entity, brain.entity.candidates, brain.history, brain.neighbors, brain.sources, brain.recent
 - brain.read, brain.health
 - brain.propose (requires `brain_propose`), brain.promote (requires `brain_promote`), and brain.resolve_conflict (requires `brain_promote`)
 - clients.list, clients.brief, clients.health, clients.roster.get, clients.roster.create
@@ -27,7 +27,7 @@ lookup. It exposes:
 - integrations.verify, integrations.sync
 
 The original short tool names remain internal aliases for the same handlers. Brain mutation tools use explicit proposal/promotion capabilities; they never fall back to `brain_read`. Proposer, reviewer, organization, person, workspace, and actor identity are derived or checked from the authenticated identity. Permissions are enforced by the service layer, not by tool naming.
-`brain.read` returns the scoped canonical Brain view; `brain.health` returns its sanitized counts and provider-health subset. Both require `brain_read`, accept optional `as_of`, and never expose provider error details. Fact results from search, entity, and history include canonical `effective_state`; history and neighbors accept the same temporal fence.
+`brain.read` returns the scoped canonical Brain view; `brain.health` returns its sanitized counts and provider-health subset. Both require `brain_read`, accept optional `as_of`, and never expose provider error details. `brain.entity.candidates` requires `brain_propose`; it returns only visible, citeable deterministic candidates and never creates a proposal or merge. Fact results from search, entity, and history include canonical `effective_state`; history and neighbors accept the same temporal fence.
 
 The graph provider is local by default. An explicitly configured Graphiti/Neo4j
 projection is queried only for full-workspace source access; partial ACLs skip

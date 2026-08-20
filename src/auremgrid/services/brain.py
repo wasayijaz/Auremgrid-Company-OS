@@ -91,6 +91,11 @@ def normalize_text(value: str) -> str:
     return " ".join(value.lower().split())
 
 
+# Extraction can establish a strong but still non-human claim.  Promotion and
+# conflict resolution remain the only paths to ``verified``.
+HIGH_CONFIDENCE_THRESHOLD = 0.95
+
+
 class CompanyOS:
     def __init__(
         self,
@@ -741,9 +746,12 @@ class CompanyOS:
                 self.store.create_fact(fact)
                 scope = self.company.workspace_scope(source.workspace_id)
                 if scope is not None:
+                    initial_state = "conflicted" if fact.conflict_group else (
+                        "high_confidence" if fact.confidence >= HIGH_CONFIDENCE_THRESHOLD else "inferred"
+                    )
                     self.brain_ops._state_event(
                         scope["organization_id"], source.workspace_id, "fact", fact.id,
-                        "conflicted" if fact.conflict_group else "inferred",
+                        initial_state,
                         "incompatible current observation" if fact.conflict_group else "deterministic extraction",
                         source.id, actor.id, fact.valid_from, fact.valid_until,
                     )
