@@ -83,17 +83,36 @@ class WorkflowOperations:
             if cached is not None:
                 return cached["response"]
 
-        snapshot = self._normalize_template(template)
         now = _now()
         now_text = now.isoformat()
+        snapshot = self._normalize_template(template)
+        # Roster effective timestamps retain microsecond precision; use an
+        # untruncated clock for selection so a roster created moments earlier
+        # is active for this run.
+        roster = self._active_client_roster(organization_id, workspace_id, datetime.now(timezone.utc).isoformat())
+        if roster is not None:
+            self._resolve_roster_assignments(snapshot, roster)
+            snapshot["client_roster_id"] = roster["id"]
+            snapshot["client_roster_version"] = roster["version"]
+        for stage in snapshot["stages"]:
+            # Internal normalization marker; do not expose it in persisted
+            # snapshots or alter the legacy no-roster shape.
+            stage.pop("handoff_structured", None)
         due_text = _iso(due_at)
         escalation_at = self._escalation_at(now, due_at, sla_minutes)
         with self.conn:
+            definition_version_key = snapshot["version"]
+            if roster is not None:
+                # A roster assignment is part of the immutable definition
+                # snapshot. Scope the stored definition version by roster so
+                # a later roster can produce a new run without mutating or
+                # conflicting with the prior version.
+                definition_version_key = f"{snapshot['version']}@client-roster-{roster['id']}"
             definition, definition_version = self.repo.save_definition_version(
                 organization_id,
                 snapshot["key"],
                 snapshot["name"],
-                snapshot["version"],
+                definition_version_key,
                 snapshot,
                 person_id,
                 now_text,
@@ -909,6 +928,10 @@ class WorkflowOperations:
             handoff_value = stage.get("handoff_to")
             handoff = _obj(handoff_value) if isinstance(handoff_value, dict) or hasattr(handoff_value, "to_dict") or is_dataclass(handoff_value) else {}
             handoff_target = stage.get("handoff_target")
+            # Legacy handoff_target is opaque free text. Keep it for existing
+            # behavior, but do not use it to infer a roster assignee.
+            structured_handoff_wing = handoff.get("wing") or stage.get("handoff_to_wing")
+            structured_handoff_role = handoff.get("role") or stage.get("handoff_to_role")
             stage_key = _required_text(stage.get("key") or stage.get("id") or stage.get("slug"), "stage key")
             if stage_key in seen:
                 raise ValidationError("workflow stage keys must be unique")
@@ -963,6 +986,7 @@ class WorkflowOperations:
                     "handoff_to_wing": handoff_to_wing,
                     "handoff_to_role": handoff_to_role,
                     "handoff_to_person_id": handoff_to_person_id,
+                    "handoff_structured": bool(structured_handoff_wing and structured_handoff_role),
                     "handoff_contract": handoff_contract,
                     "on_reject_stage_key": on_reject_stage_key,
                     "due_at": _iso(stage.get("due_at") or stage.get("deadline")),
@@ -977,6 +1001,102 @@ class WorkflowOperations:
             for dependency in stage["dependencies"]
         ]
         return {"key": key, "name": name, "version": version, "stages": stages, "edges": edges}
+
+    def _active_client_roster(
+        self, organization_id: str, workspace_id: str | None, as_of: str
+    ) -> dict[str, Any] | None:
+        """Return the latest effective roster for a client workspace, if any."""
+        if not workspace_id:
+            return None
+        row = self.conn.execute(
+            """
+            SELECT * FROM client_account_rosters
+            WHERE organization_id=? AND workspace_id=? AND effective_at<=?
+            ORDER BY effective_at DESC, created_at DESC, id DESC LIMIT 1
+            """,
+            (organization_id, workspace_id, as_of),
+        ).fetchone()
+        if row is None:
+            return None
+        row_dict = dict(row)
+        version = row_dict["version"]
+        roles = [
+            dict(item)
+            for item in self.conn.execute(
+                """
+                SELECT id, roster_id, organization_id, workspace_id, role_key, wing, person_id
+                FROM client_account_roster_roles WHERE roster_id=?
+                ORDER BY role_key, wing, id
+                """,
+                (row_dict["id"],),
+            ).fetchall()
+        ]
+        return {"id": row_dict["id"], "version": version, "roles": roles}
+
+    @staticmethod
+    def _roster_role_key(label: Any) -> str:
+        text = "" if label is None else str(label).strip().casefold()
+        if "account" in text:
+            return "account_lead" if "lead" in text else "account_executive"
+        if "lead" in text:
+            return "wing_lead"
+        return "wing_executive"
+
+    @staticmethod
+    def _wing_key(value: Any) -> str:
+        return "" if value is None else str(value).strip().casefold()
+
+    def _matching_roster_rows(
+        self, roster: dict[str, Any], role_label: Any, wing: Any
+    ) -> list[dict[str, Any]]:
+        role_key = self._roster_role_key(role_label)
+        rows = [row for row in roster["roles"] if row.get("role_key") == role_key]
+        # Account roles are account-wide and intentionally have no wing.
+        if role_key not in {"account_lead", "account_executive"}:
+            wing_key = self._wing_key(wing)
+            rows = [row for row in rows if self._wing_key(row.get("wing")) == wing_key]
+        return rows
+
+    def _resolve_roster_assignments(self, snapshot: dict[str, Any], roster: dict[str, Any]) -> None:
+        """Resolve missing stage/handoff people against one immutable roster.
+
+        Every failure occurs before definition/run persistence, preserving the
+        all-or-nothing create_run contract.
+        """
+        for stage in snapshot["stages"]:
+            matches = self._matching_roster_rows(roster, stage["assignee_role"], stage["assignee_wing"])
+            explicit = stage.get("assignee_person_id")
+            if explicit:
+                if len(matches) != 1 or matches[0]["person_id"] != explicit:
+                    raise ValidationError(
+                        f"explicit assignee for stage {stage['key']} does not match active client roster"
+                    )
+            else:
+                if len(matches) != 1:
+                    raise ValidationError(
+                        f"active client roster has {len(matches)} matches for stage {stage['key']}"
+                    )
+                stage["assignee_person_id"] = matches[0]["person_id"]
+
+            # Only structured handoffs can be roster-resolved. Opaque legacy
+            # handoff_target values remain untouched and never drive guessing.
+            if stage.get("handoff_structured") and not stage.get("handoff_to_person_id"):
+                handoff_matches = self._matching_roster_rows(
+                    roster, stage.get("handoff_to_role"), stage.get("handoff_to_wing")
+                )
+                if len(handoff_matches) != 1:
+                    raise ValidationError(
+                        f"active client roster has {len(handoff_matches)} matches for handoff from stage {stage['key']}"
+                    )
+                stage["handoff_to_person_id"] = handoff_matches[0]["person_id"]
+            elif stage.get("handoff_structured") and stage.get("handoff_to_person_id"):
+                handoff_matches = self._matching_roster_rows(
+                    roster, stage.get("handoff_to_role"), stage.get("handoff_to_wing")
+                )
+                if len(handoff_matches) != 1 or handoff_matches[0]["person_id"] != stage["handoff_to_person_id"]:
+                    raise ValidationError(
+                        f"explicit handoff person from stage {stage['key']} does not match active client roster"
+                    )
 
     def _validate_dependencies(self, stages: list[dict[str, Any]]) -> None:
         stage_keys = {stage["key"] for stage in stages}

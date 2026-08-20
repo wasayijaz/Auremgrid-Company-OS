@@ -8,6 +8,37 @@ from auremgrid.domain.models import iso
 
 
 @dataclass(frozen=True)
+class ClientAccountRosterRole:
+    id: str; roster_id: str; organization_id: str; workspace_id: str; role_key: str
+    wing: str | None; person_id: str; created_at: datetime
+    def to_dict(self) -> dict[str, Any]:
+        return {**self.__dict__, "created_at": iso(self.created_at)}
+
+
+@dataclass(frozen=True)
+class ClientAccountRoster:
+    id: str; organization_id: str; workspace_id: str; effective_at: datetime
+    version: int; created_at: datetime; created_by_person_id: str; note: str
+    roles: tuple[ClientAccountRosterRole, ...] = ()
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **self.__dict__,
+            "effective_at": iso(self.effective_at),
+            "created_at": iso(self.created_at),
+            "roles": [role.to_dict() for role in self.roles],
+        }
+
+
+@dataclass(frozen=True)
+class MeetingResponsibilities:
+    meeting_id: str; roster_id: str | None; facilitator_person_id: str | None
+    note_taker_person_id: str | None; source: dict[str, str | None]
+    event_id: str | None = None; event_ids: dict[str, str | None] | None = None
+    def to_dict(self) -> dict[str, Any]:
+        return {**self.__dict__, "event_ids": self.event_ids or {"facilitator": None, "note_taker": None}}
+
+
+@dataclass(frozen=True)
 class Signal:
     id: str; organization_id: str; workspace_id: str; type: str; source_type: str
     source_id: str | None; evidence: str; confidence: float; classification: str | None

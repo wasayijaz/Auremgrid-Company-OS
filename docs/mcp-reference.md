@@ -7,11 +7,11 @@ lookup. It exposes:
 
 - brain.search, brain.entity, brain.history, brain.neighbors, brain.sources, brain.recent
 - brain.propose (requires `brain_propose`), brain.promote (requires `brain_promote`), and brain.resolve_conflict (requires `brain_promote`)
-- clients.list, clients.brief, clients.health
+- clients.list, clients.brief, clients.health, clients.roster.get, clients.roster.create
 - projects.list, projects.get
 - work.list, work.create, work.assign, work.update, work.review
 - decisions.list, decisions.create
-- meetings.list, meetings.get
+- meetings.list, meetings.get, meetings.responsibilities.get, meetings.responsibilities.set
 - campaigns.list, campaigns.get, campaigns.performance
 - people.list, people.capacity
 - risks.list, opportunities.list
@@ -26,6 +26,8 @@ lookup. It exposes:
 - integrations.verify, integrations.sync
 
 The original short tool names remain internal aliases for the same handlers. Brain mutation tools use explicit proposal/promotion capabilities; they never fall back to `brain_read`. Proposer, reviewer, organization, person, workspace, and actor identity are derived or checked from the authenticated identity. Permissions are enforced by the service layer, not by tool naming.
+Roster and meeting responsibility reads are workspace-scoped; roster creation and responsibility setting require `people_manage`. Caller identity is derived from the authenticated identity, and cross-workspace requests are rejected without disclosing records.
+
 Connector sync enqueues a durable job. Credential binding accepts only an
 external `env:` reference; resolved credential material never enters MCP
 arguments, results, jobs, or the ledger.

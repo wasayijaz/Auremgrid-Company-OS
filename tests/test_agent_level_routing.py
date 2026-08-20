@@ -196,7 +196,7 @@ class AgentLevelRoutingTests(unittest.TestCase):
                 task_columns = {
                     row["name"] for row in second.store.conn.execute("PRAGMA table_info(agent_tasks)").fetchall()
                 }
-                self.assertEqual(second.store.schema_version, 19)
+                self.assertEqual(second.store.schema_version, 20)
                 self.assertTrue({"level", "capability_tags"}.issubset(agent_columns))
                 self.assertTrue(
                     {
@@ -229,7 +229,7 @@ class AgentLevelRoutingTests(unittest.TestCase):
 
             upgraded = CompanyOS(path)
             try:
-                self.assertEqual(upgraded.store.schema_version, 19)
+                self.assertEqual(upgraded.store.schema_version, 20)
                 rows = upgraded.store.conn.execute(
                     """SELECT a.id,a.name,a.level,a.capability_tags,r.name role_name
                     FROM agents a JOIN agent_roles r ON r.id=a.role_id

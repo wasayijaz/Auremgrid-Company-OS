@@ -52,6 +52,7 @@ def _route_capability(path: str, method: str) -> str:
     if path in {"/brain/promote", "/brain/conflicts/resolve"}: return "brain_promote"
     if path in {"/memory-proposals", "/remember"}: return "brain_propose"
     if path in {"/people", "/workspace-memberships"}: return "people_manage"
+    if path in {"/clients/roster", "/meetings/responsibilities"} and method == "POST": return "people_manage"
     if path in {"/organizations", "/workspaces"}: return "organization_manage"
     return "workspace_write"
 
@@ -176,6 +177,23 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 items = self.os.company.list_reviews(workspace_id, params.get("status"))
                 self._json(200, {"reviews": [item.to_dict() for item in items]})
                 return
+            if parsed.path == "/clients/roster":
+                organization_id, workspace_id, person_id = _need(params, "organization_id"), _need(params, "workspace_id"), _need(params, "person_id")
+                self.os._require_person_access(organization_id, workspace_id, person_id)
+                result = self.os.client_ops.get_client_roster(
+                    organization_id, workspace_id, person_id, _optional_str(params.get("roster_id")),
+                    as_of=_optional_dt(params.get("as_of")),
+                )
+                if result is None:
+                    raise NotFoundError("client roster not found")
+                self._json(200, result); return
+            if parsed.path == "/meetings/responsibilities":
+                organization_id, workspace_id, person_id = _need(params, "organization_id"), _need(params, "workspace_id"), _need(params, "person_id")
+                self.os._require_person_access(organization_id, workspace_id, person_id)
+                self._json(200, self.os.client_ops.get_meeting_responsibilities(
+                    organization_id, workspace_id, person_id, _need(params, "meeting_id"),
+                    as_of=_optional_dt(params.get("as_of")),
+                )); return
             if parsed.path == "/decisions":
                 organization_id, person_id = _need(params, "organization_id"), _need(params, "person_id")
                 workspace_id = params.get("workspace_id")
@@ -382,6 +400,19 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._json(201, item.to_dict())
                 return
+            if parsed.path == "/clients/roster":
+                result = self.os.client_ops.create_client_roster(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"), _need(payload, "person_id"),
+                    payload.get("roles") or [], _optional_str(payload.get("effective_at")), str(payload.get("note", "")),
+                )
+                self._json(201, result); return
+            if parsed.path == "/meetings/responsibilities":
+                result = self.os.client_ops.set_meeting_responsibilities(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"), _need(payload, "person_id"),
+                    _need(payload, "meeting_id"), facilitator_person_id=_optional_str(payload.get("facilitator_person_id")),
+                    note_taker_person_id=_optional_str(payload.get("note_taker_person_id")), reason=str(payload.get("reason", "manual")),
+                )
+                self._json(200, result); return
             if parsed.path == "/reviews/decide":
                 item = self.os.decide_review(
                     _need(payload, "organization_id"), _need(payload, "workspace_id"),

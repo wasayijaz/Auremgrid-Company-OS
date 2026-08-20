@@ -1752,6 +1752,154 @@ MIGRATIONS = (
             SELECT RAISE(ABORT,'agent level overrides are append-only'); END;
         """,
     ),
+    Migration(
+        20,
+        "client_account_rosters",
+        """
+        CREATE TABLE IF NOT EXISTS client_account_rosters (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            effective_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by_person_id TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            UNIQUE(workspace_id,version),
+            UNIQUE(workspace_id,effective_at),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(created_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_client_account_rosters_lookup
+            ON client_account_rosters(organization_id,workspace_id,effective_at DESC,created_at DESC,id DESC);
+        CREATE TABLE IF NOT EXISTS client_account_roster_roles (
+            id TEXT PRIMARY KEY,
+            roster_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            role_key TEXT NOT NULL CHECK(role_key IN (
+                'client_success_dri','client_success_backup','account_lead','account_executive',
+                'wing_lead','wing_executive','cadence_owner','escalation_owner',
+                'default_meeting_facilitator','default_meeting_note_taker'
+            )),
+            wing TEXT,
+            person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(roster_id) REFERENCES client_account_rosters(id),
+            FOREIGN KEY(person_id) REFERENCES people(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_client_account_roster_role_singleton
+            ON client_account_roster_roles(roster_id,role_key,COALESCE(wing,''));
+        CREATE INDEX IF NOT EXISTS idx_client_account_roster_roles_person
+            ON client_account_roster_roles(organization_id,workspace_id,person_id);
+        CREATE TABLE IF NOT EXISTS meeting_responsibility_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            meeting_id TEXT NOT NULL,
+            event_sequence INTEGER NOT NULL CHECK(event_sequence > 0),
+            roster_id TEXT,
+            facilitator_person_id TEXT,
+            note_taker_person_id TEXT,
+            reason TEXT NOT NULL,
+            created_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(meeting_id) REFERENCES meetings(id),
+            FOREIGN KEY(roster_id) REFERENCES client_account_rosters(id),
+            FOREIGN KEY(facilitator_person_id) REFERENCES people(id),
+            FOREIGN KEY(note_taker_person_id) REFERENCES people(id),
+            FOREIGN KEY(created_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_meeting_responsibility_events_lookup
+            ON meeting_responsibility_events(organization_id,workspace_id,meeting_id,created_at DESC,event_sequence DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_meeting_responsibility_events_sequence
+            ON meeting_responsibility_events(meeting_id,event_sequence);
+        CREATE TRIGGER IF NOT EXISTS client_account_rosters_client_workspace BEFORE INSERT ON client_account_rosters BEGIN
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM workspace_organization
+                WHERE workspace_id=NEW.workspace_id AND organization_id=NEW.organization_id AND kind='client'
+            ) THEN RAISE(ABORT,'client roster workspace must be a client workspace in the organization') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM people p JOIN workspace_memberships wm ON wm.person_id=p.id
+                WHERE p.id=NEW.created_by_person_id AND p.organization_id=NEW.organization_id
+                  AND p.status='active' AND wm.workspace_id=NEW.workspace_id
+            ) THEN RAISE(ABORT,'client roster creator must be an active workspace member') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS client_account_roster_roles_valid_insert BEFORE INSERT ON client_account_roster_roles BEGIN
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM client_account_rosters r
+                WHERE r.id=NEW.roster_id AND r.organization_id=NEW.organization_id AND r.workspace_id=NEW.workspace_id
+            ) THEN RAISE(ABORT,'client roster role scope mismatch') END;
+            SELECT CASE WHEN NEW.role_key IN ('wing_lead','wing_executive')
+                AND (NEW.wing IS NULL OR TRIM(NEW.wing)='')
+                THEN RAISE(ABORT,'wing is required for wing roster roles') END;
+            SELECT CASE WHEN NEW.role_key NOT IN ('wing_lead','wing_executive')
+                AND NEW.wing IS NOT NULL
+                THEN RAISE(ABORT,'wing is only valid for wing roster roles') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM people p JOIN workspace_memberships wm ON wm.person_id=p.id
+                WHERE p.id=NEW.person_id AND p.organization_id=NEW.organization_id
+                  AND p.status='active' AND wm.workspace_id=NEW.workspace_id
+            ) THEN RAISE(ABORT,'roster role person must be an active workspace member in the organization') END;
+            SELECT CASE WHEN NEW.role_key='client_success_backup' AND EXISTS (
+                SELECT 1 FROM client_account_roster_roles existing
+                WHERE existing.roster_id=NEW.roster_id
+                  AND existing.role_key='client_success_dri'
+                  AND existing.person_id=NEW.person_id
+            ) THEN RAISE(ABORT,'client success DRI and backup must be distinct') END;
+            SELECT CASE WHEN NEW.role_key='client_success_dri' AND EXISTS (
+                SELECT 1 FROM client_account_roster_roles existing
+                WHERE existing.roster_id=NEW.roster_id
+                  AND existing.role_key='client_success_backup'
+                  AND existing.person_id=NEW.person_id
+            ) THEN RAISE(ABORT,'client success DRI and backup must be distinct') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS meeting_responsibility_events_valid_insert BEFORE INSERT ON meeting_responsibility_events BEGIN
+            SELECT CASE WHEN NEW.event_sequence != COALESCE((
+                SELECT MAX(event_sequence) FROM meeting_responsibility_events
+                WHERE meeting_id=NEW.meeting_id
+            ),0)+1 THEN RAISE(ABORT,'meeting responsibility event sequence is not monotonic') END;
+            SELECT CASE WHEN NEW.facilitator_person_id IS NULL AND NEW.note_taker_person_id IS NULL
+                THEN RAISE(ABORT,'meeting responsibility event must name at least one person') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM meetings
+                WHERE id=NEW.meeting_id AND organization_id=NEW.organization_id AND workspace_id=NEW.workspace_id
+            ) THEN RAISE(ABORT,'meeting responsibility event meeting scope mismatch') END;
+            SELECT CASE WHEN NEW.roster_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM client_account_rosters
+                WHERE id=NEW.roster_id AND organization_id=NEW.organization_id AND workspace_id=NEW.workspace_id
+            ) THEN RAISE(ABORT,'meeting responsibility event roster scope mismatch') END;
+            SELECT CASE WHEN NEW.facilitator_person_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM people p JOIN workspace_memberships wm ON wm.person_id=p.id
+                WHERE p.id=NEW.facilitator_person_id AND p.organization_id=NEW.organization_id
+                  AND p.status='active' AND wm.workspace_id=NEW.workspace_id
+            ) THEN RAISE(ABORT,'meeting facilitator must be an active workspace member in the organization') END;
+            SELECT CASE WHEN NEW.note_taker_person_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM people p JOIN workspace_memberships wm ON wm.person_id=p.id
+                WHERE p.id=NEW.note_taker_person_id AND p.organization_id=NEW.organization_id
+                  AND p.status='active' AND wm.workspace_id=NEW.workspace_id
+            ) THEN RAISE(ABORT,'meeting note taker must be an active workspace member in the organization') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM people p JOIN workspace_memberships wm ON wm.person_id=p.id
+                WHERE p.id=NEW.created_by_person_id AND p.organization_id=NEW.organization_id
+                  AND p.status='active' AND wm.workspace_id=NEW.workspace_id
+            ) THEN RAISE(ABORT,'meeting responsibility actor must be an active workspace member') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS client_account_rosters_no_update BEFORE UPDATE ON client_account_rosters BEGIN
+            SELECT RAISE(ABORT,'client account rosters are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS client_account_rosters_no_delete BEFORE DELETE ON client_account_rosters BEGIN
+            SELECT RAISE(ABORT,'client account rosters are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS client_account_roster_roles_no_update BEFORE UPDATE ON client_account_roster_roles BEGIN
+            SELECT RAISE(ABORT,'client account roster roles are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS client_account_roster_roles_no_delete BEFORE DELETE ON client_account_roster_roles BEGIN
+            SELECT RAISE(ABORT,'client account roster roles are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS meeting_responsibility_events_no_update BEFORE UPDATE ON meeting_responsibility_events BEGIN
+            SELECT RAISE(ABORT,'meeting responsibility events are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS meeting_responsibility_events_no_delete BEFORE DELETE ON meeting_responsibility_events BEGIN
+            SELECT RAISE(ABORT,'meeting responsibility events are append-only'); END;
+        """,
+    ),
 )
 
 

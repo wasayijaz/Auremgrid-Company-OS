@@ -44,7 +44,11 @@ class McpToolRouter:
             {"name": "people.list", "description": "List organization people for an authorized member."},
             {"name": "clients.list", "description": "List client workspaces visible to a person."},
             {"name": "clients.health", "description": "Calculate explainable client health."},
+            {"name": "clients.roster.get", "description": "Get the identity-scoped client account roster."},
+            {"name": "clients.roster.create", "description": "Create an append-only client account roster."},
             {"name": "meetings.list", "description": "List meetings in an allowed client workspace."},
+            {"name": "meetings.responsibilities.get", "description": "Get facilitator and note-taker responsibilities for a meeting."},
+            {"name": "meetings.responsibilities.set", "description": "Set facilitator and note-taker responsibilities for a meeting."},
             {"name": "campaigns.list", "description": "List campaigns in an allowed workspace."},
             {"name": "campaigns.performance", "description": "Return sourced campaign performance or not_connected."},
             {"name": "people.capacity", "description": "Return capacity snapshots for the organization."},
@@ -89,7 +93,8 @@ class McpToolRouter:
             name=aliases.get(name,name)
             arguments = self._trusted_arguments(name, arguments)
             company_tools={"projects.list","projects.get","decisions.list","decisions.create","people.list","clients.list",
-                "clients.health","meetings.list","meetings.get","campaigns.list","campaigns.get","campaigns.performance",
+                "clients.health","clients.roster.get","clients.roster.create","meetings.list","meetings.get",
+                "meetings.responsibilities.get","meetings.responsibilities.set","campaigns.list","campaigns.get","campaigns.performance",
                 "people.capacity","risks.list","opportunities.list","agents.list","agents.runs","notifications.list","reports.generate",
                 "workflows.templates","workflows.runs.get","workflows.runs.create","workflows.stages.start",
                 "workflows.stages.complete","workflows.evidence.add","workflows.approvals.request",
@@ -317,6 +322,21 @@ class McpToolRouter:
             return {"clients":visible}
         if name == "clients.health":
             return self.os.client_ops.calculate_health(organization_id,_required(arguments,"workspace_id"),person_id).to_dict()
+        if name in {"clients.roster.get", "clients.roster.create"}:
+            workspace = _required(arguments, "workspace_id")
+            self.os._require_person_access(organization_id, workspace, person_id)
+            if name == "clients.roster.get":
+                result = self.os.client_ops.get_client_roster(
+                    organization_id, workspace, person_id, _optional_str(arguments.get("roster_id")),
+                    as_of=_optional_dt(arguments.get("as_of")),
+                )
+                if result is None:
+                    raise AuremgridError("client roster not found")
+                return result
+            return self.os.client_ops.create_client_roster(
+                organization_id, workspace, person_id, arguments.get("roles") or [],
+                _optional_str(arguments.get("effective_at")), str(arguments.get("note", "")),
+            )
         if name in {"meetings.list","meetings.get"}:
             workspace=_required(arguments,"workspace_id"); self.os._require_person_access(organization_id,workspace,person_id)
             if name.endswith(".get"):
@@ -324,6 +344,20 @@ class McpToolRouter:
                 if row is None: raise AuremgridError("meeting not found")
                 return dict(row)
             return {"meetings":[dict(r) for r in self.os.store.conn.execute("SELECT * FROM meetings WHERE workspace_id=? ORDER BY occurred_at DESC",(workspace,)).fetchall()]}
+        if name in {"meetings.responsibilities.get", "meetings.responsibilities.set"}:
+            workspace = _required(arguments, "workspace_id")
+            self.os._require_person_access(organization_id, workspace, person_id)
+            meeting_id = _required(arguments, "meeting_id")
+            if name.endswith(".get"):
+                return self.os.client_ops.get_meeting_responsibilities(
+                    organization_id, workspace, person_id, meeting_id, as_of=_optional_dt(arguments.get("as_of")),
+                )
+            return self.os.client_ops.set_meeting_responsibilities(
+                organization_id, workspace, person_id, meeting_id,
+                facilitator_person_id=_optional_str(arguments.get("facilitator_person_id")),
+                note_taker_person_id=_optional_str(arguments.get("note_taker_person_id")),
+                reason=str(arguments.get("reason", "manual")),
+            )
         if name in {"campaigns.list","campaigns.get","campaigns.performance"}:
             workspace=_required(arguments,"workspace_id"); self.os._require_person_access(organization_id,workspace,person_id)
             if name=="campaigns.list": return {"campaigns":[dict(r) for r in self.os.store.conn.execute("SELECT * FROM campaigns WHERE workspace_id=? ORDER BY updated_at DESC",(workspace,)).fetchall()]}
@@ -435,6 +469,7 @@ def _mcp_capability(name: str) -> str:
     if name in {"decisions.create"}: return "brain_promote"
     if name in {"agents.list","agents.runs"}: return "agent_run"
     if name == "reports.generate": return "workspace_write"
+    if name in {"clients.roster.create", "meetings.responsibilities.set"}: return "people_manage"
     if name in {"integrations.list","integrations.configure"}: return "integration_configure"
     if name == "integrations.credentials.bind": return "secret_bind"
     if name in {"integrations.verify","integrations.sync"}: return "integration_sync"
