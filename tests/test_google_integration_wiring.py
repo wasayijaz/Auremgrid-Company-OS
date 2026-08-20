@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os as environment
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -214,6 +215,156 @@ class GoogleIntegrationWiringTests(unittest.TestCase):
             ).fetchone()[0],
             0,
         )
+
+    def test_drive_backfill_survives_process_close_before_drain_and_promotes_gap_free_cursor(self) -> None:
+        """A process crash after durable page state must resume the same wave.
+
+        The first worker records the historical page, event, generation baseline,
+        and child task, then crashes before claiming the inbox event.  A fresh
+        CompanyOS process reopens the same file, drains the task and pending
+        event, and only then promotes the changes cursor.  This is deliberately
+        on-disk so SQLite durability and coordinator restart semantics are both
+        exercised.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/google-restart.sqlite"
+            first = CompanyOS(db_path)
+            org = first.create_organization("Agency", "org_google_restart")
+            ws = first.create_organization_workspace(org.id, "Client", "client", "ws_google_restart")
+            person = first.create_person(
+                org.id, "Owner", "owner@restart.test", role="owner", person_id="person_google_restart"
+            )
+            first.add_person_to_workspace(org.id, ws.id, person.id, "admin")
+            first.create_actor(ws.id, "Connector", "admin", "actor_google_restart")
+            _, identity = issue_identity(first, org.id, person.id, ws.id, "actor_google_restart")
+            integration = first.integrations.configure(
+                identity, "google_drive", "permission-restart",
+                {"folder:root": ws.id}, [GOOGLE_DRIVE_READ_SCOPE],
+            )
+            first.integrations.bind_credential(
+                identity, integration["id"], "Google bundle", "env:AUREMGRID_TEST_GOOGLE_WIRING",
+                ["connector:google_drive", GOOGLE_DRIVE_READ_SCOPE],
+            )
+            calls: list[tuple[str | None, str | None]] = []
+
+            def factory(mode, _source, _secret, *args):
+                if mode == "refresh":
+                    return {"access_token": "access", "scopes": [GOOGLE_DRIVE_READ_SCOPE]}
+                if mode == "verify":
+                    return {
+                        "account_id": "permission-restart", "account_name": "Drive",
+                        "granted_permissions": [GOOGLE_DRIVE_READ_SCOPE],
+                    }
+                route, workspace, cursor, runtime = args
+                task_type = runtime.get("_runtime_provider_task_type")
+                calls.append((task_type, cursor))
+                if task_type == "backfill":
+                    external_id = "restart-child"
+                    event = ConnectorSourceEvent(
+                        "restart-child:v1", external_id, "file_discovered",
+                        f"google-drive/files/{external_id}", f"https://drive.test/{external_id}",
+                        "restart child",
+                        {"file": {"id": external_id, "parents": ["root"], "mimeType": "text/plain"},
+                         "route_keys": [route], "workspace_ids": [workspace], "phase": "backfill"},
+                    )
+                    mutation = RouteLifecycleMutation(
+                        external_id, route, workspace, "upsert", "v1", "restart-child:v1"
+                    )
+                    return [event], '{"v":1,"phase":"changes","checkpoint":"after-baseline","page_token":null}', False, {
+                        "lifecycle_mutations": (mutation,), "backfill_tasks": (),
+                    }
+                external_id = "restart-root"
+                event = ConnectorSourceEvent(
+                    "restart-root:v1", external_id, "file_discovered",
+                    f"google-drive/files/{external_id}", f"https://drive.test/{external_id}",
+                    "restart root",
+                    {"file": {"id": external_id, "parents": ["root"], "mimeType": "application/vnd.google-apps.folder"},
+                     "route_keys": [route], "workspace_ids": [workspace], "phase": "backfill"},
+                )
+                mutation = RouteLifecycleMutation(
+                    external_id, route, workspace, "upsert", "v1", "restart-root:v1"
+                )
+                return [event], '{"v":1,"phase":"backfill","checkpoint":"baseline"}', True, {
+                    "lifecycle_mutations": (mutation,),
+                    "backfill_tasks": (DriveBackfillTask(route, "restart-child"),),
+                }
+
+            first.integrations.connector_factory = factory
+            with patch(
+                "auremgrid.services.integration_ops.LIVE_SOURCES",
+                frozenset({"slack", "clickup", "google_drive"}),
+            ):
+                first.integrations.verify(identity, integration["id"])
+                # Simulate an abrupt process stop immediately after the page,
+                # task, and event have committed but before inbox drain.
+                with patch.object(first.integrations.inbox, "claim_event", side_effect=RuntimeError("process stopped")):
+                    with self.assertRaises(RuntimeError):
+                        first.integrations.sync(identity, integration["id"])
+
+            account_key = first.integrations._mapping_hash("google_drive", "folder:root", ws.id)
+            task_state = first.store.conn.execute(
+                "SELECT status FROM provider_sync_tasks"
+            ).fetchall()
+            self.assertEqual([row["status"] for row in task_state], ["pending"])
+            event_state = first.store.conn.execute(
+                "SELECT status FROM connector_source_events"
+            ).fetchall()
+            self.assertEqual([row["status"] for row in event_state], ["pending"])
+            baseline = first.store.conn.execute(
+                "SELECT baseline_cursor FROM provider_sync_generations WHERE status='running'"
+            ).fetchone()["baseline_cursor"]
+            self.assertEqual(json.loads(baseline)["checkpoint"], "baseline")
+            self.assertIsNone(first.store.conn.execute("SELECT cursor_value FROM connector_cursors").fetchone())
+            first.close()
+
+            second = CompanyOS(db_path)
+            try:
+                _, resumed_identity = issue_identity(second, org.id, person.id, ws.id, "actor_google_restart")
+                resumed_integration = second.integrations.get(resumed_identity, integration["id"])
+                second.integrations.connector_factory = factory
+                with patch(
+                    "auremgrid.services.integration_ops.LIVE_SOURCES",
+                    frozenset({"slack", "clickup", "google_drive"}),
+                ):
+                    result = second.integrations.sync(resumed_identity, resumed_integration["id"])
+                self.assertEqual(result["status"], "completed")
+                self.assertFalse(result["backfill_remaining"])
+                cursor = second.store.conn.execute(
+                    "SELECT cursor_value FROM connector_cursors WHERE connector='google_drive'"
+                ).fetchone()["cursor_value"]
+                self.assertEqual(json.loads(cursor)["checkpoint"], "after-baseline")
+                self.assertEqual(
+                    second.store.conn.execute(
+                        "SELECT COUNT(*) FROM provider_sync_tasks WHERE status!='completed'"
+                    ).fetchone()[0],
+                    0,
+                )
+                self.assertEqual(
+                    second.store.conn.execute(
+                        "SELECT status FROM provider_sync_generations"
+                    ).fetchone()[0],
+                    "completed",
+                )
+                source_rows = second.store.conn.execute(
+                    "SELECT source_key,COUNT(*) AS n FROM sources GROUP BY source_key"
+                ).fetchall()
+                self.assertEqual({row["source_key"] for row in source_rows}, {
+                    "google-drive/files/restart-root", "google-drive/files/restart-child"
+                })
+                self.assertTrue(all(row["n"] == 1 for row in source_rows))
+                versions = second.store.conn.execute(
+                    "SELECT external_id,provider_version FROM provider_object_routes ORDER BY external_id"
+                ).fetchall()
+                self.assertEqual(
+                    [(row["external_id"], row["provider_version"]) for row in versions],
+                    [("restart-child", "v1"), ("restart-root", "v1")],
+                )
+                self.assertEqual(calls[0][0], None)
+                self.assertEqual(calls[-1][0], "backfill")
+                self.assertEqual(json.loads(baseline)["checkpoint"], "baseline")
+                self.assertEqual(account_key, second.integrations._mapping_hash("google_drive", "folder:root", ws.id))
+            finally:
+                second.close()
 
     def test_drive_reconciliation_task_restarts_without_cursor_promotion(self) -> None:
         integration = self.os.integrations.configure(

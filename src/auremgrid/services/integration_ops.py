@@ -423,6 +423,26 @@ class IntegrationOperations:
                         )
                         if event is None:
                             break
+                        # A restarted worker may claim an older pending event
+                        # while draining a newly-recorded provider page.  Use
+                        # the batch that actually owns this event's staged
+                        # lifecycle mutation; binding/applying against the
+                        # current page batch would reject the event and leave
+                        # the durable backfill wave stuck.
+                        event_batch = self.conn.execute(
+                            """SELECT link.batch_id
+                               FROM connector_batch_events link
+                               LEFT JOIN provider_route_mutation_staging mutation
+                                 ON mutation.batch_id=link.batch_id AND mutation.event_id=link.event_id
+                               WHERE link.event_id=?
+                               ORDER BY CASE WHEN mutation.id IS NULL THEN 1 ELSE 0 END,
+                                        link.rowid
+                               LIMIT 1""",
+                            (event["id"],),
+                        ).fetchone()
+                        if event_batch is None:
+                            raise ValidationError("connector event has no durable ingest batch")
+                        event_batch_id = event_batch["batch_id"]
                         try:
                             with self.os.store.atomic(immediate=True):
                                 self.inbox._assert_stream_fence(
@@ -434,7 +454,7 @@ class IntegrationOperations:
                                 staged = self.conn.execute(
                                     """SELECT operation FROM provider_route_mutation_staging
                                     WHERE batch_id=? AND event_dedupe_key=?""",
-                                    (batch["id"], event["dedupe_key"]),
+                                    (event_batch_id, event["dedupe_key"]),
                                 ).fetchall()
                                 activates = any(row["operation"] == "activate" for row in staged)
                                 if activates or not self._uses_provider_lifecycle(integration["source"]):
@@ -458,17 +478,17 @@ class IntegrationOperations:
                                     )
                                     if result is not None:
                                         self.os.store.bind_provider_event_source(
-                                            batch["id"], event["dedupe_key"], workspace_id,
+                                            event_batch_id, event["dedupe_key"], workspace_id,
                                             result.source.id, fence,
                                         )
                                     self.os.store.apply_provider_event_mutations(
-                                        batch["id"], event["dedupe_key"], fence
+                                        event_batch_id, event["dedupe_key"], fence
                                     )
                                     if generation is not None:
                                         activated = self.conn.execute(
                                             """SELECT route_key FROM provider_route_mutation_staging
                                             WHERE batch_id=? AND event_dedupe_key=? AND operation='activate'""",
-                                            (batch["id"], event["dedupe_key"]),
+                                            (event_batch_id, event["dedupe_key"]),
                                         ).fetchall()
                                         for row in activated:
                                             self.os.store.mark_provider_object_seen(
