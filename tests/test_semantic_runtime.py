@@ -157,8 +157,8 @@ class SemanticRuntimeTests(unittest.TestCase):
                     return {}
 
             class FakeOS:
-                def __init__(self, db, *, embedding_provider):
-                    captured.append((db, embedding_provider))
+                def __init__(self, db, *, embedding_provider, graph_projection):
+                    captured.append((db, embedding_provider, graph_projection))
 
                 def seed_demo(self):
                     return None
@@ -180,6 +180,7 @@ class SemanticRuntimeTests(unittest.TestCase):
             self.assertEqual(provider.model, "local-mini")
             self.assertEqual(provider.version, "v7")
             self.assertEqual(provider.model_path, Path(tmp))
+            self.assertIsNone(captured[0][2])
 
     def test_cli_local_environment_config_is_opt_in_and_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

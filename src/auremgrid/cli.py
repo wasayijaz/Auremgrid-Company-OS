@@ -5,6 +5,7 @@ import json
 from os import environ
 
 from auremgrid.adapters.semantic import embedding_provider_from_config
+from auremgrid.adapters.graphiti_upstream import graph_projection_from_environment
 from auremgrid.api.http import serve
 from auremgrid.services.brain import CompanyOS
 from auremgrid.storage.backup import create_backup, restore_backup, verify_backup
@@ -36,7 +37,8 @@ def _embedding_provider(args: argparse.Namespace):
 
 def _company_os(args: argparse.Namespace) -> CompanyOS:
     provider = _embedding_provider(args)
-    return CompanyOS(args.db, embedding_provider=provider)
+    graph = graph_projection_from_environment()
+    return CompanyOS(args.db, embedding_provider=provider, graph_projection=graph)
 
 
 def main(argv: list[str] | None = None) -> int:

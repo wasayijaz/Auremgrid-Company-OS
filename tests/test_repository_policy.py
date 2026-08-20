@@ -11,6 +11,7 @@ _SKIP_DIRECTORIES = {
     ".pytest_cache",
     ".ruff_cache",
     ".venv",
+    ".uv-cache",
     "__pycache__",
     "build",
     "dist",

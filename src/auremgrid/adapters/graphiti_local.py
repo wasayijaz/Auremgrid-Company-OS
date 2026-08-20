@@ -16,6 +16,8 @@ class LocalTemporalGraph:
     """
 
     name = "graphiti-local"
+    requires_full_workspace_access = False
+    uses_current_time_search = False
 
     def __init__(self) -> None:
         self.episodes: list[dict[str, Any]] = []
@@ -23,12 +25,22 @@ class LocalTemporalGraph:
         self._active_generation: dict[str, str] = {}
         self._health: dict[str, Any] = {"status": "healthy", "generation": None, "detail": None}
 
-    def upsert_episode(self, workspace_id: str, source_id: str, content: str, observed_at: str, generation: str | None = None) -> None:
+    def upsert_episode(
+        self,
+        workspace_id: str,
+        source_id: str,
+        content: str,
+        observed_at: str,
+        generation: str | None = None,
+        document_id: str | None = None,
+        recorded_at: str | None = None,
+    ) -> None:
         observed = datetime.fromisoformat(observed_at)
         extraction = extract_claims(content, observed)
         episode = {
             "workspace_id": workspace_id, "source_id": source_id, "content": content,
-            "observed_at": observed_at, "facts": extraction.facts, "relations": extraction.relations,
+            "observed_at": observed_at, "document_id": document_id,
+            "recorded_at": recorded_at, "facts": extraction.facts, "relations": extraction.relations,
         }
         target_generation = generation or self._active_generation.get(workspace_id, "live")
         self._generations.setdefault((workspace_id, target_generation), []).append(episode)
@@ -39,7 +51,11 @@ class LocalTemporalGraph:
     def rebuild_workspace(self, generation: str, episodes: Iterable[dict[str, Any]]) -> None:
         staged: list[dict[str, Any]] = []
         for item in episodes:
-            self.upsert_episode(item["workspace_id"], item["source_id"], item["content"], item["observed_at"], generation)
+            self.upsert_episode(
+                item["workspace_id"], item["source_id"], item["content"],
+                item["observed_at"], generation, item.get("document_id"),
+                item.get("recorded_at"),
+            )
             staged.append(self._generations[(item["workspace_id"], generation)][-1])
         self._health = {"status": "building", "generation": generation, "detail": None}
 
@@ -49,6 +65,17 @@ class LocalTemporalGraph:
         self._active_generation[workspace_id] = generation
         self.episodes = [item for (ws, gen), values in self._generations.items() if self._active_generation.get(ws) == gen for item in values]
         self._health = {"status": "healthy", "generation": generation, "detail": None}
+
+    def generation_is_complete(
+        self, workspace_id: str, generation: str, episodes: Iterable[dict[str, Any]]
+    ) -> bool:
+        fields = ("source_id", "content", "observed_at", "document_id", "recorded_at")
+        expected = {tuple(item.get(field) for field in fields) for item in episodes}
+        actual = {
+            tuple(item.get(field) for field in fields)
+            for item in self._generations.get((workspace_id, generation), [])
+        }
+        return actual == expected
 
     def health(self) -> dict[str, Any]:
         return dict(self._health)

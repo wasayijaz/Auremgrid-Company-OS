@@ -342,6 +342,64 @@ class SqliteStore:
             "building_generation": building["generation"] if building else None,
         }
 
+    def get_graphiti_episode_mapping(self, episode_key: str) -> dict[str, object] | None:
+        row = self.conn.execute(
+            "SELECT * FROM graphiti_episode_mappings WHERE episode_key=?", (episode_key,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_graphiti_episode_mappings(
+        self, workspace_id: str, generation: str
+    ) -> list[dict[str, object]]:
+        return [
+            dict(row) for row in self.conn.execute(
+                """SELECT * FROM graphiti_episode_mappings
+                   WHERE workspace_id=? AND generation=? ORDER BY created_at,episode_key""",
+                (workspace_id, generation),
+            ).fetchall()
+        ]
+
+    def record_graphiti_episode_mapping(
+        self, *, episode_key: str, remote_episode_uuid: str, workspace_id: str,
+        generation: str, source_id: str, document_id: str, observed_at: str,
+        recorded_at: str, content_hash: str,
+    ) -> dict[str, object]:
+        with self.atomic(immediate=True):
+            organization = self.conn.execute(
+                "SELECT organization_id FROM workspace_organization WHERE workspace_id=?",
+                (workspace_id,),
+            ).fetchone()
+            if organization is None:
+                raise ValidationError("Graphiti episode workspace is not organization-scoped")
+            existing = self.get_graphiti_episode_mapping(episode_key)
+            expected = {
+                "remote_episode_uuid": remote_episode_uuid,
+                "organization_id": organization["organization_id"],
+                "workspace_id": workspace_id,
+                "generation": generation,
+                "source_id": source_id,
+                "document_id": document_id,
+                "observed_at": observed_at,
+                "recorded_at": recorded_at,
+                "content_hash": content_hash,
+            }
+            if existing is not None:
+                if any(existing[key] != value for key, value in expected.items()):
+                    raise ValidationError("Graphiti episode key is already mapped differently")
+                return existing
+            self.conn.execute(
+                """INSERT INTO graphiti_episode_mappings(
+                    episode_key,remote_episode_uuid,organization_id,workspace_id,generation,
+                    source_id,document_id,observed_at,recorded_at,content_hash,created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (episode_key,remote_episode_uuid,organization["organization_id"],workspace_id,
+                 generation,source_id,document_id,observed_at,recorded_at,content_hash,self.now_iso()),
+            )
+            item = self.get_graphiti_episode_mapping(episode_key)
+            if item is None:  # pragma: no cover - SQLite insert invariant
+                raise RuntimeError("Graphiti episode mapping was not persisted")
+            return item
+
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
         with self._lock:

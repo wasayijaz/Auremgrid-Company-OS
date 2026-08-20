@@ -4,7 +4,7 @@
 
 Organization is the tenant boundary. Internal and client workspaces sit beneath it; people are organization-level identities joined to any number of workspaces. The SQLite ledger uses ordered migrations. Delivery, client operations, agency systems, agents, automations, integrations, and reports all share that boundary.
 
-Disposable projections rebuild at process start from canonical documents, facts, and memories. Schema 16 adds a durable, rebuildable float32 document embedding projection and workspace-scoped vector index; schema 17 adds fenced graph projection generations; schema 18 adds append-only entity-resolution proposals/decisions, alias lifecycle events, and temporal knowledge-state events; schema 19 adds provider-neutral agent capability levels, task routing metadata, and immutable escalation audits; schema 20 adds immutable, effective-dated client account rosters and meeting responsibility events. The offline embedding implementation is explicitly a deterministic lexical fallback. A local SentenceTransformers provider is an opt-in projection adapter: its dependency and model load lazily, only an existing local directory is accepted, and its explicit provider/model/version/dimensions identity fences vector reads. Health distinguishes the intentional fallback from an unavailable configured provider; local-provider failures degrade only the semantic channel and never silently switch identity or block canonical/FTS operation.
+Disposable projections rebuild at process start from canonical documents, facts, and memories. Schema 16 adds a durable, rebuildable float32 document embedding projection and workspace-scoped vector index; schema 17 adds fenced graph projection generations; schema 18 adds append-only entity-resolution proposals/decisions, alias lifecycle events, and temporal knowledge-state events; schema 19 adds provider-neutral agent capability levels, task routing metadata, and immutable escalation audits; schema 20 adds immutable, effective-dated client account rosters and meeting responsibility events; schema 21 adds the append-only, scoped mapping between canonical graph episodes and provider-generated Graphiti UUIDs. The offline embedding implementation is explicitly a deterministic lexical fallback. A local SentenceTransformers provider is an opt-in projection adapter: its dependency and model load lazily, only an existing local directory is accepted, and its explicit provider/model/version/dimensions identity fences vector reads. Health distinguishes the intentional fallback from an unavailable configured provider; local-provider failures degrade only the semantic channel and never silently switch identity or block canonical/FTS operation.
 
 Auremgrid is built around an evidence ledger. Documents enter from sources, facts and relations are extracted into append-only observations, and query results return evidence bundles with citations.
 
@@ -52,5 +52,16 @@ The local slice uses SQLite tables for workspaces, actors, permissions, sources,
 ## Adapter Boundary
 
 Adapters may parse, enrich, embed, or rank content. They do not decide who can see data, which evidence is canonical, whether a historical record can be rewritten, or how agency work is allowed to move. Graphiti, Onyx, RAGFlow, LightRAG, Cognee, and Mem0 remain replaceable backends behind src/auremgrid/adapters.
+
+The graph projection defaults to `LocalTemporalGraph`. The optional
+`graphiti-core` adapter targets Neo4j only when explicitly enabled and fully
+configured. It uses workspace-and-generation group namespaces and a
+deterministic episode-key to provider-UUID sidecar; canonical SQLite documents remain the
+authority. The service refuses upstream graph lookup for partial source ACLs,
+and rehydrates any accepted result through canonical workspace/temporal checks.
+SQLite generation fencing controls activation: remote staging completes first,
+then the generation becomes active; restart restores complete mappings without
+rewriting episodes and rebuilds incomplete generations from canonical evidence. An unconfigured, missing, or failed provider is reported
+as unavailable/degraded and does not block canonical, FTS, or semantic reads.
 
 

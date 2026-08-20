@@ -37,3 +37,34 @@ a model load error report semantic health as degraded while startup, canonical
 records, and full-text retrieval continue working. Changing model version or
 dimensions causes the rebuildable vector projection to be regenerated; it does
 not require a schema migration.
+
+## Optional Graphiti/Neo4j projection
+
+The local temporal graph remains the default and requires no network or extra
+package. To opt in, install `pip install -e ".[graphiti]"` and set every value
+below before starting server and worker processes:
+
+```text
+AUREMGRID_GRAPHITI_ENABLED=true
+AUREMGRID_GRAPHITI_NEO4J_URI=neo4j://...
+AUREMGRID_GRAPHITI_NEO4J_USERNAME=...
+AUREMGRID_GRAPHITI_NEO4J_PASSWORD=...
+AUREMGRID_GRAPHITI_NEO4J_DATABASE=neo4j
+AUREMGRID_GRAPHITI_LLM_MODEL=...
+AUREMGRID_GRAPHITI_SMALL_MODEL=...
+AUREMGRID_GRAPHITI_LLM_BASE_URL=https://...
+AUREMGRID_GRAPHITI_EMBEDDER_MODEL=...
+AUREMGRID_GRAPHITI_EMBEDDER_BASE_URL=https://...
+AUREMGRID_GRAPHITI_EMBEDDING_DIM=1536
+AUREMGRID_GRAPHITI_OPENAI_API_KEY=...
+```
+
+Missing or invalid configuration, an absent optional dependency, or provider
+outage leaves canonical, FTS, and semantic retrieval usable and reports graph
+health as unavailable/degraded. Credentials are not written to SQLite or
+health output. Upstream graph reads run only for full-workspace ACLs; partial
+ACL scopes deliberately skip that channel. Rebuilds stage a generation before
+SQLite activates it. Schema 21 stores the append-only mapping from deterministic
+canonical episode keys to Graphiti-generated UUIDs. Restart restores complete
+mappings without rewriting remote episodes and rebuilds incomplete generations
+from canonical evidence.

@@ -8,9 +8,13 @@ class GraphProjectionPort(Protocol):
     """Rebuildable graph projection boundary; Auremgrid remains canonical truth."""
 
     name: str
+    requires_full_workspace_access: bool
+    uses_current_time_search: bool
 
     def upsert_episode(
-        self, workspace_id: str, source_id: str, content: str, observed_at: str, generation: str | None = None
+        self, workspace_id: str, source_id: str, content: str, observed_at: str,
+        generation: str | None = None, document_id: str | None = None,
+        recorded_at: str | None = None
     ) -> None: ...
 
     def search(
@@ -25,7 +29,25 @@ class GraphProjectionPort(Protocol):
 
     def rebuild_workspace(self, generation: str, episodes: Iterable[dict[str, Any]]) -> None: ...
 
+    def generation_is_complete(
+        self, workspace_id: str, generation: str, episodes: Iterable[dict[str, Any]]
+    ) -> bool: ...
+
     def health(self) -> dict[str, Any]: ...
+
+
+class UpstreamGraphitiClient(Protocol):
+    """Async subset Auremgrid needs from an upstream Graphiti-compatible client."""
+
+    async def build_indices_and_constraints(self) -> None: ...
+
+    async def add_episode(self, **kwargs: Any) -> Any: ...
+
+    async def search(self, **kwargs: Any) -> Any: ...
+
+    async def find_episode_by_name(self, name: str, group_id: str) -> Any: ...
+
+    async def close(self) -> None: ...
 
 
 class GraphAdapter(Protocol):

@@ -107,7 +107,10 @@ class CompanyOS:
         self.capacity = CapacityService(self.store.conn, self.company, self._require_person_access)
         self.agent_ops = AgentOperations(self.store.conn, new_id, self.company, self.agency_ops, self.client_ops, self.capacity)
         self.graph: GraphProjectionPort = graph_projection or LocalTemporalGraph()
-        self.graph_health = {"status": "healthy", "generation": None, "detail": None}
+        bind_store = getattr(self.graph, "bind_store", None)
+        if bind_store is not None:
+            bind_store(self.store)
+        self.graph_health = self.graph.health()
         self.ranker = HybridRanker()
         self._embeddings: dict[str, tuple[float, ...]] = {}
         self.embedding_provider = embedding_provider or DeterministicFallbackEmbeddingProvider()
@@ -124,9 +127,174 @@ class CompanyOS:
         self.secrets = SecretBindingService(self.store.conn, new_id, EnvironmentSecretStore())
         self.integrations = IntegrationOperations(self)
         self.rebuild_projections(rebuild_graph=graph_projection is None)
+        if graph_projection is not None:
+            self._restore_durable_graph_generations()
+
+    def _restore_durable_graph_generations(self) -> None:
+        """Make an injected persistent provider serve SQLite's durable generation."""
+
+        if self.graph.health().get("status") == "unavailable":
+            self.graph_health = self.graph.health()
+            return
+        activate = getattr(self.graph, "activate_generation", None)
+        if activate is None:
+            return
+        degraded_health: dict[str, Any] | None = None
+        for row in self.store.conn.execute("SELECT id FROM workspaces").fetchall():
+            workspace_id = row["id"]
+            active_generation = self.store.graph_generation_state(workspace_id)["active_generation"]
+            documents = [
+                self.store._document_from_row(document)
+                for document in self.store.conn.execute(
+                    "SELECT * FROM documents WHERE workspace_id=? ORDER BY recorded_at, id",
+                    (workspace_id,),
+                ).fetchall()
+            ]
+            episodes = [
+                self._graph_episode(document, str(active_generation))
+                for document in documents
+            ] if active_generation else []
+            try:
+                complete = getattr(self.graph, "generation_is_complete", None)
+                if active_generation and (complete is None or complete(
+                    workspace_id, active_generation, episodes
+                )):
+                    restore = getattr(self.graph, "restore_generation", None)
+                    if restore is not None:
+                        restore(workspace_id, active_generation, episodes)
+                    activate(workspace_id, active_generation)
+                    self.graph_health = self.graph.health()
+                    continue
+                self._rebuild_graph_workspace(workspace_id, documents)
+                if self.graph_health.get("status") == "degraded" and degraded_health is None:
+                    degraded_health = dict(self.graph_health)
+            except Exception:
+                self.graph_health = {
+                    "status": "degraded",
+                    "generation": active_generation,
+                    "detail": "generation_restore_failed",
+                }
+                if degraded_health is None:
+                    degraded_health = dict(self.graph_health)
+        if degraded_health is not None:
+            mark_degraded = getattr(self.graph, "mark_degraded", None)
+            if mark_degraded is not None:
+                mark_degraded(
+                    degraded_health.get("generation"),
+                    str(degraded_health.get("detail") or "provider_failed"),
+                )
+            self.graph_health = degraded_health
+
+    def _rebuild_graph_workspace(
+        self, workspace_id: str, documents: list[Document]
+    ) -> None:
+        """Build and atomically switch one workspace's graph projection."""
+        generation = new_id("graphgen")
+        self.store.conn.commit()
+        maximum = max(
+            (f"{document.recorded_at.isoformat()}|{document.id}" for document in documents),
+            default="",
+        )
+        self.store.start_graph_generation(
+            workspace_id, generation, f"{len(documents)}|{maximum}"
+        )
+        self.store.conn.commit()
+        try:
+            self.graph.rebuild_workspace(
+                generation,
+                [self._graph_episode(document, generation) for document in documents],
+            )
+            self.store.activate_graph_generation(workspace_id, generation)
+            activate = getattr(self.graph, "activate_generation", None)
+            if activate is not None:
+                activate(workspace_id, generation)
+            self.graph_health = self.graph.health()
+        except ValidationError:
+            self.store.fail_graph_generation(workspace_id, generation, "stale_snapshot")
+            active_generation = self.store.graph_generation_state(workspace_id)["active_generation"]
+            old_episodes = [
+                self._graph_episode(document, str(active_generation)) for document in documents
+            ] if active_generation else []
+            complete = getattr(self.graph, "generation_is_complete", None)
+            old_complete = bool(active_generation) and (
+                complete is None or complete(workspace_id, active_generation, old_episodes)
+            )
+            if old_complete:
+                restore = getattr(self.graph, "restore_generation", None)
+                if restore is not None:
+                    restore(workspace_id, active_generation, old_episodes)
+                activate = getattr(self.graph, "activate_generation", None)
+                if activate is not None:
+                    activate(workspace_id, active_generation)
+                self.graph_health = {
+                    "status": "healthy", "generation": active_generation,
+                    "detail": "stale_generation",
+                }
+            else:
+                mark_degraded = getattr(self.graph, "mark_degraded", None)
+                if mark_degraded is not None:
+                    mark_degraded(active_generation, "stale_snapshot")
+                self.graph_health = {
+                    "status": "degraded", "generation": active_generation,
+                    "detail": "stale_snapshot",
+                }
+        except Exception:
+            self.store.fail_graph_generation(workspace_id, generation)
+            active_generation = self.store.graph_generation_state(workspace_id)["active_generation"]
+            activate = getattr(self.graph, "activate_generation", None)
+            if activate is not None and active_generation:
+                restore = getattr(self.graph, "restore_generation", None)
+                if restore is not None:
+                    restore(workspace_id, active_generation, [])
+                try:
+                    activate(workspace_id, active_generation)
+                except Exception:
+                    pass
+            mark_degraded = getattr(self.graph, "mark_degraded", None)
+            if mark_degraded is not None:
+                mark_degraded(active_generation, "provider_failed")
+            self.graph_health = {
+                "status": "degraded", "generation": active_generation, "detail": "provider_failed"
+            }
+
+    @staticmethod
+    def _graph_episode(document: Document, generation: str) -> dict[str, str]:
+        return {
+            "workspace_id": document.workspace_id,
+            "source_id": document.source_id,
+            "document_id": document.id,
+            "content": document.content,
+            "observed_at": document.observed_at.isoformat(),
+            "recorded_at": document.recorded_at.isoformat(),
+            "generation": generation,
+        }
+
+    def _upsert_graph_document(self, workspace_id: str, document: Document) -> None:
+        """Project one canonical document into SQLite's current graph generation."""
+
+        generation = self.store.graph_generation_state(workspace_id)["active_generation"]
+        # Persistent upstream projections are generation-scoped. Until an
+        # initial rebuild establishes that durable boundary, canonical ingest
+        # succeeds without creating an untracked remote episode.
+        if generation is None and getattr(self.graph, "uses_current_time_search", False):
+            return
+        self.graph.upsert_episode(
+            workspace_id,
+            document.source_id,
+            document.content,
+            document.observed_at.isoformat(),
+            generation=generation,
+            document_id=document.id,
+            recorded_at=document.recorded_at.isoformat(),
+        )
 
     def close(self) -> None:
-        self.store.close()
+        try:
+            close_graph = getattr(self.graph, "close", None)
+            if close_graph is not None:
+                close_graph()
+        finally:
+            self.store.close()
 
     def apply_provider_lifecycle_batch(self, batch_id: str) -> dict[str, Any]:
         """Apply staged provider memberships, then refresh disposable projections."""
@@ -194,41 +362,8 @@ class CompanyOS:
                 (ws,"healthy",len(current_documents),len(facts),utcnow().isoformat(),None))
             total_documents += len(current_documents); total_facts += len(facts)
             if rebuild_graph:
-                generation = new_id("graphgen")
-                self.store.conn.commit()
                 snapshot_documents = [document for graph_ws, document in graph_documents if graph_ws == ws]
-                maximum = max(
-                    (f"{document.recorded_at.isoformat()}|{document.id}" for document in snapshot_documents),
-                    default="",
-                )
-                snapshot_watermark = f"{len(snapshot_documents)}|{maximum}"
-                self.store.start_graph_generation(ws, generation, snapshot_watermark)
-                self.store.conn.commit()
-                try:
-                    self.graph.rebuild_workspace(
-                        generation,
-                        [
-                            {"workspace_id": ws, "source_id": document.source_id,
-                             "content": document.content, "observed_at": document.observed_at.isoformat()}
-                            for graph_ws, document in graph_documents
-                            if graph_ws == ws
-                        ],
-                    )
-                    self.store.activate_graph_generation(ws, generation)
-                    activate = getattr(self.graph, "activate_generation", None)
-                    if activate is not None:
-                        activate(ws, generation)
-                    self.graph_health = self.graph.health()
-                except ValidationError as exc:
-                    self.store.fail_graph_generation(ws, generation, "stale_snapshot")
-                    active_generation = self.store.graph_generation_state(ws)["active_generation"]
-                    activate = getattr(self.graph, "activate_generation", None)
-                    if activate is not None and active_generation:
-                        activate(ws, active_generation)
-                    self.graph_health = {"status": "healthy", "generation": active_generation, "detail": "stale_generation"}
-                except Exception:
-                    self.store.fail_graph_generation(ws, generation)
-                    self.graph_health = {"status": "degraded", "generation": None, "detail": "provider_failed"}
+                self._rebuild_graph_workspace(ws, snapshot_documents)
         # Projection-health rows above are independent of the vector generation;
         # close that write before the atomic vector replacement begins.
         self.store.conn.commit()
@@ -477,7 +612,7 @@ class CompanyOS:
                 if row is not None:
                     document = self.store._document_from_row(row)
                     try:
-                        self.graph.upsert_episode(workspace_id, existing.id, document.content, document.observed_at.isoformat())
+                        self._upsert_graph_document(workspace_id, document)
                         self.graph_health = self.graph.health()
                     except Exception:
                         self.graph_health = {"status": "degraded", "generation": None, "detail": "provider_failed"}
@@ -522,7 +657,7 @@ class CompanyOS:
             actor, source, document, extraction, lifecycle_at
         )
         try:
-            self.graph.upsert_episode(workspace_id, source.id, content, observed.isoformat())
+            self._upsert_graph_document(workspace_id, document)
             self.graph_health = self.graph.health()
         except Exception:
             # Canonical ingestion has already committed; graph projection repair
@@ -694,15 +829,38 @@ class CompanyOS:
         allowed_document_ids = self.store.allowed_document_ids(workspace_id, source_ids, as_of)
         allowed_document_id_set = set(allowed_document_ids)
         graph_status = "healthy"
+        graph_detail: str | None = None
         graph_hits = 0
         try:
             graph_state = self.store.graph_generation_state(workspace_id)
             active_graph_generation = graph_state["active_generation"]
             if not active_graph_generation:
                 raise RuntimeError("graph projection is not active")
-            for external_hit in self.graph.search(
-                workspace_id, query, source_ids, as_of=as_of, limit=limit, generation=active_graph_generation
+            all_source_ids = {
+                source.id
+                for source in self.store.allowed_sources(
+                    workspace_id, replace(actor, role="admin"), as_of=requested_as_of
+                )
+            }
+            if requested_as_of is not None and getattr(
+                self.graph, "uses_current_time_search", False
             ):
+                graph_status = "skipped"
+                graph_detail = "historical_query"
+                external_hits = []
+            elif (
+                getattr(self.graph, "requires_full_workspace_access", False)
+                and set(source_ids) != all_source_ids
+            ):
+                graph_status = "restricted"
+                graph_detail = "partial_acl"
+                external_hits: list[dict[str, Any]] = []
+            else:
+                external_hits = self.graph.search(
+                    workspace_id, query, source_ids, as_of=requested_as_of, limit=limit,
+                    generation=active_graph_generation,
+                )
+            for external_hit in external_hits:
                 source_id = external_hit.get("source_id")
                 if not isinstance(source_id, str) or source_id not in source_ids:
                     continue
@@ -860,6 +1018,8 @@ class CompanyOS:
                 "tie_break": ["score_desc", "kind_asc", "key_asc"],
             },
         }
+        if graph_detail:
+            retrieval["graph_detail"] = graph_detail
         if semantic_detail:
             retrieval["semantic_detail"] = semantic_detail
         if semantic_status == "degraded":

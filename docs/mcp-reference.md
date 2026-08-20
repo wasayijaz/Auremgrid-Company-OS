@@ -28,6 +28,12 @@ lookup. It exposes:
 
 The original short tool names remain internal aliases for the same handlers. Brain mutation tools use explicit proposal/promotion capabilities; they never fall back to `brain_read`. Proposer, reviewer, organization, person, workspace, and actor identity are derived or checked from the authenticated identity. Permissions are enforced by the service layer, not by tool naming.
 `brain.read` returns the scoped canonical Brain view; `brain.health` returns its sanitized counts and provider-health subset. Both require `brain_read`, accept optional `as_of`, and never expose provider error details. Fact results from search, entity, and history include canonical `effective_state`; history and neighbors accept the same temporal fence.
+
+The graph provider is local by default. An explicitly configured Graphiti/Neo4j
+projection is queried only for full-workspace source access; partial ACLs skip
+that channel and do not reduce canonical, FTS, or semantic retrieval. Health
+reports configured/unavailable/degraded state and generation metadata only;
+credentials, remote episode payloads, and raw provider errors never enter MCP.
 Roster and meeting responsibility reads are workspace-scoped; roster creation and responsibility setting require `people_manage`. `people.capacity` requires `week_start` (an ISO Monday), accepts optional `workspace_id` and `as_of`, and returns a derived capacity board from canonical availability, leave, work, and workflow inputs. Caller identity is derived from the authenticated identity, and cross-workspace requests are rejected without disclosing records.
 
 Connector sync enqueues a durable job. Credential binding accepts only an

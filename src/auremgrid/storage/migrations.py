@@ -1900,6 +1900,56 @@ MIGRATIONS = (
             SELECT RAISE(ABORT,'meeting responsibility events are append-only'); END;
         """,
     ),
+    Migration(
+        21,
+        "graphiti_episode_sidecar",
+        """
+        CREATE TABLE IF NOT EXISTS graphiti_episode_mappings (
+            episode_key TEXT PRIMARY KEY,
+            remote_episode_uuid TEXT NOT NULL UNIQUE,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            generation TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(source_id) REFERENCES sources(id),
+            FOREIGN KEY(document_id) REFERENCES documents(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_graphiti_episode_scope
+            ON graphiti_episode_mappings(organization_id,workspace_id,generation,source_id,document_id);
+        CREATE TRIGGER IF NOT EXISTS graphiti_episode_mappings_valid_insert
+        BEFORE INSERT ON graphiti_episode_mappings BEGIN
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM workspace_organization
+                WHERE workspace_id=NEW.workspace_id AND organization_id=NEW.organization_id
+            ) THEN RAISE(ABORT,'Graphiti episode workspace scope mismatch') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM sources
+                WHERE id=NEW.source_id AND workspace_id=NEW.workspace_id
+            ) THEN RAISE(ABORT,'Graphiti episode source scope mismatch') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM documents
+                WHERE id=NEW.document_id AND workspace_id=NEW.workspace_id AND source_id=NEW.source_id
+            ) THEN RAISE(ABORT,'Graphiti episode document scope mismatch') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM graph_projection_generations
+                WHERE workspace_id=NEW.workspace_id AND generation=NEW.generation
+            ) THEN RAISE(ABORT,'Graphiti episode generation scope mismatch') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS graphiti_episode_mappings_no_update
+        BEFORE UPDATE ON graphiti_episode_mappings BEGIN
+            SELECT RAISE(ABORT,'Graphiti episode mappings are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS graphiti_episode_mappings_no_delete
+        BEFORE DELETE ON graphiti_episode_mappings BEGIN
+            SELECT RAISE(ABORT,'Graphiti episode mappings are append-only'); END;
+        """,
+    ),
 )
 
 

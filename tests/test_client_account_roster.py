@@ -296,11 +296,11 @@ class ClientAccountRosterTests(unittest.TestCase):
             )
             first.store.conn.execute("DELETE FROM schema_migrations WHERE version=20")
             first.store.conn.commit()
-            self.assertEqual(migrate(first.store.conn), 20)
+            self.assertEqual(migrate(first.store.conn), 21)
             first.close()
             second = CompanyOS(path)
             try:
-                self.assertEqual(second.store.schema_version, 20)
+                self.assertEqual(second.store.schema_version, 21)
                 roster = second.client_ops.get_client_roster(org.id, ws.id, owner.id)
                 self.assertEqual(roster["version"], 1)
             finally:
