@@ -37,6 +37,7 @@ class WorkflowRosterAssignmentTests(unittest.TestCase):
             "sequence": 1,
             "assignee": {"wing": "STRATEGY", "role": "Team Lead"},
             "required_evidence": ["brief"],
+            "expected_duration_hours": 5,
         }
         if explicit is not None:
             first["assignee_person_id"] = explicit
@@ -98,6 +99,7 @@ class WorkflowRosterAssignmentTests(unittest.TestCase):
         self.assertEqual(stages["brief"]["handoff_to_person_id"], self.people["Creative"].id)
         self.assertEqual(run["template_snapshot"]["client_roster_id"], roster["id"])
         self.assertEqual(run["template_snapshot"]["client_roster_version"], roster["version"])
+        self.assertEqual(run["template_snapshot"]["stages"][0]["expected_duration_hours"], 5)
 
     def test_explicit_assignee_mismatch_rejects_before_any_run_write(self) -> None:
         self._create_roster()

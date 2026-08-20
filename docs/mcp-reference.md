@@ -26,7 +26,7 @@ lookup. It exposes:
 - integrations.verify, integrations.sync
 
 The original short tool names remain internal aliases for the same handlers. Brain mutation tools use explicit proposal/promotion capabilities; they never fall back to `brain_read`. Proposer, reviewer, organization, person, workspace, and actor identity are derived or checked from the authenticated identity. Permissions are enforced by the service layer, not by tool naming.
-Roster and meeting responsibility reads are workspace-scoped; roster creation and responsibility setting require `people_manage`. Caller identity is derived from the authenticated identity, and cross-workspace requests are rejected without disclosing records.
+Roster and meeting responsibility reads are workspace-scoped; roster creation and responsibility setting require `people_manage`. `people.capacity` requires `week_start` (an ISO Monday), accepts optional `workspace_id` and `as_of`, and returns a derived capacity board from canonical availability, leave, work, and workflow inputs. Caller identity is derived from the authenticated identity, and cross-workspace requests are rejected without disclosing records.
 
 Connector sync enqueues a durable job. Credential binding accepts only an
 external `env:` reference; resolved credential material never enters MCP

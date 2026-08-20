@@ -51,7 +51,7 @@ class McpToolRouter:
             {"name": "meetings.responsibilities.set", "description": "Set facilitator and note-taker responsibilities for a meeting."},
             {"name": "campaigns.list", "description": "List campaigns in an allowed workspace."},
             {"name": "campaigns.performance", "description": "Return sourced campaign performance or not_connected."},
-            {"name": "people.capacity", "description": "Return capacity snapshots for the organization."},
+            {"name": "people.capacity", "description": "Return a derived weekly capacity board for the organization."},
             {"name": "risks.list", "description": "List open client risks."},
             {"name": "opportunities.list", "description": "List client opportunities."},
             {"name": "agents.list", "description": "Return agents and recent auditable runs."},
@@ -367,8 +367,14 @@ class McpToolRouter:
             if row is None: raise AuremgridError("campaign not found")
             return dict(row)
         if name == "people.capacity":
-            if self.os.company.org_membership(organization_id,person_id) is None: raise AuremgridError("organization membership required")
-            return {"capacity":[dict(r) for r in self.os.store.conn.execute("SELECT * FROM capacity_snapshots WHERE organization_id=? ORDER BY calculated_at DESC",(organization_id,)).fetchall()]}
+            scoped_workspace = workspace_id or self.identity.workspace_id
+            return self.os.capacity.weekly_board(
+                organization_id,
+                person_id,
+                _required(arguments, "week_start"),
+                scoped_workspace,
+                as_of=_optional_dt(arguments.get("as_of")),
+            )
         if name in {"risks.list","opportunities.list"}:
             workspace=_required(arguments,"workspace_id"); self.os._require_person_access(organization_id,workspace,person_id)
             if name=="risks.list": return {"risks":self.os.client_ops.list_risks(organization_id,workspace,person_id)}

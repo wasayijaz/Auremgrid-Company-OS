@@ -24,8 +24,8 @@ def _json(value: Any) -> str:
 
 
 class AgentOperations:
-    def __init__(self, conn: Any, new_id: Callable[[str], str], company: Any, approvals: Any, client_ops: Any) -> None:
-        self.conn, self.new_id, self.company, self.approvals, self.client_ops = conn, new_id, company, approvals, client_ops
+    def __init__(self, conn: Any, new_id: Callable[[str], str], company: Any, approvals: Any, client_ops: Any, capacity: Any | None = None) -> None:
+        self.conn, self.new_id, self.company, self.approvals, self.client_ops, self.capacity = conn, new_id, company, approvals, client_ops, capacity
 
     def seed_primary_agents(self, organization_id: str, owner_person_id: str) -> list[dict[str, Any]]:
         if self.company.org_membership(organization_id, owner_person_id) is None:
@@ -595,12 +595,22 @@ class AgentOperations:
             payload["risks"] = [dict(row) for row in rows]
             citations = [{"table": "risks", "id": row["id"]} for row in rows]
         elif type == "capacity_report":
-            rows = self.conn.execute(
-                "SELECT * FROM capacity_snapshots WHERE organization_id=? ORDER BY calculated_at DESC",
-                (organization_id,),
-            ).fetchall()
-            payload["capacity"] = [dict(row) for row in rows]
-            citations = [{"table": "capacity_snapshots", "id": row["id"]} for row in rows]
+            if self.capacity is None:
+                raise ValidationError("capacity service unavailable")
+            board = self.capacity.weekly_board(organization_id, person_id, None, workspace_id)
+            payload["capacity"] = board
+            citations = [
+                {"table": "availability", "organization_id": organization_id},
+                {"table": "leave_records", "organization_id": organization_id},
+                {"table": "work_items", "organization_id": organization_id},
+                {"table": "work_versions", "organization_id": organization_id},
+                {"table": "time_entries", "organization_id": organization_id},
+                {"table": "workflow_runs", "organization_id": organization_id},
+                {"table": "workflow_stage_runs", "organization_id": organization_id},
+                {"table": "workflow_transition_history", "organization_id": organization_id},
+                {"table": "client_account_rosters", "organization_id": organization_id},
+                {"table": "client_account_roster_roles", "organization_id": organization_id},
+            ]
         elif type == "revenue_report":
             payload = self.approvals.finance_status(organization_id, person_id, workspace_id)
             citations = [{"table": "finance_connections", "organization_id": organization_id}]

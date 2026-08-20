@@ -27,6 +27,7 @@ def _route_capability(path: str, method: str) -> str:
         if path.startswith("/jobs"): return "job_manage"
         if path == "/auth/me": return "workspace_read"
         if path == "/finance": return "finance_read"
+        if path == "/capacity": return "workspace_read"
         if path in {"/agents"}: return "agent_run"
         if path in {"/integrations"}: return "integration_configure"
         if path.startswith("/workflows"): return "workspace_read"
@@ -154,6 +155,16 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 items = self.os.company.list_people(organization_id)
                 self._json(200, {"people": [item.to_dict() for item in items]})
                 return
+            if parsed.path == "/capacity":
+                assert identity is not None
+                self._json(200, self.os.capacity.weekly_board(
+                    identity.organization_id,
+                    identity.person_id,
+                    _need(params, "week_start"),
+                    _optional_str(params.get("workspace_id")),
+                    as_of=_optional_dt(params.get("as_of")),
+                ))
+                return
             if parsed.path == "/projects":
                 items = self.os.list_projects(
                     _need(params, "organization_id"), _need(params, "workspace_id"), _need(params, "person_id")
@@ -208,7 +219,10 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200, self.os.dashboard.command(_need(params,"organization_id"),_need(params,"person_id")))
                 return
             if parsed.path == "/dashboard/client":
-                self._json(200, self.os.dashboard.client_hq(_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id")))
+                assert identity is not None
+                self._json(200, self.os.dashboard.client_hq(
+                    identity, _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
+                ))
                 return
             if parsed.path == "/dashboard/module":
                 self._json(200,self.os.dashboard.module(_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id"),_need(params,"module")));return

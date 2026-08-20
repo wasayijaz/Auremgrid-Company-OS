@@ -66,9 +66,14 @@ class AgentAutomationTests(unittest.TestCase):
 
     def test_reports_cite_canonical_records(self) -> None:
         self.os.agency_ops.set_availability(self.org.id,self.owner.id,"2026-08-17",40)
-        capacity=self.os.agency_ops.calculate_capacity(self.org.id,self.owner.id,self.owner.id,"2026-08-17",20,20)
         report=self.os.agent_ops.generate_report(self.org.id,self.owner.id,"capacity_report")
-        self.assertEqual(report["citations"][0],{"table":"capacity_snapshots","id":capacity["id"]})
+        tables = {citation["table"] for citation in report["citations"]}
+        self.assertEqual(tables,{
+            "availability","leave_records","work_items","work_versions","time_entries",
+            "workflow_runs","workflow_stage_runs","workflow_transition_history",
+            "client_account_rosters","client_account_roster_roles",
+        })
+        self.assertNotIn("capacity_snapshots",tables)
 
 
 if __name__=="__main__": unittest.main()

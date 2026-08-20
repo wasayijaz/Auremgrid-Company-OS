@@ -101,13 +101,16 @@ class WorkflowOperations:
         due_text = _iso(due_at)
         escalation_at = self._escalation_at(now, due_at, sla_minutes)
         with self.conn:
-            definition_version_key = snapshot["version"]
+            # Capacity estimates are part of the immutable definition
+            # snapshot. Use a new internal version namespace so templates
+            # previously stored without estimates are never overwritten.
+            definition_version_key = f"{snapshot['version']}@capacity-v1"
             if roster is not None:
                 # A roster assignment is part of the immutable definition
                 # snapshot. Scope the stored definition version by roster so
                 # a later roster can produce a new run without mutating or
                 # conflicting with the prior version.
-                definition_version_key = f"{snapshot['version']}@client-roster-{roster['id']}"
+                definition_version_key += f"@client-roster-{roster['id']}"
             definition, definition_version = self.repo.save_definition_version(
                 organization_id,
                 snapshot["key"],
@@ -966,6 +969,13 @@ class WorkflowOperations:
             sla_hours = stage.get("sla_hours")
             if sla_hours is not None and (not isinstance(sla_hours, (int, float)) or isinstance(sla_hours, bool) or sla_hours <= 0):
                 raise ValidationError("stage sla_hours must be positive")
+            expected_duration_hours = stage.get("expected_duration_hours")
+            if expected_duration_hours is not None and (
+                not isinstance(expected_duration_hours, (int, float))
+                or isinstance(expected_duration_hours, bool)
+                or expected_duration_hours <= 0
+            ):
+                raise ValidationError("stage expected_duration_hours must be positive")
             stages.append(
                 {
                     "key": stage_key,
@@ -991,6 +1001,7 @@ class WorkflowOperations:
                     "on_reject_stage_key": on_reject_stage_key,
                     "due_at": _iso(stage.get("due_at") or stage.get("deadline")),
                     "sla_hours": sla_hours,
+                    "expected_duration_hours": expected_duration_hours,
                 }
             )
         stages.sort(key=lambda item: (item["sequence"], item["key"]))

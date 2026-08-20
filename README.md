@@ -56,7 +56,7 @@ This is an operating control plane, not a replacement for every specialist tool.
 | Projects and delivery | Projects, work hierarchy, subtasks, dependencies, comments, files, versions, time entries, reviews, approvals, forced delivery stages | Implemented |
 | Cross-wing workflows | Neutral templates, immutable definition versions/runs, readiness, evidence, gates, handoffs, SLAs, escalation, cancellation, rework | Implemented; eight representative templates |
 | Campaigns and content | Campaigns, sourced metrics, creatives, content stages, performance snapshots | Implemented; values remain unknown/not connected until sourced |
-| People and capacity | Skills, availability, leave, capacity snapshots, utilization contracts | Implemented |
+| People and capacity | Skills, availability, leave, derived weekly workload/capacity by person, account, and wing | Implemented |
 | Finance | Connection state, invoices, revenue, costs, budgets, software/AI cost records, client economics | Implemented schema and sourced records; never fabricates values |
 | Agents and automations | Agent records, scoped roles, tasks, queues, runs, tool calls, outputs, costs, traces, training-mode automations | Implemented; unattended automation remains experimental |
 | Integrations | Explicit mappings, external secret references, verification, sync runs, connector inbox/dedupe | Slack, ClickUp, Google Drive, and Gmail live read sync; Drive/Gmail use folder/drive and label mappings with redacted overlap quarantine; other providers catalog-only |
@@ -148,6 +148,8 @@ Agent work is classified into four provider-neutral capability levels. Tasks per
 ### Client account rosters (schema 20)
 
 Each client workspace can keep immutable, effective-dated account rosters for the client-success DRI and backup, account and wing leads/executives, cadence and escalation owners, and default meeting facilitator/note-taker. These business assignments never grant system permissions. New workflow runs resolve eligible roster roles once and snapshot the selected people and roster version; later roster changes affect only new runs. Meeting responsibility changes are append-only and historical reads remain available through `as_of`.
+
+The Client HQ view projects that roster into explicit accountability slots, meeting ownership, workload, and workflow readiness. Weekly capacity is derived at read time from canonical availability, approved leave, recorded time, remaining work estimates, and immutable workflow-stage estimates; it never treats a stale capacity snapshot as operational truth. Account demand and wing demand remain separate views so the system does not invent an allocation of a person's availability across clients.
 
 ### Authentication, jobs, connectors, and recovery
 

@@ -49,6 +49,7 @@ from auremgrid.adapters.stack import OpenSourceStack
 from auremgrid.services.client_ops import ClientOperations
 from auremgrid.services.agency_ops import AgencyOperations
 from auremgrid.services.agent_ops import AgentOperations
+from auremgrid.services.capacity import CapacityService
 from auremgrid.services.brain_ops import BrainOperations
 from auremgrid.services.dashboard import DashboardService
 from auremgrid.services.work_ops import WorkOperations
@@ -95,7 +96,8 @@ class CompanyOS:
         self.company = CompanyRepository(self.store.conn)
         self.client_ops = ClientOperations(self.store.conn, new_id, self._require_person_access)
         self.agency_ops = AgencyOperations(self.store.conn, new_id, self._require_person_access, self.company)
-        self.agent_ops = AgentOperations(self.store.conn, new_id, self.company, self.agency_ops, self.client_ops)
+        self.capacity = CapacityService(self.store.conn, self.company, self._require_person_access)
+        self.agent_ops = AgentOperations(self.store.conn, new_id, self.company, self.agency_ops, self.client_ops, self.capacity)
         self.graph: GraphProjectionPort = graph_projection or LocalTemporalGraph()
         self.graph_health = {"status": "healthy", "generation": None, "detail": None}
         self.ranker = HybridRanker()
