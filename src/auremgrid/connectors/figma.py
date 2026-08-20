@@ -10,6 +10,10 @@ from auremgrid.domain.errors import ValidationError
 
 FIGMA_REQUIRED_PERMISSIONS=frozenset({"current_user:read","file_metadata:read","file_content:read"})
 FIGMA_OPTIONAL_PERMISSIONS=frozenset({"file_versions:read"})
+FIGMA_MAX_FRAME_EVENTS=200
+FIGMA_MAX_FRAME_TEXT=8000
+FIGMA_MAX_FRAME_PATH_ITEMS=32
+FIGMA_FRAME_TYPES=frozenset({"FRAME","SECTION"})
 class FigmaMappingOverlap(ValidationError):
     def __init__(self,evidence_digest:str): super().__init__("Figma mapping overlap");self.evidence_digest=evidence_digest
 @dataclass(frozen=True)
@@ -63,10 +67,14 @@ class FigmaConnector:
         # change between the metadata and content requests and the event would
         # contain a snapshot newer (or older) than the cursor's version.
         p=self._get(f"https://api.figma.com/v1/files/{quote(key,safe='')}?version={quote(version,safe='')}")
-        content=json.dumps(sanitize_content(p.get("document") or {},(self.token,)),sort_keys=True,separators=(",",":"),ensure_ascii=False)
+        document=sanitize_content(p.get("document") or {},(self.token,))
+        content=json.dumps(document,sort_keys=True,separators=(",",":"),ensure_ascii=False)
         dedupe=_digest(external,version,hashlib.sha256(content.encode()).hexdigest())
-        event=ConnectorSourceEvent(dedupe,external,"file",external,f"https://www.figma.com/file/{key}",content,{"workspace_ids":[self.mappings[route]],"route_keys":[route],"file_key":key,"name":_text(p.get("name") or metadata.get("name")),"provider_version":version},_text(metadata.get("last_touched_at") or p.get("lastModified")),"application/json")
-        return FigmaPullResult((event,),_cursor(key,version),False,(RouteLifecycleMutation(external,route,self.mappings[route],"upsert",version,dedupe),))
+        payload={"workspace_ids":[self.mappings[route]],"route_keys":[route],"file_key":key,"name":_text(p.get("name") or metadata.get("name")),"provider_version":version}
+        observed=_text(metadata.get("last_touched_at") or p.get("lastModified"))
+        event=ConnectorSourceEvent(dedupe,external,"file",external,f"https://www.figma.com/file/{key}",content,payload,observed,"application/json")
+        events=(event,*_frame_events(key,version,route,self.mappings[route],document,observed))
+        return FigmaPullResult(events,_cursor(key,version),False,(RouteLifecycleMutation(external,route,self.mappings[route],"upsert",version,dedupe),))
     def _get(self,url:str)->dict[str,Any]:
         response=self.transport.request("GET",url,{"X-Figma-Token":self.token})
         try:value=response.json() if hasattr(response,"json") else response.json_body
@@ -92,3 +100,60 @@ def _cursor(key,version):return json.dumps({"v":1,"file_key":key,"provider_versi
 def _digest(*parts):return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
 def _text(value):
     text=str(value).strip() if value is not None else "";return text or None
+def _frame_events(key,version,route,workspace,document,observed):
+    events=[];seen=set()
+    for node,path in _walk_nodes(document,()):
+        if len(events)>=FIGMA_MAX_FRAME_EVENTS:break
+        if not isinstance(node,dict) or str(node.get("type") or "").upper() not in FIGMA_FRAME_TYPES:continue
+        node_id=_text(node.get("id"))
+        if not node_id or node_id in seen:continue
+        seen.add(node_id);node_type=str(node.get("type") or "").upper()
+        frame=_frame_payload(node,key,version,route,workspace,path)
+        content=json.dumps(frame,sort_keys=True,separators=(",",":"),ensure_ascii=False)
+        external=f"figma/files/{key}/nodes/{node_id}"
+        dedupe=_digest(external,version,hashlib.sha256(content.encode()).hexdigest())
+        locator=f"https://www.figma.com/file/{quote(key,safe='')}?node-id={quote(node_id,safe='')}"
+        events.append(ConnectorSourceEvent(dedupe,external,node_type.lower(),external,locator,content,frame,observed,"application/json"))
+    return tuple(events)
+def _walk_nodes(node,path):
+    if not isinstance(node,dict):return
+    current=_bounded_path((*path,{"id":_text(node.get("id")),"name":_bounded_text(node.get("name"),160),"type":_text(node.get("type"))}))
+    yield node,current
+    for child in node.get("children") or ():
+        yield from _walk_nodes(child,current)
+def _frame_payload(node,key,version,route,workspace,path):
+    node_id=_text(node.get("id"));node_type=str(node.get("type") or "").upper()
+    payload={"workspace_ids":[workspace],"route_keys":[route],"file_key":key,"provider_version":version,"node_id":node_id,"node_type":node_type,"name":_bounded_text(node.get("name"),240),"path":[item for item in path if item.get("id")],"texts":_node_texts(node)}
+    bounds=_bounds(node.get("absoluteBoundingBox") or node.get("absoluteRenderBounds"))
+    if bounds:payload["bounds"]=bounds
+    visible=node.get("visible")
+    if isinstance(visible,bool):payload["visible"]=visible
+    return payload
+def _node_texts(node):
+    values=[]
+    for child,_path in _walk_nodes(node,()):
+        if not isinstance(child,dict) or child.get("type")!="TEXT":continue
+        text=_bounded_text(child.get("characters"),FIGMA_MAX_FRAME_TEXT)
+        if text and text not in values:values.append(text)
+        if sum(len(item) for item in values)>=FIGMA_MAX_FRAME_TEXT:break
+    joined=[];total=0
+    for value in values:
+        remaining=FIGMA_MAX_FRAME_TEXT-total
+        if remaining<=0:break
+        clipped=value[:remaining]
+        joined.append(clipped);total+=len(clipped)
+    return joined
+def _bounded_text(value,limit):
+    text=_text(value)
+    if text is None:return None
+    return text[:limit]
+def _bounded_path(path):
+    if len(path)<=FIGMA_MAX_FRAME_PATH_ITEMS:return path
+    return ({"id":"__truncated__","name":f"{len(path)-FIGMA_MAX_FRAME_PATH_ITEMS} ancestors omitted","type":"TRUNCATED"},*path[-FIGMA_MAX_FRAME_PATH_ITEMS:])
+def _bounds(value):
+    if not isinstance(value,dict):return None
+    result={}
+    for key in ("x","y","width","height"):
+        item=value.get(key)
+        if isinstance(item,(int,float)):result[key]=round(float(item),3)
+    return result if result else None

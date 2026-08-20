@@ -69,11 +69,13 @@ Figma synchronization is limited to explicit `file:<key>` mappings. Verification
 proves the expected provider identity and the `current_user:read`,
 `file_metadata:read`, and `file_content:read` grants. Each poll reads current
 metadata first and downloads the file at that captured provider version only
-when it differs from the durable cursor. Inaccessible previously seen files
-produce tombstones; malformed or failed responses do not advance the cursor.
-Named-version history remains disabled unless `file_versions:read` is explicitly
-configured and proven. Fireflies has no live adapter or execution path and
-remains a disabled catalog entry.
+when it differs from the durable cursor. That fetched, version-fenced snapshot
+can retain bounded frame/section evidence; the parent file is the sole
+lifecycle and object-count record. Figma does not synchronize comments or
+named-version history, model review or approval workflows, or auto-create
+deliverables, reviews, or tasks. Inaccessible previously seen files produce
+tombstones; malformed or failed responses do not advance the cursor. Fireflies
+has no live adapter or execution path and remains a disabled catalog entry.
 
 ## Current deployment boundary
 

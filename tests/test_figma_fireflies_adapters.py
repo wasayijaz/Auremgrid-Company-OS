@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json,unittest
-from auremgrid.connectors.figma import FigmaConnector,FIGMA_REQUIRED_PERMISSIONS
+from auremgrid.connectors.figma import FigmaConnector,FIGMA_REQUIRED_PERMISSIONS,FIGMA_MAX_FRAME_TEXT,FIGMA_MAX_FRAME_PATH_ITEMS
 from auremgrid.connectors.http import ConnectorTransportError,HttpResponse,HttpTransport
 
 class QueueTransport:
@@ -35,6 +35,58 @@ class AdapterContractTests(unittest.TestCase):
         connector=FigmaConnector("secret",t,file_workspace_mappings={"file:f1":"ws1"})
         connector.pull()
         self.assertIn("/files/f1?version=v%2F1",t.calls[-1][1])
+
+    def test_figma_emits_bounded_frame_and_section_events_from_versioned_document(self):
+        long_text="Visible copy "+"x"*(FIGMA_MAX_FRAME_TEXT+100)
+        document={"id":"0:0","name":"Doc","type":"DOCUMENT","children":[
+            {"id":"1:1","name":"Page","type":"CANVAS","children":[
+                {"id":"2:1","name":"Hero","type":"FRAME","absoluteBoundingBox":{"x":1.23456,"y":2,"width":300,"height":200},"children":[
+                    {"id":"3:1","type":"TEXT","characters":long_text},
+                    {"id":"3:2","type":"TEXT","characters":"secret token=secret"},
+                    {"id":"4:1","name":"Nested","type":"SECTION","children":[]},
+                ]},
+                {"id":"2:1","name":"Duplicate hero","type":"FRAME","children":[]},
+                {"id":"2:2","name":"Footer","type":"SECTION","visible":False,"children":[]},
+            ]}
+        ]}
+        t=QueueTransport([{"file":{"version":"v1","name":"Design"}},{"name":"Design","document":document}])
+        result=FigmaConnector("secret",t,file_workspace_mappings={"file:f1":"ws1"}).pull()
+        self.assertEqual([event.source_key for event in result.events],[
+            "figma/files/f1",
+            "figma/files/f1/nodes/2:1",
+            "figma/files/f1/nodes/4:1",
+            "figma/files/f1/nodes/2:2",
+        ])
+        self.assertEqual([event.event_type for event in result.events[1:]],["frame","section","section"])
+        frame=json.loads(result.events[1].content)
+        self.assertEqual(frame["workspace_ids"],["ws1"])
+        self.assertEqual(frame["route_keys"],["file:f1"])
+        self.assertEqual(frame["bounds"],{"x":1.235,"y":2.0,"width":300.0,"height":200.0})
+        self.assertNotIn("secret",result.events[1].content)
+        self.assertLessEqual(sum(len(item) for item in frame["texts"]),FIGMA_MAX_FRAME_TEXT)
+        self.assertEqual(result.lifecycle_mutations[0].external_id,"figma/files/f1")
+        self.assertEqual(len(result.lifecycle_mutations),1)
+
+    def test_figma_frame_events_are_stable_and_skip_when_provider_version_unchanged(self):
+        document={"id":"0:0","type":"DOCUMENT","children":[{"id":"2:1","name":"Hero","type":"FRAME","children":[]}]}
+        t=QueueTransport([{"file":{"version":"v1"}},{"name":"Design","document":document},{"file":{"version":"v1"}}])
+        connector=FigmaConnector("secret",t,file_workspace_mappings={"file:f1":"ws1"})
+        first=connector.pull()
+        self.assertEqual([event.source_key for event in first.events],["figma/files/f1","figma/files/f1/nodes/2:1"])
+        replay=connector.pull(first.next_cursor)
+        self.assertEqual(replay.events,())
+
+    def test_figma_frame_path_metadata_is_bounded_for_deep_trees(self):
+        node={"id":"deep-frame","name":"Target","type":"FRAME","children":[]}
+        for index in range(80):
+            node={"id":f"group-{index}","name":"Ancestor"*50,"type":"GROUP","children":[node]}
+        document={"id":"0:0","type":"DOCUMENT","children":[node]}
+        t=QueueTransport([{"file":{"version":"v1"}},{"name":"Design","document":document}])
+        result=FigmaConnector("secret",t,file_workspace_mappings={"file:f1":"ws1"}).pull()
+        frame=json.loads(result.events[1].content)
+        self.assertLessEqual(len(frame["path"]),FIGMA_MAX_FRAME_PATH_ITEMS+1)
+        self.assertEqual(frame["path"][0]["id"],"__truncated__")
+        self.assertLess(len(result.events[1].content),12000)
 
     def test_figma_404_tombstone_and_retry_after(self):
         def missing(_m,_u,_h,_b):return HttpResponse(404,{},b"{}")

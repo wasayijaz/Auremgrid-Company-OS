@@ -457,7 +457,9 @@ class IntegrationOperations:
                                     (event_batch_id, event["dedupe_key"]),
                                 ).fetchall()
                                 activates = any(row["operation"] == "activate" for row in staged)
-                                if activates or not self._uses_provider_lifecycle(integration["source"]):
+                                if activates or not self._uses_provider_lifecycle(integration["source"]) or (
+                                    integration["source"] == "figma" and not staged
+                                ):
                                     result = self.os.ingest_text(
                                         workspace_id, actor_id, event["source_key"], event["content"], event["locator"],
                                         observed_at=self._observed_at(event["observed_at"]), media_type=event["media_type"],

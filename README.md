@@ -18,7 +18,7 @@ Agency work is usually split across conversations, task boards, documents, desig
 - Durable jobs and connector sync that can restart without silently advancing a cursor or claiming a provider is healthy when it is not.
 - A local dashboard, REST API, MCP-style tools, and CLI over the same policy and canonical ledger.
 
-This is an operating control plane, not a replacement for every specialist tool. Slack, ClickUp, Google Drive, and Gmail have credential-backed read synchronization with explicit mappings, provider verification, durable backfill, fenced workers, and lifecycle-aware evidence.
+This is an operating control plane, not a replacement for every specialist tool. Slack, ClickUp, Google Drive, Gmail, and explicitly mapped Figma files have credential-backed read synchronization with provider verification, durable backfill, fenced workers, and lifecycle-aware evidence. Figma polling is bounded to verified exact-file mappings; Fireflies remains disabled.
 
 ## Who it serves—and who it does not
 
@@ -59,7 +59,7 @@ This is an operating control plane, not a replacement for every specialist tool.
 | People and capacity | Skills, availability, leave, derived weekly workload/capacity by person, account, and wing | Implemented |
 | Finance | Connection state, invoices, revenue, costs, budgets, software/AI cost records, client economics | Implemented schema and sourced records; never fabricates values |
 | Agents and automations | Agent records, scoped roles, tasks, queues, runs, tool calls, outputs, costs, traces, training-mode automations | Implemented; unattended automation remains experimental |
-| Integrations | Explicit mappings, external secret references, verification, sync runs, connector inbox/dedupe | Slack, ClickUp, Google Drive, and Gmail live read sync; Drive/Gmail use folder/drive and label mappings with redacted overlap quarantine; other providers catalog-only |
+| Integrations | Explicit mappings, external secret references, verification, sync runs, connector inbox/dedupe | Slack, ClickUp, Google Drive, Gmail, and bounded exact-file Figma live read sync; Drive/Gmail use folder/drive and label mappings with redacted overlap quarantine; Fireflies and other providers remain disabled catalog-only entries |
 | Jobs, outbox, recovery | Atomic claims, leases, fencing, progress, retry/backoff, dead letters, cancellation, idempotency, append-only events, recovery mode | Implemented; outbound sends remain a future gate |
 | Interfaces | Local dashboard, REST API, MCP-style router, CLI | Implemented; all policy remains service-side |
 | Storage and projections | Versioned SQLite migrations, online backups, checksums, integrity/FK verification, restart-safe rebuilds | Implemented; external binary assets require separate backup |
@@ -160,7 +160,7 @@ flowchart TD
     Policy --> API[Service action]
     API --> Job[Durable job with lease + fencing]
     Job --> Worker[Separate worker process]
-    Worker --> Connector[Verified Slack / ClickUp read connector]
+    Worker --> Connector[Verified read connector<br/>Slack / ClickUp / Google / Figma]
     Connector --> Inbox[Inbox dedupe + cursor checkpoint]
     Inbox --> Ledger[Canonical evidence ledger]
     Ledger --> Backup[Online SQLite backup + manifest]
@@ -175,8 +175,9 @@ Credentials are externally referenced and resolved only inside authorized execut
 flowchart LR
     Local[Local evaluation<br/>SQLite + dashboard + fixtures] --> Controlled[Controlled operation<br/>principals + approvals + backups]
     Controlled --> Durable[Durable operation<br/>jobs + fencing + recovery]
-    Durable --> Live[Live read sync<br/>verified Slack / ClickUp mappings]
+    Durable --> Live[Live read sync<br/>verified provider mappings]
     Live --> Google[Verified Google<br/>Drive + Gmail sync]
+    Google --> Figma[Bounded Figma<br/>exact-file polling]
     Live -. roadmap .-> Planned[Planned<br/>OAuth + webhooks + more providers]
 ```
 
@@ -318,7 +319,7 @@ Run the web process and `worker-once` jobs as separate processes against a durab
 
 ### External-provider read sync
 
-Bind an external environment reference, verify the provider account and mapped streams, then enqueue a `connector.sync` job. Slack, ClickUp, Google Drive, and Gmail are supported for read synchronization. The worker resolves the secret at execution time and records sanitized state only.
+Bind an external environment reference, verify the provider account and mapped streams, then enqueue a `connector.sync` job. Slack, ClickUp, Google Drive, Gmail, and explicitly mapped Figma files are supported for read synchronization. Figma is bounded to verified `file:<key>` mappings: a fetched, version-fenced file snapshot can retain bounded frame/section evidence, but its parent file is the only lifecycle and object-count record. It does not synchronize comments, versions, review or approval workflows, or auto-create deliverables, reviews, or tasks. Fireflies remains a disabled catalog entry with no live adapter or execution path. The worker resolves the secret at execution time and records sanitized state only.
 
 ### CI and development
 
@@ -336,7 +337,7 @@ Run the unittest suite with synthetic fixtures and injected connector transports
 
 ## Verified evidence and release discipline
 
-The authoritative release matrix is [release verification](docs/release-verification.md). It tracks isolation, persistence, permissions, workflow gates, projection rebuilds, migration-forward behavior, job fencing, credential redaction, backup verification, dashboard behavior, and live Slack/ClickUp sync safety.
+The authoritative release matrix is [release verification](docs/release-verification.md). It tracks isolation, persistence, permissions, workflow gates, projection rebuilds, migration-forward behavior, job fencing, credential redaction, backup verification, dashboard behavior, and live connector sync safety, including bounded exact-file Figma polling.
 
 Before a release or schema change, run:
 
@@ -352,7 +353,7 @@ The offline suite must not require Docker, provider credentials, a private vault
 
 - No in-product OAuth installation/callback flow, webhook ingestion, or refresh-token rotation; credential binding is manual and environment-backed.
 - Google Drive bootstraps from a captured changes token, walks mapped folders/shared drives through durable continuation tasks, reconciles parent chains and descendants after moves, and retires objects only after ancestry is resolved. Gmail captures a history baseline before label backfill and maintains label membership lifecycle. Objects that match mappings owned by different workspaces create an organization-level redacted quarantine, block cursor promotion, and write no workspace evidence.
-- Figma supports verified, exact-file read polling with `current_user:read`, `file_metadata:read`, and `file_content:read`; GitHub, Fireflies, advertising, and accounting systems remain disabled catalog entries only and do not report connected.
+- Figma supports verified, exact-file read polling with `current_user:read`, `file_metadata:read`, and `file_content:read`. A version-fenced file snapshot can retain bounded frame/section evidence, while the parent file remains the only lifecycle and object-count record; comments, version history, review/approval workflows, and auto-created deliverables, reviews, or tasks are out of scope. GitHub, Fireflies, advertising, and accounting systems remain disabled catalog entries only and do not report connected.
 - Unattended automations, remote semantic providers, upstream OSS engines, and externally visible sends remain experimental or future gates. Local semantic retrieval and its deterministic fallback are available behind the provider/index boundary described above.
 - SQLite is local-first, not a multi-region distributed database. External binary assets require a separate backup policy.
 - The standard-library HTTP server is appropriate for local/private operation; hardened public deployment needs an explicit reverse proxy, TLS, and access review.
