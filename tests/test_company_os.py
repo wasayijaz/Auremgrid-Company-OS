@@ -4,7 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection
 from pathlib import Path
 
@@ -55,20 +55,45 @@ class CompanyOSTests(unittest.TestCase):
         self.assertEqual(first.source.id, second.source.id)
 
     def test_temporal_supersession_and_as_of(self) -> None:
+        recorded = datetime.now(timezone.utc)
+        first_effective = recorded + timedelta(minutes=1)
+        second_effective = recorded + timedelta(minutes=2)
+        self.os.ingest_text(
+            "ws_alpha",
+            "act_alpha_admin",
+            "temporal-price",
+            f"META: valid_from={first_effective.isoformat()}\nFACT: Temporal Offer | price | 149 USD",
+            "memory://temporal-price",
+            observed_at=first_effective,
+        )
+        self.os.ingest_text(
+            "ws_alpha",
+            "act_alpha_admin",
+            "temporal-price",
+            f"META: valid_from={second_effective.isoformat()}\nFACT: Temporal Offer | price | 199 USD",
+            "memory://temporal-price",
+            observed_at=second_effective,
+        )
         current = self.os.search(
             "ws_alpha",
             "act_alpha_operator",
-            "consultation price",
-            as_of=datetime(2026, 5, 1, tzinfo=timezone.utc),
+            "Temporal Offer price",
+            as_of=recorded + timedelta(minutes=3),
         )
         previous = self.os.search(
             "ws_alpha",
             "act_alpha_operator",
-            "consultation price",
-            as_of=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            "Temporal Offer price",
+            as_of=recorded + timedelta(seconds=90),
         )
-        current_prices = [item.payload["object"] for item in current.items if item.kind == "fact"]
-        previous_prices = [item.payload["object"] for item in previous.items if item.kind == "fact"]
+        current_prices = [
+            item.payload["object"] for item in current.items
+            if item.kind == "fact" and item.payload["subject"] == "Temporal Offer"
+        ]
+        previous_prices = [
+            item.payload["object"] for item in previous.items
+            if item.kind == "fact" and item.payload["subject"] == "Temporal Offer"
+        ]
         self.assertIn("199 USD", current_prices)
         self.assertNotIn("149 USD", current_prices)
         self.assertIn("149 USD", previous_prices)

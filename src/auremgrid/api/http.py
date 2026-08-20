@@ -105,13 +105,17 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                         _need(params, "actor_id"),
                         _need(params, "subject"),
                         predicate=params.get("predicate"),
+                        as_of=_optional_dt(params.get("as_of")),
                     ),
                 )
                 return
             if parsed.path == "/neighbors":
                 self._json(
                     200,
-                    self.os.neighbors(_need(params, "workspace_id"), _need(params, "actor_id"), _need(params, "entity")),
+                    self.os.neighbors(
+                        _need(params, "workspace_id"), _need(params, "actor_id"), _need(params, "entity"),
+                        as_of=_optional_dt(params.get("as_of")),
+                    ),
                 )
                 return
             if parsed.path == "/sources":
@@ -270,7 +274,15 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                     scoped.organization_id, workspace_id, scoped.person_id, _optional_dt(params.get("as_of"))
                 )}); return
             if parsed.path == "/knowledge-health":
-                self._json(200,self.os.brain_ops.knowledge_health(_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id"))); return
+                assert identity is not None
+                view = self.os.dashboard.brain(
+                    identity, _need(params,"organization_id"), _need(params,"workspace_id"),
+                    _need(params,"person_id"), _optional_dt(params.get("as_of")),
+                )
+                self._json(200,{
+                    "generated_at":view["generated_at"],"as_of":view["as_of"],
+                    "workspace":view["workspace"],"summary":view["summary"],"health":view["health"],
+                }); return
             if parsed.path == "/work/detail":
                 self._json(200,self.os.work_ops.detail(_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id"),_need(params,"work_item_id"))); return
             if parsed.path == "/workflows/templates":
@@ -799,9 +811,12 @@ def _optional_dt(value: Any) -> Any:
     from datetime import datetime
 
     try:
-        return datetime.fromisoformat(str(value))
+        result = datetime.fromisoformat(str(value))
     except ValueError as exc:
         raise ValidationError("as_of must be an ISO datetime") from exc
+    if result.tzinfo is None or result.utcoffset() is None:
+        raise ValidationError("as_of must include a timezone")
+    return result
 
 def _required_dt(value: Any, key: str) -> Any:
     if not value: raise ValidationError(f"{key} is required")

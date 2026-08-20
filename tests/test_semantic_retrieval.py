@@ -137,7 +137,9 @@ class SemanticRetrievalTests(unittest.TestCase):
                 ws.id, actor.id, "brief", "release readiness", "memory://brief", observed_at=base
             )
             first.store.retire_source(ws.id, result.source.id, base + timedelta(days=2))
-            as_of = base + timedelta(minutes=15)
+            # Historical reads are bitemporal: evidence cannot be visible before
+            # its durable recording time, even when its observed time is earlier.
+            as_of = result.source.recorded_at + timedelta(seconds=1)
             before = first.search(ws.id, actor.id, "launch", as_of=as_of)
             self.assertIn(result.document_id, {item.payload.get("document_id") for item in before.items})
             first.close()

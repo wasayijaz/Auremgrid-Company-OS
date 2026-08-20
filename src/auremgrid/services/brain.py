@@ -71,6 +71,14 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
 
 
+def _temporal_read_moment(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValidationError("as_of must include a timezone")
+    return value.astimezone(timezone.utc)
+
+
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
@@ -662,13 +670,14 @@ class CompanyOS:
         limit: int = 8,
     ) -> EvidenceBundle:
         actor = self._require_actor(workspace_id, actor_id)
-        requested_as_of = as_of
+        requested_as_of = _temporal_read_moment(as_of)
         # Knowledge-state events retain sub-second ordering.  Do not round the
         # live read watermark or a just-recorded transition can disappear until
         # the next wall-clock second.
         as_of = requested_as_of or datetime.now(timezone.utc)
         sources = self.store.allowed_sources(workspace_id, actor, as_of=requested_as_of)
         source_ids = [source.id for source in sources]
+        sources_by_id = {source.id: source for source in sources}
         if not query.strip():
             raise ValidationError("query is required")
         query_norm = normalize_text(query)
@@ -678,7 +687,12 @@ class CompanyOS:
         fts_hits = self.store.search_documents(workspace_id, source_ids, query, limit, as_of=as_of)
         for document, source, score in fts_hits:
             documents_by_id[document.id] = (document, source)
-            fused_hits.append(RankedHit("document", document.id, score, ("keyword",)))
+            fused_hits.append(RankedHit(
+                "document", document.id, score, ("keyword",), source.trust_level,
+                source.observed_at, source.recorded_at,
+            ))
+        allowed_document_ids = self.store.allowed_document_ids(workspace_id, source_ids, as_of)
+        allowed_document_id_set = set(allowed_document_ids)
         graph_status = "healthy"
         graph_hits = 0
         try:
@@ -703,13 +717,16 @@ class CompanyOS:
                          self.store.allowed_document_ids(workspace_id, [source_id], as_of)) if candidate is not None),
                         None,
                     )
-                if document is None:
+                if document is None or document.id not in allowed_document_id_set:
                     continue
-                source = next((candidate for candidate in sources if candidate.id == source_id), None)
+                source = sources_by_id.get(source_id)
                 if source is None:
                     continue
                 documents_by_id[document.id] = (document, source)
-                fused_hits.append(RankedHit("document", document.id, 0.2, ("graph",)))
+                fused_hits.append(RankedHit(
+                    "document", document.id, 0.2, ("graph",), source.trust_level,
+                    source.observed_at, source.recorded_at,
+                ))
                 graph_hits += 1
         except Exception:
             graph_status = "degraded"
@@ -717,7 +734,6 @@ class CompanyOS:
         semantic_status = "healthy"
         semantic_detail: str | None = None
         semantic_hits = 0
-        allowed_document_ids = self.store.allowed_document_ids(workspace_id, source_ids, as_of)
         try:
             query_embedding = self.embedding_provider.embed([query])[0]
             for document_id, vector_score in self.vector_index.search(
@@ -729,7 +745,7 @@ class CompanyOS:
                 document = self.store.get_document(workspace_id, document_id)
                 if document is None or document.source_id not in source_ids:
                     continue
-                source = next((candidate for candidate in sources if candidate.id == document.source_id), None)
+                source = sources_by_id.get(document.source_id)
                 if source is None:
                     continue
                 # The offline hash provider is a lexical safety net, not a
@@ -742,13 +758,18 @@ class CompanyOS:
                 ):
                     continue
                 documents_by_id[document.id] = (document, source)
-                fused_hits.append(RankedHit("document", document.id, vector_score, ("vector",)))
+                fused_hits.append(RankedHit(
+                    "document", document.id, vector_score, ("vector",), source.trust_level,
+                    source.observed_at, source.recorded_at,
+                ))
                 semantic_hits += 1
-        except Exception as exc:
+        except Exception:
             # Do not substitute the deterministic provider here.  Operators and
             # callers must be able to distinguish an outage from a real fallback.
             semantic_status = "degraded"
-            semantic_detail = str(exc)
+            # Public retrieval metadata uses a stable code. Provider exceptions
+            # can contain local paths, model internals, or credential-like text.
+            semantic_detail = "provider_failed"
         for fact in self.store.list_facts(workspace_id, source_ids, as_of=as_of, include_superseded=True):
             latest_state = self.brain_ops._knowledge_state_row(workspace_id, "fact", fact.id, as_of)
             if latest_state is not None and latest_state["state"] == "stale":
@@ -759,15 +780,25 @@ class CompanyOS:
             if not keyword_hit and graph_boost <= 0:
                 continue
             facts_by_id[fact.id] = fact
+            source = sources_by_id.get(fact.source_id)
+            if source is None:
+                continue
             score = (0.7 + (0.3 * fact.confidence)) if keyword_hit else 0.0
             if fact.superseded_by:
                 score -= 0.4
             if keyword_hit:
-                fused_hits.append(RankedHit("fact", fact.id, score, ("keyword",)))
+                fused_hits.append(RankedHit(
+                    "fact", fact.id, score, ("keyword",), source.trust_level,
+                    source.observed_at, source.recorded_at,
+                ))
             if graph_boost:
-                fused_hits.append(RankedHit("fact", fact.id, graph_boost, ("graph",)))
+                fused_hits.append(RankedHit(
+                    "fact", fact.id, graph_boost, ("graph",), source.trust_level,
+                    source.observed_at, source.recorded_at,
+                ))
         items: list[EvidenceItem] = []
-        for hit in self.ranker.fuse(fused_hits, limit=limit):
+        for hit in self.ranker.fuse(fused_hits, limit=limit, as_of=as_of):
+            score_components = {name: value for name, value in hit.score_components}
             if hit.kind == "document":
                 document, source = documents_by_id[hit.key]
                 items.append(
@@ -778,6 +809,7 @@ class CompanyOS:
                             "document_id": document.id,
                             "source_key": source.source_key,
                             "channels": list(hit.channels),
+                            "score_components": score_components,
                         },
                         citation=Citation(
                             source_id=source.id,
@@ -792,7 +824,10 @@ class CompanyOS:
             else:
                 fact = facts_by_id[hit.key]
                 payload = fact.to_dict()
+                state = self.brain_ops._knowledge_state_row(workspace_id, "fact", fact.id, as_of)
+                payload["effective_state"] = str(state["state"]) if state is not None else "inferred"
                 payload["channels"] = list(hit.channels)
+                payload["score_components"] = score_components
                 items.append(
                     EvidenceItem(
                         kind="fact",
@@ -814,6 +849,16 @@ class CompanyOS:
             "provider": self.embedding_provider.name,
             "model": self.embedding_provider.model,
             "version": self.embedding_provider.version,
+            "ranking": {
+                "contract": "hybrid-authority-recency-v1",
+                "weights": {
+                    "relevance": self.ranker.RELEVANCE_WEIGHT,
+                    "authority": self.ranker.AUTHORITY_WEIGHT,
+                    "recency": self.ranker.RECENCY_WEIGHT,
+                },
+                "recency_half_life_days": self.ranker.RECENCY_HALF_LIFE_DAYS,
+                "tie_break": ["score_desc", "kind_asc", "key_asc"],
+            },
         }
         if semantic_detail:
             retrieval["semantic_detail"] = semantic_detail
@@ -838,7 +883,7 @@ class CompanyOS:
         as_of: datetime | None = None,
     ) -> dict[str, Any]:
         actor = self._require_actor(workspace_id, actor_id)
-        requested_as_of = as_of
+        requested_as_of = _temporal_read_moment(as_of)
         as_of = requested_as_of or utcnow()
         source_ids = [
             source.id for source in self.store.allowed_sources(workspace_id, actor, as_of=requested_as_of)
@@ -855,10 +900,16 @@ class CompanyOS:
             if target in {normalize_text(relation.from_entity), normalize_text(relation.to_entity)}
         ]
         self._audit(workspace_id, actor_id, "entity", name, "ok", f"facts={len(facts)}")
+        fact_rows = []
+        for fact in facts:
+            item = fact.to_dict()
+            state = self.brain_ops._knowledge_state_row(workspace_id, "fact", fact.id, as_of)
+            item["effective_state"] = str(state["state"]) if state is not None else "inferred"
+            fact_rows.append(item)
         return {
             "entity": name,
             "as_of": as_of.isoformat(),
-            "facts": [fact.to_dict() for fact in facts],
+            "facts": fact_rows,
             "relations": [relation.to_dict() for relation in relations],
         }
 
@@ -868,22 +919,36 @@ class CompanyOS:
         actor_id: str,
         subject: str,
         predicate: str | None = None,
+        as_of: datetime | None = None,
     ) -> dict[str, Any]:
         actor = self._require_actor(workspace_id, actor_id)
-        source_ids = [source.id for source in self.store.allowed_sources(workspace_id, actor, include_retired=True)]
+        requested_as_of = _temporal_read_moment(as_of)
+        moment = requested_as_of or utcnow()
+        source_ids = [source.id for source in self.store.allowed_sources(
+            workspace_id, actor, as_of=requested_as_of, include_retired=requested_as_of is None,
+        )]
         subject_norm = normalize_text(subject)
         facts = []
         for fact in self.store.list_facts(workspace_id, source_ids, include_superseded=True):
+            if requested_as_of is not None and fact.recorded_at > moment:
+                continue
             if normalize_text(fact.subject) != subject_norm:
                 continue
             if predicate and normalize_text(fact.predicate) != normalize_text(predicate):
                 continue
             facts.append(fact)
         self._audit(workspace_id, actor_id, "history", subject, "ok", f"versions={len(facts)}")
+        fact_rows = []
+        for fact in facts:
+            item = fact.to_dict()
+            state = self.brain_ops._knowledge_state_row(workspace_id, "fact", fact.id, moment)
+            item["effective_state"] = str(state["state"]) if state is not None else "inferred"
+            fact_rows.append(item)
         return {
             "subject": subject,
             "predicate": predicate,
-            "facts": [fact.to_dict() for fact in facts],
+            "as_of": moment.isoformat(),
+            "facts": fact_rows,
         }
 
     def neighbors(
@@ -894,7 +959,7 @@ class CompanyOS:
         as_of: datetime | None = None,
     ) -> dict[str, Any]:
         actor = self._require_actor(workspace_id, actor_id)
-        requested_as_of = as_of
+        requested_as_of = _temporal_read_moment(as_of)
         as_of = requested_as_of or utcnow()
         source_ids = [
             source.id for source in self.store.allowed_sources(workspace_id, actor, as_of=requested_as_of)
@@ -906,7 +971,7 @@ class CompanyOS:
             if target in {normalize_text(relation.from_entity), normalize_text(relation.to_entity)}
         ]
         self._audit(workspace_id, actor_id, "neighbors", entity, "ok", f"edges={len(relations)}")
-        return {"entity": entity, "relations": [relation.to_dict() for relation in relations]}
+        return {"entity": entity, "as_of": as_of.isoformat(), "relations": [relation.to_dict() for relation in relations]}
 
     def sources(self, workspace_id: str, actor_id: str) -> dict[str, Any]:
         actor = self._require_actor(workspace_id, actor_id)

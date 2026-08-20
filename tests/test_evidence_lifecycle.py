@@ -232,9 +232,13 @@ class EvidenceLifecycleTests(unittest.TestCase):
         semantic = self.os.search(
             self.ws.id, self.actor.id, "Offer state", as_of=datetime(2026, 7, 1, tzinfo=timezone.utc)
         )
-        self.assertIn("later", {item.payload.get("object") for item in semantic.items if item.kind == "fact"})
+        self.assertTrue(semantic.unknown)
+        self.assertEqual(
+            {item.payload.get("object") for item in semantic.items if item.kind == "fact"},
+            set(),
+        )
         semantic_time = datetime(2026, 7, 1, tzinfo=timezone.utc)
-        self.assertTrue(self.os.store.source_is_active(self.ws.id, later.id, semantic_time))
+        self.assertFalse(self.os.store.source_is_active(self.ws.id, later.id, semantic_time))
         self.assertFalse(self.os.store.source_is_active(self.ws.id, earlier.id, semantic_time))
 
     def test_reingesting_identical_retired_content_switches_single_current_version(self) -> None:
@@ -316,9 +320,9 @@ class EvidenceLifecycleTests(unittest.TestCase):
             self.ws.id, self.actor.id, "effective", "Second effective version",
             "memory://effective", observed_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
         ).source
-        march = datetime(2026, 3, 1, tzinfo=timezone.utc)
-        self.assertFalse(self.os.store.source_is_active(self.ws.id, first.id, march))
-        self.assertTrue(self.os.store.source_is_active(self.ws.id, second.id, march))
+        after_recording = max(first.recorded_at, second.recorded_at) + timedelta(seconds=1)
+        self.assertFalse(self.os.store.source_is_active(self.ws.id, first.id, after_recording))
+        self.assertTrue(self.os.store.source_is_active(self.ws.id, second.id, after_recording))
 
 
 if __name__ == "__main__":

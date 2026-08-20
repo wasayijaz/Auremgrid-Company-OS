@@ -4,7 +4,7 @@ import struct
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, Sequence
+from typing import Any, Callable, Protocol, Sequence
 
 from auremgrid.adapters.hybrid import cosine, hashed_embedding
 
@@ -21,6 +21,7 @@ class EmbeddingHealth:
     dimensions: int
     status: str = "healthy"
     detail: str | None = None
+    fallback_used: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -30,6 +31,7 @@ class EmbeddingHealth:
             "dimensions": self.dimensions,
             "status": self.status,
             "detail": self.detail,
+            "fallback_used": self.fallback_used,
         }
 
 
@@ -49,7 +51,10 @@ class DeterministicFallbackEmbeddingProvider:
     version = "1"
     dimensions = 64
     def health(self) -> EmbeddingHealth:
-        return EmbeddingHealth(self.name, self.model, self.version, self.dimensions)
+        return EmbeddingHealth(
+            self.name, self.model, self.version, self.dimensions,
+            fallback_used=True,
+        )
     def embed(self, texts: Sequence[str]) -> list[tuple[float, ...]]:
         return [hashed_embedding(text, self.dimensions) for text in texts]
 
@@ -57,25 +62,48 @@ class DeterministicFallbackEmbeddingProvider:
 class SentenceTransformerEmbeddingProvider:
     """Optional local-files-only provider. Loading is lazy and never downloads."""
 
-    def __init__(self, model_path: str | Path, *, version: str = "1") -> None:
+    def __init__(
+        self,
+        model_path: str | Path,
+        *,
+        model: str,
+        version: str,
+        loader: Callable[[Path], Any] | None = None,
+    ) -> None:
+        if not model.strip():
+            raise ValueError("local embedding model identity is required")
+        if not version.strip():
+            raise ValueError("local embedding provider version is required")
         self.model_path = Path(model_path)
         self.name = "sentence_transformers_local"
-        self.model = self.model_path.name or str(self.model_path)
-        self.version = version
+        self.model = model.strip()
+        self.version = version.strip()
         self.dimensions = 0
         self._model: Any | None = None
         self._failure: str | None = None
+        self._loader = loader or self._load_sentence_transformer
+
+    @staticmethod
+    def _load_sentence_transformer(model_path: Path) -> Any:
+        # Keep the large optional dependency outside the default startup path.
+        from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
+        return SentenceTransformer(str(model_path), local_files_only=True)
 
     def _load(self) -> Any:
+        if self._failure is not None:
+            raise EmbeddingProviderError(f"local embedding provider unavailable: {self._failure}")
         if self._model is not None:
             return self._model
         if not self.model_path.is_dir():
             self._failure = f"local embedding model is unavailable: {self.model_path}"
             raise EmbeddingProviderError(self._failure)
         try:
-            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
-            self._model = SentenceTransformer(str(self.model_path), local_files_only=True)
-            self.dimensions = int(self._model.get_sentence_embedding_dimension())
+            model = self._loader(self.model_path)
+            dimensions = int(model.get_sentence_embedding_dimension())
+            if dimensions <= 0:
+                raise ValueError("model reported invalid embedding dimensions")
+            self._model = model
+            self.dimensions = dimensions
             return self._model
         except Exception as exc:
             self._failure = str(exc)
@@ -84,12 +112,54 @@ class SentenceTransformerEmbeddingProvider:
     def health(self) -> EmbeddingHealth:
         if self._failure:
             return EmbeddingHealth(self.name, self.model, self.version, self.dimensions, "degraded", self._failure)
+        if self._model is None:
+            if not self.model_path.is_dir():
+                return EmbeddingHealth(
+                    self.name, self.model, self.version, 0, "degraded",
+                    f"local embedding model is unavailable: {self.model_path}",
+                )
+            return EmbeddingHealth(
+                self.name, self.model, self.version, 0, "configured",
+                "local model has not been loaded",
+            )
         return EmbeddingHealth(self.name, self.model, self.version, self.dimensions, "healthy")
 
     def embed(self, texts: Sequence[str]) -> list[tuple[float, ...]]:
+        if not texts:
+            return []
         model = self._load()
-        vectors = model.encode(list(texts), normalize_embeddings=True)
-        return [tuple(float(value) for value in vector) for vector in vectors]
+        try:
+            vectors = model.encode(list(texts), normalize_embeddings=True)
+            result = [tuple(float(value) for value in vector) for vector in vectors]
+            if len(result) != len(texts):
+                raise ValueError("local model returned the wrong vector count")
+            if any(len(vector) != self.dimensions for vector in result):
+                raise ValueError("local model returned the wrong vector dimensions")
+            if any(not all(math.isfinite(value) for value in vector) for vector in result):
+                raise ValueError("local model returned invalid vector values")
+            return result
+        except Exception as exc:
+            self._failure = str(exc)
+            raise EmbeddingProviderError(f"local embedding provider unavailable: {exc}") from exc
+
+
+def embedding_provider_from_config(
+    *,
+    model_path: str | Path | None = None,
+    model: str | None = None,
+    version: str | None = None,
+    loader: Callable[[Path], Any] | None = None,
+) -> EmbeddingProvider:
+    """Build the offline default or an explicitly identified local provider."""
+    if model_path is None:
+        if model is not None or version is not None:
+            raise ValueError("local embedding model path is required when model metadata is set")
+        return DeterministicFallbackEmbeddingProvider()
+    if model is None or version is None:
+        raise ValueError("local embedding model and version are required with a model path")
+    return SentenceTransformerEmbeddingProvider(
+        model_path, model=model, version=version, loader=loader,
+    )
 
 
 class VectorIndex(Protocol):

@@ -547,11 +547,13 @@ class SqliteStore:
             """
             params = (workspace_id, source_id)
         else:
-            moment = as_of.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+            moment = as_of.astimezone(timezone.utc).isoformat()
             sql = """
                 SELECT 1 FROM source_lifecycle_intervals lifecycle
                 JOIN sources source ON source.id=lifecycle.source_id
                 WHERE lifecycle.workspace_id=? AND lifecycle.source_id=?
+                  AND lifecycle.activated_at <= ?
+                  AND source.recorded_at <= ?
                   AND lifecycle.effective_from <= ?
                   AND (lifecycle.effective_until IS NULL OR lifecycle.effective_until > ?)
                   AND NOT EXISTS (
@@ -559,6 +561,8 @@ class SqliteStore:
                       JOIN sources candidate_source ON candidate_source.id=candidate.source_id
                       WHERE candidate.workspace_id=lifecycle.workspace_id
                         AND candidate.source_key=lifecycle.source_key
+                        AND candidate.activated_at <= ?
+                        AND candidate_source.recorded_at <= ?
                         AND candidate.effective_from <= ?
                         AND (candidate.effective_until IS NULL OR candidate.effective_until > ?)
                         AND (
@@ -569,7 +573,11 @@ class SqliteStore:
                   )
                 LIMIT 1
             """
-            params = (workspace_id, source_id, moment, moment, moment, moment)
+            params = (
+                workspace_id, source_id,
+                moment, moment, moment, moment,
+                moment, moment, moment, moment,
+            )
         return self.conn.execute(sql, params).fetchone() is not None
 
     def activate_provider_route(
@@ -2116,6 +2124,8 @@ class SqliteStore:
             moment = as_of.astimezone(timezone.utc).isoformat()
             lifecycle_clause = """lifecycle.effective_from <= ?
                 AND (lifecycle.effective_until IS NULL OR lifecycle.effective_until > ?)
+                AND lifecycle.activated_at <= ?
+                AND sources.recorded_at <= ?
                 AND NOT EXISTS (
                     SELECT 1 FROM source_lifecycle_intervals candidate
                     JOIN sources candidate_source ON candidate_source.id=candidate.source_id
@@ -2123,13 +2133,18 @@ class SqliteStore:
                       AND candidate.source_key=lifecycle.source_key
                       AND candidate.effective_from <= ?
                       AND (candidate.effective_until IS NULL OR candidate.effective_until > ?)
+                      AND candidate.activated_at <= ?
+                      AND candidate_source.recorded_at <= ?
                       AND (
                           candidate.effective_from > lifecycle.effective_from
                           OR (candidate.effective_from=lifecycle.effective_from
                               AND candidate_source.version > sources.version)
                       )
                 )"""
-            params = (workspace_id, moment, moment, moment, moment)
+            params = (
+                workspace_id, moment, moment, moment, moment,
+                moment, moment, moment, moment,
+            )
         if not include_retired:
             rows = self.conn.execute(
                 f"""SELECT DISTINCT sources.* FROM sources
@@ -2166,8 +2181,9 @@ class SqliteStore:
         observed_clause = ""
         observed_params: tuple[object, ...] = ()
         if as_of is not None:
-            observed_clause = " AND d.observed_at <= ?"
-            observed_params = (as_of.astimezone(timezone.utc).isoformat(),)
+            observed_clause = " AND d.observed_at <= ? AND d.recorded_at <= ?"
+            moment = as_of.astimezone(timezone.utc).isoformat()
+            observed_params = (moment, moment)
         rows = self.conn.execute(
             f"""
             SELECT
@@ -2244,9 +2260,9 @@ class SqliteStore:
         rows = self.conn.execute(
             f"""SELECT d.id FROM documents d
                 WHERE d.workspace_id=? AND d.source_id IN ({placeholders})
-                  AND d.observed_at <= ?
+                  AND d.observed_at <= ? AND d.recorded_at <= ?
                 ORDER BY d.recorded_at ASC, d.id ASC""",
-            (workspace_id, *source_ids, moment),
+            (workspace_id, *source_ids, moment, moment),
         ).fetchall()
         return [str(row["id"]) for row in rows]
 
@@ -2276,7 +2292,9 @@ class SqliteStore:
             facts = [
                 fact
                 for fact in facts
-                if fact.valid_from <= as_of and (fact.valid_until is None or fact.valid_until > as_of)
+                if fact.recorded_at <= as_of
+                and fact.valid_from <= as_of
+                and (fact.valid_until is None or fact.valid_until > as_of)
             ]
         elif not include_superseded:
             facts = [fact for fact in facts if fact.superseded_by is None]
@@ -2308,7 +2326,8 @@ class SqliteStore:
         return [
             relation
             for relation in relations
-            if relation.valid_from <= as_of
+            if relation.recorded_at <= as_of
+            and relation.valid_from <= as_of
             and (relation.valid_until is None or relation.valid_until > as_of)
         ]
 

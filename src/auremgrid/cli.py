@@ -2,12 +2,41 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
+from os import environ
 
+from auremgrid.adapters.semantic import embedding_provider_from_config
 from auremgrid.api.http import serve
 from auremgrid.services.brain import CompanyOS
 from auremgrid.storage.backup import create_backup, restore_backup, verify_backup
 from auremgrid.services.worker import run_one_job
+
+
+def _add_semantic_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--semantic-model-path",
+        help="existing local SentenceTransformers model directory; never downloaded",
+    )
+    command.add_argument(
+        "--semantic-model",
+        help="stable model identity stored with rebuilt projections",
+    )
+    command.add_argument(
+        "--semantic-version",
+        help="explicit local model/provider version stored with rebuilt projections",
+    )
+
+
+def _embedding_provider(args: argparse.Namespace):
+    return embedding_provider_from_config(
+        model_path=args.semantic_model_path or environ.get("AUREMGRID_SEMANTIC_MODEL_PATH"),
+        model=args.semantic_model or environ.get("AUREMGRID_SEMANTIC_MODEL"),
+        version=args.semantic_version or environ.get("AUREMGRID_SEMANTIC_VERSION"),
+    )
+
+
+def _company_os(args: argparse.Namespace) -> CompanyOS:
+    provider = _embedding_provider(args)
+    return CompanyOS(args.db, embedding_provider=provider)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -68,16 +97,24 @@ def main(argv: list[str] | None = None) -> int:
     worker.add_argument("--workspace")
     worker.add_argument("--worker-id", required=True)
 
+    for command in (demo, brief, serve_cmd, sync, onboard, backup, bootstrap_auth, worker):
+        _add_semantic_options(command)
+
     args = parser.parse_args(argv)
+    if hasattr(args, "semantic_model_path"):
+        try:
+            _embedding_provider(args)
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.command == "demo":
-        os = CompanyOS(args.db)
+        os = _company_os(args)
         os.seed_demo()
         result = os.search("ws_alpha", "act_alpha_operator", "consultation price").to_dict()
         print(json.dumps(result, indent=2))
         os.close()
         return 0
     if args.command == "brief":
-        os = CompanyOS(args.db)
+        os = _company_os(args)
         if args.db == ":memory:":
             os.seed_demo()
         result = os.account_brief(args.workspace, args.actor, query=args.query)
@@ -85,8 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         os.close()
         return 0
     if args.command == "serve":
-        db_path = Path(args.db)
-        os = CompanyOS(db_path)
+        os = _company_os(args)
         if args.seed:
             os.seed_demo()
         server = serve(os, host=args.host, port=args.port)
@@ -99,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
             os.close()
         return 0
     if args.command == "sync":
-        os = CompanyOS(args.db)
+        os = _company_os(args)
         if args.db == ":memory:":
             os.seed_demo()
         results = os.sync_connectors(args.actor, include_simulated=args.simulated)
@@ -107,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         os.close()
         return 0
     if args.command == "onboard":
-        os = CompanyOS(args.db)
+        os = _company_os(args)
         result = os.onboard_agency(
             agency_name=args.agency,
             workspace_id=args.workspace,
@@ -119,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         os.close()
         return 0
     if args.command == "backup":
-        os = CompanyOS(args.db)
+        os = _company_os(args)
         try:
             result = create_backup(os.store.conn, args.output)
         finally:
@@ -135,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "bootstrap-auth":
         if bool(args.workspace) != bool(args.actor):
             parser.error("--workspace and --actor must be provided together")
-        os = CompanyOS(args.db)
+        os = _company_os(args)
         try:
             principal = os.auth.create_principal(args.organization, args.person, args.email)
             session = os.auth.create_session(principal["id"])
@@ -147,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
             os.close()
         return 0
     if args.command == "worker-once":
-        os = CompanyOS(args.db)
+        os = _company_os(args)
         try:
             result = run_one_job(os, args.organization, args.workspace, args.worker_id)
             print(json.dumps(result, indent=2))

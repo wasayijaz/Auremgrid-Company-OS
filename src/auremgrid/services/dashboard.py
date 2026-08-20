@@ -396,18 +396,32 @@ class DashboardService(_ExistingDashboardService):
         workspace = self.os.store.get_workspace(workspace_id)
         graph = self.os.store.graph_generation_state(workspace_id)
         semantic = dict(getattr(self.os, "embedding_health", {}) or {})
+        graph_runtime = dict(getattr(self.os, "graph_health", {}) or {})
+        semantic_fallback = bool(semantic.get("fallback_used", False))
+        graph_runtime_status = _health_status(graph_runtime.get("status"))
+        graph_status = (
+            "degraded" if graph_runtime_status == "degraded"
+            else "healthy" if graph.get("active_status") == "active"
+            else "building" if graph.get("building_generation") is not None
+            else "unavailable"
+        )
         health = {
             "semantic": {
                 "status": _health_status(semantic.get("status")),
                 "provider": _safe_scalar(semantic.get("provider")),
                 "model": _safe_scalar(semantic.get("model")),
                 "version": _safe_scalar(semantic.get("version")),
-                "fallback_used": bool(semantic.get("fallback_used", False)),
+                "mode": "deterministic_fallback" if semantic_fallback else "configured_provider",
+                "fallback_used": semantic_fallback,
             },
             "graph": {
-                "status": "healthy" if graph.get("active_status") == "active" else "degraded",
+                "status": graph_status,
+                "provider": _safe_scalar(getattr(self.os.graph, "name", None)),
                 "active_generation": graph.get("active_generation"),
                 "building": graph.get("building_generation") is not None,
+                "serving_stale_generation": bool(
+                    graph_runtime_status == "degraded" and graph.get("active_generation")
+                ),
             },
         }
         return {
@@ -909,7 +923,7 @@ def _derived_run_status(stages: list[dict[str, Any]], history: list[dict[str, An
 
 
 def _health_status(value: Any) -> str:
-    return str(value) if value in {"healthy", "degraded", "unavailable"} else "unavailable"
+    return str(value) if value in {"healthy", "configured", "building", "degraded", "unavailable"} else "unavailable"
 
 
 def _safe_scalar(value: Any) -> str | None:

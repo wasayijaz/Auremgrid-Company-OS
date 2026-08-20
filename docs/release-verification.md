@@ -8,7 +8,7 @@ This matrix maps the product definition of complete to authoritative implementat
 | 2. Multiple clients under it | OrganizationDeliveryTests and DashboardService portfolio |
 | 3. Team members span clients | test_one_person_spans_multiple_client_workspaces |
 | 4. Client data remains isolated | cross-workspace evidence, project, relationship, connector, REST, and inference-leakage tests |
-| 5. Client brains retain temporal truth and provenance | temporal supersession, conflict, citation, source ACL, and prompt-injection tests |
+| 5. Client brains retain temporal truth and provenance | bitemporal recording/effective-time fences, temporal supersession, conflict, citation, source ACL, timezone validation, and prompt-injection tests |
 | 6. Projects and work run end to end | project/deliverable vertical slice, forced work loop, expanded hierarchy, dependencies, versions, and time tests |
 | 7. Review and approvals are enforced | review lifecycle, timestamped comments, single-decision, and approval authorization tests |
 | 8. Meetings and communication generate signals | client-operations, relationship, and promotion/sync tests |
@@ -22,8 +22,8 @@ This matrix maps the product definition of complete to authoritative implementat
 | 16. Automations trigger safely | training checkpoint, approved execution, outcome, and activation tests |
 | 17. MCP/API cover major domains | ExpandedApiTests and namespaced MCP discovery test |
 | 18. Dashboard surfaces major operations | 18 destinations including workflows, 8 metrics, an accountable Client HQ roster/meeting/workload/readiness view, a derived weekly capacity view, bearer-authenticated data fetches, operational Brain proposal/conflict/current-truth board, workflow stage board, capability-gated descriptor actions with idempotency/expected-version payloads, historical zero-action behavior, degraded/loading/empty states, and dashboard/API behavior tests |
-| 19. Projections rebuild after restart | ProjectionRestartTests, durable schema-16 embedding projection, and live rebuild report |
-| 20. Tests prove isolation, persistence, permissions, and workflows | 380 offline behavior tests |
+| 19. Projections rebuild after restart | ProjectionRestartTests, durable schema-16 embedding projection, opt-in local-only SentenceTransformers identity/version fencing, and live rebuild report |
+| 20. Tests prove isolation, persistence, permissions, and workflows | 400 offline behavior tests |
 | 21. README accurately describes reality | implemented/local fallback/optional/experimental/planned status sections |
 | 22. Existing data migrates forward | legacy-v1 migration test and schema 20 migration chain, including durable provider task identity, embedding projection, graph generations, entity resolution, knowledge states, existing-agent level backfill, and client account rosters |
 | 23. Wings coordinate through executable operating contracts | eight neutral templates, immutable definition versions/run snapshots, dependency and rework behavior, evidence/approval/handoff gates, REST/MCP parity, dashboard status, and workflow isolation tests |
@@ -33,6 +33,7 @@ This matrix maps the product definition of complete to authoritative implementat
 | 27. Credentials are not stored in operational records | hash-only auth tokens, external secret references, runtime resolution, redaction, and raw-database sentinel tests |
 | 28. Backups are verifiable and restores are fenced | online backup API, checksum/quick/FK checks, manifests, atomic restore, session revocation, recovery mode, outbound disable, and projection rebuild test |
 | 29. Enabled live read synchronization is restart-safe and honest | Slack/ClickUp/Google Drive/Gmail/Figma account and permission verification, explicit workspace mappings, durable provider cursors/inbox/dedupe, baseline-first backfill, Drive reconciliation/descendant tasks, Gmail label lifecycle, version-fenced exact-file Figma polling and tombstones, opaque cross-workspace quarantine, canonical ingestion, provider-aware retry timing, raw-DB secret scans, and no caller-controlled connected state |
+| 30. Brain retrieval is operable and explainable offline | dependency-free lexical fallback by default, opt-in local-only SentenceTransformers runtime configuration, ACL and bitemporal eligibility before scoring, bounded hybrid relevance/source-authority/recency contributions, deterministic ties, sanitized degraded health, and effective knowledge state across REST/MCP/dashboard reads |
 
 Release checks:
 

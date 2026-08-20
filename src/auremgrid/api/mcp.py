@@ -27,6 +27,8 @@ class McpToolRouter:
             {"name": "brain.propose", "description": "Create a human-gated brain proposal in the authenticated workspace."},
             {"name": "brain.promote", "description": "Approve or reject a brain proposal in the authenticated workspace."},
             {"name": "brain.resolve_conflict", "description": "Resolve a fact conflict with an authenticated winner."},
+            {"name": "brain.read", "description": "Read canonical fact states, proposals, conflicts, entities, and provider health."},
+            {"name": "brain.health", "description": "Read semantic and graph provider health plus canonical knowledge counts."},
             {"name": "brief", "description": "Assemble the client brief: brain, playbooks, open work, and last touchpoint."},
             {"name": "engines", "description": "Show what each open-source engine contributed for a query."},
             {"name": "work", "description": "List open or all work items in a workspace."},
@@ -104,6 +106,18 @@ class McpToolRouter:
                 return self._call_company_tool(name, arguments)
             workspace_id = _required(arguments, "workspace_id")
             actor_id = _optional_str(arguments.get("actor_id"))
+            if name in {"brain.read", "brain.health"}:
+                view = self.os.dashboard.brain(
+                    self.identity, self.identity.organization_id, workspace_id,
+                    self.identity.person_id, _optional_dt(arguments.get("as_of")),
+                )
+                if name == "brain.read":
+                    return view
+                return {
+                    "generated_at": view["generated_at"], "as_of": view["as_of"],
+                    "workspace": view["workspace"], "summary": view["summary"],
+                    "health": view["health"],
+                }
             if name == "search":
                 actor_id = _required(arguments, "actor_id")
                 as_of = _optional_dt(arguments.get("as_of"))
@@ -129,6 +143,7 @@ class McpToolRouter:
                     actor_id,
                     _required(arguments, "subject"),
                     predicate=arguments.get("predicate"),
+                    as_of=_optional_dt(arguments.get("as_of")),
                 )
             if name == "neighbors":
                 actor_id = _required(arguments, "actor_id")
