@@ -26,5 +26,9 @@ jobs:
         run: python -m pip install -e .
       - name: Compile source
         run: python -m compileall -q src tests
+      - name: Validate import structure
+        run: python -c "import auremgrid.storage; import auremgrid.domain; import auremgrid.services; import auremgrid.api; import auremgrid.connectors; import auremgrid.adapters"
       - name: Run verification suite
         run: python -m unittest discover -s tests -v
+      - name: Check git diff
+        run: git diff --check
