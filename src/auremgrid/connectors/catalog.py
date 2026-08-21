@@ -59,3 +59,6 @@ def connector_catalog() -> list[dict[str,object]]:
     return [{"source":item.source,"label":item.label,"object_types":list(item.object_types),
         "permission_scopes":list(item.permission_scopes),"status":item.default_status,
         "live_enabled":item.live_enabled} for item in TARGET_CONNECTORS]
+
+
+    ConnectorDefinition("notion","Notion",("pages","databases","blocks"),("read_content",)),
