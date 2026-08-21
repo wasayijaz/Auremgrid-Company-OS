@@ -70,9 +70,11 @@ proves the expected provider identity and the `current_user:read`,
 `file_metadata:read`, and `file_content:read` grants. Each poll reads current
 metadata first and downloads the file at that captured provider version only
 when it differs from the durable cursor. That fetched, version-fenced snapshot
-can retain bounded frame/section evidence; the parent file is the sole
-lifecycle and object-count record. Figma does not synchronize comments or
-named-version history, model review or approval workflows, or auto-create
+can retain bounded frame/section evidence. When `file_versions:read` is
+explicitly configured and proven, a changed file can also retain one bounded
+page of named-version evidence; the parent file is the sole lifecycle and
+object-count record. Figma does not synchronize comments, model review or
+approval workflows, or auto-create
 deliverables, reviews, or tasks. Inaccessible previously seen files produce
 tombstones; malformed or failed responses do not advance the cursor. Fireflies
 has no live adapter or execution path and remains a disabled catalog entry.

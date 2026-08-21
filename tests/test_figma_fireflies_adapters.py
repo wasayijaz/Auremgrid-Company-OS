@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json,unittest
-from auremgrid.connectors.figma import FigmaConnector,FIGMA_REQUIRED_PERMISSIONS,FIGMA_MAX_FRAME_TEXT,FIGMA_MAX_FRAME_PATH_ITEMS
+from auremgrid.connectors.figma import FigmaConnector,FIGMA_REQUIRED_PERMISSIONS,FIGMA_OPTIONAL_PERMISSIONS,FIGMA_MAX_FRAME_TEXT,FIGMA_MAX_FRAME_PATH_ITEMS
 from auremgrid.connectors.http import ConnectorTransportError,HttpResponse,HttpTransport
 
 class QueueTransport:
@@ -75,6 +75,31 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual([event.source_key for event in first.events],["figma/files/f1","figma/files/f1/nodes/2:1"])
         replay=connector.pull(first.next_cursor)
         self.assertEqual(replay.events,())
+
+    def test_figma_optional_versions_emit_bounded_evidence_only_on_file_change(self):
+        permissions=FIGMA_REQUIRED_PERMISSIONS|FIGMA_OPTIONAL_PERMISSIONS
+        t=QueueTransport([
+            {"id":"u1","email":"owner@figma.test"},{"file":{"version":"v1"}},{"name":"Design","document":{}},{"versions":[{"id":"verify-only"}]},
+            {"file":{"version":"v1"}},{"name":"Design","document":{}},{"versions":[{"id":"ver1","label":"Client review token=secret","created_at":"2026-08-19T00:00:00Z","user":{"id":"u1","handle":"Reviewer"}}]},
+            {"file":{"version":"v1"}},
+            {"file":{"version":"v2"}},{"name":"Design","document":{}},{"versions":[{"id":"ver1","label":"Client review token=secret","created_at":"2026-08-19T00:00:00Z"},{"id":"ver2","label":"Approved","created_at":"2026-08-19T00:10:00Z"}]},
+        ])
+        connector=FigmaConnector("secret",t,file_workspace_mappings={"file:f1":"ws1"},expected_account_id="u1",granted_permissions=permissions)
+        identity=connector.verify_credentials();self.assertEqual(identity.granted_permissions,permissions)
+        first=connector.pull()
+        self.assertEqual([event.event_type for event in first.events],["file","version"])
+        version=json.loads(first.events[-1].content)
+        self.assertEqual(version["workspace_ids"],["ws1"])
+        self.assertEqual(version["route_keys"],["file:f1"])
+        self.assertEqual(version["version_id"],"ver1")
+        self.assertNotIn("secret",first.events[-1].content)
+        second=connector.pull(first.next_cursor)
+        self.assertEqual(second.events,())
+        third=connector.pull(second.next_cursor)
+        self.assertEqual([event.source_key for event in third.events],["figma/files/f1","figma/files/f1/versions/ver1","figma/files/f1/versions/ver2"])
+        self.assertEqual(sum("/versions" in call[1] for call in t.calls),3)
+        self.assertEqual(sum("/comments" in call[1] for call in t.calls),0)
+        self.assertEqual(sum("/files/f1?version=v1" in call[1] for call in t.calls),1)
 
     def test_figma_frame_path_metadata_is_bounded_for_deep_trees(self):
         node={"id":"deep-frame","name":"Target","type":"FRAME","children":[]}

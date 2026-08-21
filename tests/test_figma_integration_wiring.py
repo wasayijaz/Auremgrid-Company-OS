@@ -46,6 +46,18 @@ class FigmaApiTransport:
                     }],
                 },
             }
+        elif url.endswith("/v1/files/file-1/versions?page_size=50"):
+            payload = {
+                "versions": [{
+                    "id": "version-history-1",
+                    "label": "Client review",
+                    "description": "Approved layout revision",
+                    "created_at": "2026-08-18T12:00:00Z",
+                    "user": {"id": "user-1", "handle": "Owner"},
+                }],
+            }
+        elif url.endswith("/v1/files/file-1/versions?page_size=1"):
+            payload = {"versions": []}
         else:
             raise AssertionError(f"unexpected Figma request: {method} {url}")
         return HttpResponse(200, {}, json.dumps(payload).encode())
@@ -179,5 +191,67 @@ class FigmaIntegrationWiringTests(unittest.TestCase):
             1,
         )
         self.assertEqual(self.os.integrations.get(self.identity, integration["id"])["object_count"], 1)
+
+    def test_real_adapter_persists_optional_version_evidence_without_extra_provider_route(self):
+        permissions = sorted(FIGMA_REQUIRED_PERMISSIONS | {"file_versions:read"})
+        integration = self.os.integrations.configure(
+            self.identity,
+            "figma",
+            "user-1",
+            {"file:file-1": self.ws.id},
+            permissions,
+        )
+        self.os.integrations.bind_credential(
+            self.identity,
+            integration["id"],
+            "Figma token",
+            "env:AUREMGRID_TEST_FIGMA",
+            ["connector:figma", *permissions],
+        )
+        transport = FigmaApiTransport()
+
+        with patch("auremgrid.connectors.figma.HttpTransport", return_value=transport):
+            self.os.integrations.verify(self.identity, integration["id"])
+            self.os.integrations.sync(self.identity, integration["id"])
+            source_count_after_first = self.os.store.conn.execute(
+                "SELECT COUNT(*) FROM sources WHERE workspace_id=?", (self.ws.id,),
+            ).fetchone()[0]
+            event_count_after_first = self.os.store.conn.execute(
+                "SELECT COUNT(*) FROM connector_source_events",
+            ).fetchone()[0]
+            version_reads_after_first = transport.calls.count(
+                "https://api.figma.com/v1/files/file-1/versions?page_size=50",
+            )
+            self.os.integrations.sync(self.identity, integration["id"])
+
+        source_keys = [
+            row["source_key"]
+            for row in self.os.store.conn.execute(
+                "SELECT source_key FROM sources WHERE workspace_id=? ORDER BY source_key", (self.ws.id,),
+            ).fetchall()
+        ]
+        self.assertIn("figma/files/file-1", source_keys)
+        self.assertIn("figma/files/file-1/versions/version-history-1", source_keys)
+        self.assertEqual(
+            self.os.store.conn.execute(
+                "SELECT COUNT(*) FROM provider_object_routes WHERE connector='figma' AND status='active'",
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(self.os.integrations.get(self.identity, integration["id"])["object_count"], 1)
+        self.assertEqual(
+            self.os.store.conn.execute("SELECT COUNT(*) FROM sources WHERE workspace_id=?", (self.ws.id,)).fetchone()[0],
+            source_count_after_first,
+        )
+        self.assertEqual(
+            self.os.store.conn.execute("SELECT COUNT(*) FROM connector_source_events").fetchone()[0],
+            event_count_after_first,
+        )
+        self.assertEqual(version_reads_after_first, 1)
+        self.assertEqual(
+            transport.calls.count("https://api.figma.com/v1/files/file-1/versions?page_size=50"),
+            version_reads_after_first,
+        )
+        self.assertEqual(sum("/comments" in url for url in transport.calls), 0)
 
 if __name__=="__main__":unittest.main()

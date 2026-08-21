@@ -14,6 +14,7 @@ FIGMA_MAX_FRAME_EVENTS=200
 FIGMA_MAX_FRAME_TEXT=8000
 FIGMA_MAX_FRAME_PATH_ITEMS=32
 FIGMA_FRAME_TYPES=frozenset({"FRAME","SECTION"})
+FIGMA_MAX_VERSION_EVENTS=50
 class FigmaMappingOverlap(ValidationError):
     def __init__(self,evidence_digest:str): super().__init__("Figma mapping overlap");self.evidence_digest=evidence_digest
 @dataclass(frozen=True)
@@ -73,7 +74,8 @@ class FigmaConnector:
         payload={"workspace_ids":[self.mappings[route]],"route_keys":[route],"file_key":key,"name":_text(p.get("name") or metadata.get("name")),"provider_version":version}
         observed=_text(metadata.get("last_touched_at") or p.get("lastModified"))
         event=ConnectorSourceEvent(dedupe,external,"file",external,f"https://www.figma.com/file/{key}",content,payload,observed,"application/json")
-        events=(event,*_frame_events(key,version,route,self.mappings[route],document,observed))
+        versions_snapshot=_optional_collection(self,"file_versions:read",f"https://api.figma.com/v1/files/{quote(key,safe='')}/versions?page_size={FIGMA_MAX_VERSION_EVENTS}","versions")
+        events=(event,*_frame_events(key,version,route,self.mappings[route],document,observed),*_version_events(key,version,route,self.mappings[route],versions_snapshot))
         return FigmaPullResult(events,_cursor(key,version),False,(RouteLifecycleMutation(external,route,self.mappings[route],"upsert",version,dedupe),))
     def _get(self,url:str)->dict[str,Any]:
         response=self.transport.request("GET",url,{"X-Figma-Token":self.token})
@@ -129,6 +131,29 @@ def _frame_payload(node,key,version,route,workspace,path):
     visible=node.get("visible")
     if isinstance(visible,bool):payload["visible"]=visible
     return payload
+def _optional_collection(connector,permission,url,key):
+    if permission not in connector.granted_permissions:return ()
+    value=connector._get(url)
+    items=value.get(key)
+    if not isinstance(items,list):raise ConnectorTransportError("Figma optional response shape is invalid")
+    return tuple(sanitize_content(items,(connector.token,)))
+def _version_events(key,provider_version,route,workspace,versions):
+    events=[];seen=set()
+    for index,item in enumerate(versions):
+        if len(events)>=FIGMA_MAX_VERSION_EVENTS:break
+        if not isinstance(item,dict):continue
+        version_id=_text(item.get("id")) or _digest(key,"version",str(index),json.dumps(item,sort_keys=True,separators=(",",":"),ensure_ascii=False))[:16]
+        if version_id in seen:continue
+        seen.add(version_id)
+        payload={"workspace_ids":[workspace],"route_keys":[route],"file_key":key,"provider_version":provider_version,"version_id":version_id,"label":_bounded_text(item.get("label") or item.get("name"),240),"description":_bounded_text(item.get("description"),1200),"created_at":_text(item.get("created_at"))}
+        user=item.get("user")
+        if isinstance(user,dict):payload["user"]={k:_bounded_text(user.get(k),240) for k in ("id","handle","email") if _bounded_text(user.get(k),240)}
+        payload={k:v for k,v in payload.items() if v is not None and v!=""}
+        content=json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=False)
+        external=f"figma/files/{key}/versions/{version_id}"
+        dedupe=_digest(external,provider_version,hashlib.sha256(content.encode()).hexdigest())
+        events.append(ConnectorSourceEvent(dedupe,external,"version",external,f"https://www.figma.com/file/{quote(key,safe='')}?version-id={quote(version_id,safe='')}",content,payload,payload.get("created_at"),"application/json"))
+    return tuple(events)
 def _node_texts(node):
     values=[]
     for child,_path in _walk_nodes(node,()):

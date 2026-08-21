@@ -12,9 +12,10 @@ backfill/change checkpoints, lifecycle-aware routing, and redacted overlap
 quarantine. Figma requires `current_user:read`, `file_metadata:read`, and
 `file_content:read`; polling reads current metadata first and downloads content
 only when the version changes. The fetched, version-fenced file snapshot can
-retain bounded frame/section evidence, but the parent file is the only
-lifecycle and object-count record. Figma does not ingest comments or named
-version history, model review or approval workflows, or auto-create
+retain bounded frame/section evidence. When `file_versions:read` is explicitly
+configured and proven, a changed file can also retain one bounded page of
+named-version evidence. The parent file is the only lifecycle and object-count
+record. Figma does not ingest comments, model review or approval workflows, or auto-create
 deliverables, reviews, or tasks. GitHub, Fireflies, Meta Ads, Google Ads, and
 finance providers remain disabled catalog entries and have no live adapter or
 integration wiring. Connectors never own organization identity, permissions,
