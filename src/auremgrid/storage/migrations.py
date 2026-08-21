@@ -1982,9 +1982,137 @@ MIGRATIONS = (
             ) THEN RAISE(ABORT,'client intake requires a client workspace') END;
         END;
         """,
+    ),,
+    Migration(
+        23,
+        "feedback_learning",
+        """
+        CREATE TABLE IF NOT EXISTS feedback_patterns (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            category TEXT NOT NULL CHECK(category IN ('design','copy','approval','stakeholder','process','other')),
+            pattern_key TEXT NOT NULL,
+            occurrence_count INTEGER NOT NULL DEFAULT 1,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            sample_evidence TEXT NOT NULL DEFAULT '[]',
+            proposed_preference_id TEXT,
+            preference_status TEXT NOT NULL DEFAULT 'observing' CHECK(preference_status IN ('observing','proposed','approved','rejected')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            UNIQUE(organization_id, workspace_id, category, pattern_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_feedback_patterns_ws ON feedback_patterns(organization_id, workspace_id, category);
+        CREATE TABLE IF NOT EXISTS feedback_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            pattern_id TEXT,
+            category TEXT NOT NULL,
+            raw_feedback TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            source_id TEXT,
+            recorded_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(pattern_id) REFERENCES feedback_patterns(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_feedback_events_ws ON feedback_events(organization_id, workspace_id, created_at);
+        """,
+    ),
+    Migration(
+        24,
+        "performance_insights",
+        """
+        CREATE TABLE IF NOT EXISTS performance_insights (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            insight_type TEXT NOT NULL CHECK(insight_type IN ('creative_comparison','channel_comparison','trend','anomaly','client_preference')),
+            subject_type TEXT NOT NULL,
+            subject_id TEXT NOT NULL,
+            comparison_subject_id TEXT,
+            metric_name TEXT NOT NULL,
+            metric_value_a REAL,
+            metric_value_b REAL,
+            delta REAL,
+            direction TEXT NOT NULL CHECK(direction IN ('positive','negative','neutral')),
+            confidence REAL NOT NULL DEFAULT 0.0,
+            evidence_summary TEXT NOT NULL,
+            source_snapshot_ids TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN ('proposed','approved','rejected','superseded')),
+            approved_by_person_id TEXT,
+            approved_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_perf_insights_ws ON performance_insights(organization_id, workspace_id, insight_type, status);
+        """,
+    ),
+    Migration(
+        25,
+        "forecasts",
+        """
+        CREATE TABLE IF NOT EXISTS forecasts (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id,
+            forecast_type TEXT NOT NULL CHECK(forecast_type IN ('client_renewal','revenue','capacity','scope_consumption','utilization','delivery_pressure')),
+            subject_id TEXT,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            predicted_value REAL NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.0,
+            basis TEXT NOT NULL DEFAULT '[]',
+            data_points INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','expired','superseded')),
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_forecasts_org ON forecasts(organization_id, forecast_type, status);
+        CREATE INDEX IF NOT EXISTS idx_forecasts_ws ON forecasts(organization_id, workspace_id, forecast_type);
+        """,
+    ),
+    Migration(
+        26,
+        "retention_and_deletion",
+        """
+        CREATE TABLE IF NOT EXISTS retention_policies (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK(scope IN ('organization','workspace','connector')),
+            scope_id TEXT,
+            data_category TEXT NOT NULL,
+            max_age_days INTEGER NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('archive','delete','redact')),
+            created_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE TABLE IF NOT EXISTS deletion_audit (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id,
+            table_name TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            initiated_by TEXT NOT NULL,
+            retention_policy_id TEXT,
+            snapshot_json TEXT,
+            deleted_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_deletion_audit_org ON deletion_audit(organization_id, deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_retention_policies_org ON retention_policies(organization_id, scope);
+        """
     ),
 )
-
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "L0": ("execute", "format", "extract", "summarize", "draft"),
