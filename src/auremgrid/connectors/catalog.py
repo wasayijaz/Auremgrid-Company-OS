@@ -27,7 +27,7 @@ TARGET_CONNECTORS = (
     ConnectorDefinition("clickup","ClickUp",("projects","tasks","comments"),("authorized_team",),live_enabled=True),
     ConnectorDefinition("figma","Figma",("files",),("current_user:read","file_metadata:read","file_content:read"),live_enabled=True),
     ConnectorDefinition("github","GitHub",("repositories","issues","pull_requests"),("repo:read",)),
-    ConnectorDefinition("fireflies","Fireflies",("meetings","transcripts","participants"),("transcripts:read",)),
+    ConnectorDefinition("fireflies","Fireflies",("meetings","transcripts","participants"),("transcripts:read",),live_enabled=True),
     ConnectorDefinition("meta_ads","Meta Ads",("campaigns","ad_sets","ads","insights"),("ads_read",)),
     ConnectorDefinition("google_ads","Google Ads",("campaigns","ad_groups","ads","metrics"),("adwords",)),
     ConnectorDefinition("stripe_accounting","Stripe / accounting",("invoices","payments","revenue","costs"),("finance:read",)),

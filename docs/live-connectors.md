@@ -1,7 +1,8 @@
 # Live connector synchronization
 
 Auremgrid has credential-backed read synchronization for Slack, ClickUp,
-Google Drive, Gmail, and explicitly mapped Figma files. Google server-side
+Google Drive, Gmail, explicitly mapped Figma files, and a single mapped
+Fireflies account. Google server-side
 contracts require a read-only Google scope and explicit `folder:<id>` /
 `drive:<id>` or `label:<id>` mappings. Integration responses report
 `live_enabled: true` only after the catalog gate; verification still requires
@@ -76,8 +77,18 @@ page of named-version evidence; the parent file is the sole lifecycle and
 object-count record. Figma does not synchronize comments, model review or
 approval workflows, or auto-create
 deliverables, reviews, or tasks. Inaccessible previously seen files produce
-tombstones; malformed or failed responses do not advance the cursor. Fireflies
-has no live adapter or execution path and remains a disabled catalog entry.
+tombstones; malformed or failed responses do not advance the cursor.
+
+Fireflies synchronization requires exactly one `account:<id>` mapping to one
+workspace, since a Fireflies API key is scoped to a single account with no
+per-team or per-workspace filter and cannot fan transcripts out to multiple
+mapped routes. Verification proves the expected provider account identity and
+the `transcripts:read` scope. Each poll fetches transcripts from the durable
+high-watermark date cursor, emits one bounded transcript event per meeting
+with sanitized summary and sentence evidence, and advances the cursor to the
+newest transcript date seen on that page. Fireflies has no delete/removal
+signal, so it never emits tombstones; malformed responses do not advance the
+cursor.
 
 ## Current deployment boundary
 

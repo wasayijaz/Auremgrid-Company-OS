@@ -2,6 +2,8 @@ from __future__ import annotations
 import json,unittest
 from auremgrid.connectors.figma import FigmaConnector,FIGMA_REQUIRED_PERMISSIONS,FIGMA_OPTIONAL_PERMISSIONS,FIGMA_MAX_FRAME_TEXT,FIGMA_MAX_FRAME_PATH_ITEMS,FIGMA_MAX_COMMENTS
 from auremgrid.connectors.http import ConnectorTransportError,HttpResponse,HttpTransport
+from auremgrid.connectors.fireflies import FirefliesConnector,FIREFLIES_REQUIRED_SCOPES
+from auremgrid.domain.errors import ValidationError
 
 class QueueTransport:
     def __init__(self,payloads):self.payloads=list(payloads);self.calls=[]
@@ -147,5 +149,60 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(comment["resolved"],False)
         self.assertEqual(comment["user"]["name"],"Alice")
         self.assertTrue(sum("/comments" in call[1] for call in t.calls)>0)
+
+class FirefliesAdapterContractTests(unittest.TestCase):
+    def test_fireflies_requires_single_account_mapping(self):
+        with self.assertRaises(ValidationError):
+            FirefliesConnector("secret",workspace_mappings={})
+        with self.assertRaises(ValidationError):
+            FirefliesConnector("secret",workspace_mappings={"account:a1":"ws1","account:a2":"ws2"})
+        with self.assertRaises(ValidationError):
+            FirefliesConnector("secret",workspace_mappings={"bad:a1":"ws1"})
+
+    def test_fireflies_verify_and_pull_emits_bounded_transcript_events(self):
+        t=QueueTransport([
+            {"id":"u1","email":"owner@fireflies.test"},
+            {"transcripts":[{
+                "id":"m1","title":"Client sync","date":"2026-08-19T00:00:00Z","duration":1800,
+                "participants":[{"name":"Alice"},{"name":"Bob"}],"sentiment":"positive",
+                "summary":{"short":"Discussed scope","long":"Detailed notes token=secret"},
+                "speakers":[{"id":"s1","name":"Alice","sentences":[{"text":"Hello there","start_time":0}]}],
+                "recording_url":"https://fireflies.test/rec/m1",
+            }]},
+        ])
+        connector=FirefliesConnector("secret",t,workspace_mappings={"account:a1":"ws1"},expected_account_id="u1")
+        identity=connector.verify_credentials()
+        self.assertEqual(identity.user_id,"u1");self.assertEqual(identity.granted_scopes,FIREFLIES_REQUIRED_SCOPES)
+        result=connector.pull()
+        self.assertEqual(len(result.events),1)
+        event=result.events[0]
+        self.assertEqual(event.source_key,"fireflies/meetings/m1")
+        self.assertEqual(event.event_type,"transcript")
+        payload=json.loads(event.content)
+        self.assertEqual(payload["meeting_id"],"m1")
+        self.assertEqual(payload["title"],"Client sync")
+        self.assertNotIn("secret",event.content)
+        self.assertEqual(len(result.lifecycle_mutations),1)
+        mutation=result.lifecycle_mutations[0]
+        self.assertEqual(mutation.route_key,"account:a1");self.assertEqual(mutation.workspace_id,"ws1")
+        self.assertEqual(mutation.operation,"upsert")
+
+    def test_fireflies_account_mismatch_is_rejected(self):
+        t=QueueTransport([{"id":"other","email":"x"}])
+        connector=FirefliesConnector("secret",t,workspace_mappings={"account:a1":"ws1"},expected_account_id="u1")
+        with self.assertRaises(ConnectorTransportError):
+            connector.verify_credentials()
+
+    def test_fireflies_cursor_advances_and_dedupes_across_pulls(self):
+        t=QueueTransport([
+            {"transcripts":[{"id":"m1","date":"2026-08-19T00:00:00Z","title":"First"}]},
+            {"transcripts":[]},
+        ])
+        connector=FirefliesConnector("secret",t,workspace_mappings={"account:a1":"ws1"})
+        first=connector.pull()
+        self.assertEqual(len(first.events),1);self.assertIsNotNone(first.next_cursor)
+        second=connector.pull(first.next_cursor)
+        self.assertEqual(second.events,())
+        self.assertIn("from_date=2026-08-19T00:00:00Z",t.calls[-1][1])
 
 if __name__=="__main__":unittest.main()

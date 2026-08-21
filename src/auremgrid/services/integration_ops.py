@@ -23,6 +23,7 @@ from auremgrid.connectors.google_drive import (
 )
 from auremgrid.connectors.http import ConnectorTransportError, sanitize_content
 from auremgrid.connectors.figma import FigmaConnector, FigmaMappingOverlap, FIGMA_REQUIRED_PERMISSIONS, FIGMA_OPTIONAL_PERMISSIONS
+from auremgrid.connectors.fireflies import FirefliesConnector, FirefliesMappingOverlap, FIREFLIES_REQUIRED_SCOPES
 from auremgrid.connectors.slack import SlackConnector
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
 from auremgrid.domain.security import AuthenticatedIdentity
@@ -33,10 +34,10 @@ from auremgrid.storage.sqlite import ProviderSyncFence
 GOOGLE_DRIVE_READ_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 
-CONFIGURABLE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail", "figma"})
+CONFIGURABLE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail", "figma", "fireflies"})
 # Google live synchronization is enabled only after the durable routing,
 # account, backfill, reconciliation, and quarantine gates in this branch.
-LIVE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail", "figma"})
+LIVE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail", "figma", "fireflies"})
 
 
 def _now() -> str:
@@ -458,7 +459,7 @@ class IntegrationOperations:
                                 ).fetchall()
                                 activates = any(row["operation"] == "activate" for row in staged)
                                 if activates or not self._uses_provider_lifecycle(integration["source"]) or (
-                                    integration["source"] == "figma" and not staged
+                                    integration["source"] in {"figma", "fireflies"} and not staged
                                 ):
                                     result = self.os.ingest_text(
                                         workspace_id, actor_id, event["source_key"], event["content"], event["locator"],
@@ -618,7 +619,7 @@ class IntegrationOperations:
             return {"integration_id": integration_id, "status": "completed", "seen": total_seen,
                     "created": total_created, "quarantined":total_quarantined,
                     "backfill_remaining":backfill_remaining,"batch_ids": batches}
-        except (GoogleDriveMappingOverlap, GmailMappingOverlap, FigmaMappingOverlap) as exc:
+        except (GoogleDriveMappingOverlap, GmailMappingOverlap, FigmaMappingOverlap, FirefliesMappingOverlap) as exc:
             # Quarantine only a redacted organization-level digest.  The
             # stream cursor is still untouched because the exception occurs
             # before ``record_pull``; neither workspace learns object existence.
@@ -807,6 +808,13 @@ class IntegrationOperations:
             }
             connector = FigmaConnector(secret, file_workspace_mappings=full_mappings, **common)
             return self._provider_pull_page(connector.pull(cursor), source, external_key, workspace_id)
+        if source == "fireflies":
+            full_mappings = dict(integration.get("workspace_mappings") or {external_key: workspace_id})
+            connector = FirefliesConnector(
+                secret, workspace_mappings=full_mappings,
+                expected_account_id=integration["expected_account_id"],
+            )
+            return self._provider_pull_page(connector.pull(cursor), source, external_key, workspace_id)
         raise ValidationError("connector adapter is not enabled for live synchronization")
 
     def _provider_pull_page(
@@ -833,7 +841,7 @@ class IntegrationOperations:
     def _overlap_type(source: str) -> type[Exception]:
         return {
             "google_drive": GoogleDriveMappingOverlap, "gmail": GmailMappingOverlap,
-            "figma": FigmaMappingOverlap,
+            "figma": FigmaMappingOverlap, "fireflies": FirefliesMappingOverlap,
         }[source]
 
     def _google_pull_page(
@@ -1098,6 +1106,11 @@ class IntegrationOperations:
                 expected_account_id=integration["expected_account_id"],
                 granted_scopes=integration.get("_runtime_granted_permissions", ()),
             ).verify_credentials()
+        if source == "fireflies":
+            return FirefliesConnector(
+                secret, workspace_mappings=integration["workspace_mappings"],
+                expected_account_id=integration["expected_account_id"],
+            ).verify_credentials()
         raise ValidationError("unsupported live connector")
 
     def _refresh_google_access(
@@ -1167,7 +1180,7 @@ class IntegrationOperations:
 
     @staticmethod
     def _uses_provider_lifecycle(source: str) -> bool:
-        return source in {"google_drive", "gmail", "figma"}
+        return source in {"google_drive", "gmail", "figma", "fireflies"}
 
     @staticmethod
     def _drive_mappings(workspace_mappings: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
@@ -1332,6 +1345,8 @@ class IntegrationOperations:
             )
         if source == "figma":
             return value.user_id,value.email or value.user_id,tuple(value.granted_permissions)
+        if source == "fireflies":
+            return value.user_id,value.email or value.user_id,tuple(value.granted_scopes)
         raise ValidationError("unsupported provider identity")
 
     @staticmethod
@@ -1351,6 +1366,8 @@ class IntegrationOperations:
             or not permissions.issubset(FIGMA_REQUIRED_PERMISSIONS | FIGMA_OPTIONAL_PERMISSIONS)
         ):
             raise ValidationError("Figma synchronization requires current_user:read, file_metadata:read, and file_content:read")
+        if source == "fireflies" and permissions != FIREFLIES_REQUIRED_SCOPES:
+            raise ValidationError("Fireflies synchronization requires transcripts:read permission")
 
     @staticmethod
     def _validate_mapping_keys(source: str, workspace_mappings: dict[str, str]) -> None:
@@ -1366,6 +1383,9 @@ class IntegrationOperations:
             raise ValidationError("Gmail mappings must use label:<id>")
         if source == "figma" and any(not key.startswith("file:") or not key[5:].strip() for key in keys):
             raise ValidationError("Figma mappings must use file:<key>")
+        if source == "fireflies":
+            if len(keys) != 1 or any(not key.startswith("account:") or not key[8:].strip() for key in keys):
+                raise ValidationError("Fireflies requires exactly one account:<id> mapping")
 
     @staticmethod
     def _canonicalize_mappings(workspace_mappings: dict[str, str]) -> dict[str, str]:

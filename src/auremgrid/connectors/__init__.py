@@ -6,6 +6,7 @@ from auremgrid.connectors.http import ConnectorTransportError, HttpResponse, Htt
 from auremgrid.connectors.slack import SlackAccountIdentity, SlackConnector
 from auremgrid.connectors.clickup import ClickUpConnector, ClickUpTeamIdentity
 from auremgrid.connectors.figma import FigmaConnector
+from auremgrid.connectors.fireflies import FirefliesConnector
 
 __all__ = [
     "ConnectorBus",
@@ -24,4 +25,5 @@ __all__ = [
     "ClickUpConnector",
     "ClickUpTeamIdentity",
     "FigmaConnector",
+    "FirefliesConnector",
 ]
