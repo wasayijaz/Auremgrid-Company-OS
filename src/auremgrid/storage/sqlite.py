@@ -261,11 +261,15 @@ class SqliteStore:
         self._lock = threading.RLock()
         self._transaction_depth = 0
 
-    @property
-    def schema_version(self) -> int:
-        return schema_version(self.conn)
+   @property
+   def schema_version(self) -> int:
+       return schema_version(self.conn)
 
-    @staticmethod
+    @property
+    def raw_connection(self):
+        return self.conn
+
+   @staticmethod
     def now_iso() -> str:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 

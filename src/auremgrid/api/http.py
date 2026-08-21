@@ -72,11 +72,27 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         params = {key: values[0] for key, values in parse_qs(parsed.query).items()}
         try:
-            identity = None
-            if parsed.path not in {"/", "/dashboard", "/health"}:
-                identity = self._authenticate_request(parsed.path, "GET", params)
-            if parsed.path == "/health":
-                self._json(200, {"ok": True, "schema_version": self.os.store.schema_version})
+           identity = None
+           if parsed.path not in {"/", "/dashboard", "/health"}:
+            if parsed.path not in {"/", "/dashboard", "/health", "/metrics", "/health/detailed"}:
+               identity = self._authenticate_request(parsed.path, "GET", params)
+           if parsed.path == "/health":
+               self._json(200, {"ok": True, "schema_version": self.os.store.schema_version})
+               return
+            if parsed.path == "/metrics":
+                from auremgrid.observability import get_metrics
+                self._json(200, get_metrics().snapshot())
+                return
+            if parsed.path == "/health/detailed":
+                from auremgrid.lifecycle import startup_health
+                from auremgrid.observability import get_metrics
+                health_warnings = startup_health(self.os.store.raw_connection, getattr(self.os.store, "path", ":memory:"))
+                self._json(200, {
+                    "ok": len(health_warnings) == 0,
+                    "schema_version": self.os.store.schema_version,
+                    "warnings": health_warnings,
+                    "metrics": get_metrics().snapshot(),
+                })
                 return
             if parsed.path == "/auth/me":
                 assert identity is not None
