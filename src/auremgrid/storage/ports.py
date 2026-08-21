@@ -1,0 +1,26 @@
+from __future__ import annotations
+from typing import Any, Iterator, Protocol
+from contextlib import contextmanager
+
+
+class StoragePort(Protocol):
+    """Storage backend contract. SqliteStore and PostgresStore implement this."""
+
+    @contextmanager
+    def atomic(self, *, immediate: bool = False) -> Iterator[Any]: ...
+
+    def execute(self, sql: str, params: tuple = ()) -> Any: ...
+
+    def executemany(self, sql: str, params_list: list[tuple]) -> Any: ...
+
+    def fetchone(self, sql: str, params: tuple = ()) -> dict[str, Any] | None: ...
+
+    def fetchall(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]: ...
+
+    @property
+    def schema_version(self) -> int: ...
+
+    def close(self) -> None: ...
+
+    @property
+    def raw_connection(self) -> Any: ...

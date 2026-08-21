@@ -8,7 +8,7 @@ from auremgrid.adapters.semantic import embedding_provider_from_config
 from auremgrid.adapters.graphiti_upstream import graph_projection_from_environment
 from auremgrid.api.http import serve
 from auremgrid.services.brain import CompanyOS
-from auremgrid.storage.backup import create_backup, restore_backup, verify_backup
+from auremgrid.storage.backup import check_integrity, create_backup, list_backup_points, restore_backup, rotate_backups, verify_backup
 from auremgrid.services.worker import run_one_job
 
 
@@ -58,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
     serve_cmd.add_argument("--db", default="auremgrid.sqlite")
     serve_cmd.add_argument("--host", default="127.0.0.1")
     serve_cmd.add_argument("--port", type=int, default=8787)
+    serve_cmd.add_argument("--storage", choices=["sqlite", "postgres"], default="sqlite")
+    serve_cmd.add_argument("--postgres-url", help="PostgreSQL connection URL (required when --storage postgres)")
     serve_cmd.add_argument("--seed", action="store_true")
 
     sync = sub.add_parser("sync", help="pull connector events into the evidence layer")
@@ -93,6 +95,12 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_auth.add_argument("--workspace")
     bootstrap_auth.add_argument("--actor")
 
+    backup_rotate.add_argument("--keep-weekly", type=int, default=4)
+    backup_rotate.add_argument("--keep-daily", type=int, default=7)
+    backup_rotate.add_argument("--dir", required=True, help="backup directory")
+    backup_rotate = sub.add_parser("backup-rotate", help="delete old backups beyond retention policy")
+    check_int.add_argument("--db", required=True)
+    check_int = sub.add_parser("check-integrity", help="run database integrity checks")
     worker = sub.add_parser("worker-once", help="claim and execute one durable job, then exit")
     worker.add_argument("--db", required=True)
     worker.add_argument("--organization", required=True)
@@ -191,6 +199,19 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=2))
         finally:
             os.close()
+        return 0
+    if args.command == "check-integrity":
+        import sqlite3
+        conn = sqlite3.connect(args.db)
+        try:
+            result = check_integrity(conn)
+        finally:
+            conn.close()
+        print(json.dumps(result, indent=2))
+        return 0
+    if args.command == "backup-rotate":
+        result = rotate_backups(args.dir, keep_daily=args.keep_daily, keep_weekly=args.keep_weekly)
+        print(json.dumps(result, indent=2))
         return 0
     return 1
 
