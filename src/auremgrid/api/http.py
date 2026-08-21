@@ -56,6 +56,8 @@ def _route_capability(path: str, method: str) -> str:
     if path in {"/memory-proposals", "/remember"}: return "brain_propose"
     if path in {"/people", "/workspace-memberships"}: return "people_manage"
     if path in {"/clients/roster", "/meetings/responsibilities"} and method == "POST": return "people_manage"
+    if path in {"/client-portal/intake/accept", "/client-portal/intake/decline"}: return "people_manage"
+    if path in {"/client-portal/intake", "/client-portal/reviews/comment", "/client-portal/reviews/decide"} and method == "POST": return "client_portal"
     if path in {"/organizations", "/workspaces"}: return "organization_manage"
     return "workspace_write"
 
@@ -319,6 +321,19 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 organization_id,workspace_id=_need(params,"organization_id"),_optional_str(params.get("workspace_id")); job_id=_need(params,"job_id")
                 self._json(200,{"job":self.os.jobs.get_job(organization_id,workspace_id,job_id),
                     "events":self.os.jobs.job_events(organization_id,workspace_id,job_id)}); return
+            if parsed.path == "/client-portal/intake":
+                organization_id,workspace_id,person_id=_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id")
+                items=self.os.client_portal.list_intake_requests(organization_id,workspace_id,person_id,params.get("status"))
+                self._json(200,{"intake_requests":items}); return
+            if parsed.path == "/client-portal/intake/queue":
+                organization_id,workspace_id,person_id=_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id")
+                self.os._require_person_access(organization_id,workspace_id,person_id)
+                items=self.os.client_portal.list_intake_queue(organization_id,workspace_id)
+                self._json(200,{"intake_requests":items}); return
+            if parsed.path == "/client-portal/reviews":
+                organization_id,workspace_id,person_id=_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id")
+                items=self.os.client_portal.list_client_reviews(organization_id,workspace_id,person_id)
+                self._json(200,{"reviews":items}); return
             self._json(404, {"error": "not_found"})
         except Exception as exc:
             self._handle_error(exc)
@@ -455,6 +470,37 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._json(200, item.to_dict())
                 return
+            if parsed.path == "/client-portal/intake":
+                item = self.os.client_portal.submit_intake_request(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"), _need(payload, "person_id"),
+                    _need(payload, "title"), _need(payload, "request"), _optional_str(payload.get("needed_by")),
+                )
+                self._json(201, item); return
+            if parsed.path == "/client-portal/intake/accept":
+                item = self.os.client_portal.accept_intake_request(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"), _need(payload, "person_id"),
+                    _need(payload, "intake_request_id"), _optional_str(payload.get("assignee_id")),
+                    _optional_str(payload.get("decision_maker")),
+                )
+                self._json(200, item); return
+            if parsed.path == "/client-portal/intake/decline":
+                item = self.os.client_portal.decline_intake_request(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"), _need(payload, "person_id"),
+                    _need(payload, "intake_request_id"), str(payload.get("note", "")),
+                )
+                self._json(200, item); return
+            if parsed.path == "/client-portal/reviews/comment":
+                item = self.os.client_portal.add_client_review_comment(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"), _need(payload, "person_id"),
+                    _need(payload, "review_id"), _need(payload, "body"),
+                )
+                self._json(201, item.to_dict()); return
+            if parsed.path == "/client-portal/reviews/decide":
+                item = self.os.client_portal.decide_client_review(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"), _need(payload, "person_id"),
+                    _need(payload, "review_id"), _need(payload, "decision"),
+                )
+                self._json(200, item.to_dict()); return
             if parsed.path == "/decisions":
                 item = self.os.create_decision(
                     _need(payload, "organization_id"), _need(payload, "person_id"),

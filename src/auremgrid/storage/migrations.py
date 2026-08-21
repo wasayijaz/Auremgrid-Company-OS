@@ -1950,6 +1950,39 @@ MIGRATIONS = (
             SELECT RAISE(ABORT,'Graphiti episode mappings are append-only'); END;
         """,
     ),
+    Migration(
+        22,
+        "client_portal_intake",
+        """
+        CREATE TABLE IF NOT EXISTS client_intake_requests (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            submitted_by_person_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            request TEXT NOT NULL,
+            needed_by TEXT,
+            status TEXT NOT NULL CHECK(status IN ('pending','accepted','declined')) DEFAULT 'pending',
+            work_item_id TEXT,
+            decided_by_person_id TEXT,
+            decision_note TEXT,
+            created_at TEXT NOT NULL,
+            decided_at TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(submitted_by_person_id) REFERENCES people(id),
+            FOREIGN KEY(work_item_id) REFERENCES work_items(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_client_intake_queue ON client_intake_requests(workspace_id,status,created_at);
+        CREATE TRIGGER IF NOT EXISTS client_intake_requests_valid_insert
+        BEFORE INSERT ON client_intake_requests BEGIN
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM workspace_organization
+                WHERE workspace_id=NEW.workspace_id AND organization_id=NEW.organization_id AND kind='client'
+            ) THEN RAISE(ABORT,'client intake requires a client workspace') END;
+        END;
+        """,
+    ),
 )
 
 

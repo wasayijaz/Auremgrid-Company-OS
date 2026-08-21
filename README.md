@@ -54,6 +54,7 @@ This is an operating control plane, not a replacement for every specialist tool.
 | Company brain | Sources, documents, temporal facts, relations, citations, aliases, conflicts, history, proposals, knowledge health | Implemented; SQLite FTS5 and local projections |
 | Client operations | Briefs, health explanations, risks, opportunities, contacts, relationships, meetings, conversations, unanswered requests | Implemented |
 | Projects and delivery | Projects, work hierarchy, subtasks, dependencies, comments, files, versions, time entries, reviews, approvals, forced delivery stages | Implemented |
+| Client portal | Client-role identities, bounded intake request front door with explicit staff accept/decline, client comments and decisions on client-kind reviews only | Implemented |
 | Cross-wing workflows | Neutral templates, immutable definition versions/runs, readiness, evidence, gates, handoffs, SLAs, escalation, cancellation, rework | Implemented; eight representative templates |
 | Campaigns and content | Campaigns, sourced metrics, creatives, content stages, performance snapshots | Implemented; values remain unknown/not connected until sourced |
 | People and capacity | Skills, availability, leave, derived weekly workload/capacity by person, account, and wing | Implemented |

@@ -36,12 +36,19 @@ CAPABILITIES: tuple[str, ...] = (
     "backup_create",
     "backup_restore",
     "auth_manage",
+    "client_portal",
 )
 
 ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
     "owner": frozenset(CAPABILITIES),
     "admin": frozenset(CAPABILITIES),
     "member": frozenset({"workspace_read", "workspace_write", "workflow_run", "brain_read", "brain_propose"}),
+    # An external client contact granted portal access.  Organization role
+    # is deliberately as narrow as workspace role: a client principal must
+    # never inherit staff capabilities even if a workspace membership is
+    # later misconfigured to "admin" by mistake, because the intersection
+    # of org and workspace capabilities is what governs access.
+    "client": frozenset({"workspace_read", "client_portal"}),
 }
 
 WORKSPACE_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
@@ -51,6 +58,13 @@ WORKSPACE_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
         "brain_read", "brain_propose", "integration_sync", "agent_run", "automation_execute",
     }),
     "viewer": frozenset({"workspace_read", "brain_read"}),
+    # External client-portal identities.  Deliberately excludes
+    # "workspace_write" so a client cannot mutate internal work state
+    # directly; portal-specific actions (intake submission, client review
+    # decisions) are granted through the narrower "client_portal" capability
+    # instead, keeping the client role's blast radius bounded even if the
+    # portal service layer has a bug.
+    "client": frozenset({"workspace_read", "client_portal"}),
 }
 
 

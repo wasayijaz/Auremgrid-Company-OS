@@ -26,7 +26,7 @@ class BackupRestoreTests(unittest.TestCase):
             os.close()
 
             self.assertEqual(manifest["integrity"], "ok")
-            self.assertEqual(manifest["schema_version"], 21)
+            self.assertEqual(manifest["schema_version"], 22)
             sidecar = json.loads(backup_path.with_suffix(".sqlite.manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(sidecar["sha256"], manifest["sha256"])
             restored = restore_backup(backup_path, restored_path)

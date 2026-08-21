@@ -366,7 +366,7 @@ class UpstreamGraphitiTests(unittest.TestCase):
             os.store.conn.commit()
             os.close()
             replayed = CompanyOS(path, graph_projection=UpstreamGraphitiProjection(client=FakeGraphiti()))
-            self.assertEqual(replayed.store.schema_version, 21)
+            self.assertEqual(replayed.store.schema_version, 22)
             self.assertEqual(
                 replayed.store.conn.execute("SELECT COUNT(*) FROM graphiti_episode_mappings").fetchone()[0], 1
             )

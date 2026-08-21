@@ -59,6 +59,7 @@ from auremgrid.services.auth import AuthService
 from auremgrid.services.job_ops import JobOperations
 from auremgrid.services.secrets import EnvironmentSecretStore, SecretBindingService
 from auremgrid.services.integration_ops import IntegrationOperations
+from auremgrid.services.client_portal import ClientPortalOperations
 from auremgrid.adapters.semantic import (
     DeterministicFallbackEmbeddingProvider,
     EmbeddingProvider,
@@ -131,6 +132,7 @@ class CompanyOS:
         self.jobs = JobOperations(self.store.conn, new_id)
         self.secrets = SecretBindingService(self.store.conn, new_id, EnvironmentSecretStore())
         self.integrations = IntegrationOperations(self)
+        self.client_portal = ClientPortalOperations(self.store, self.company, new_id)
         self.rebuild_projections(rebuild_graph=graph_projection is None)
         if graph_projection is not None:
             self._restore_durable_graph_generations()
@@ -438,7 +440,7 @@ class CompanyOS:
     ) -> Person:
         if self.company.get_organization(organization_id) is None:
             raise NotFoundError(f"organization not found: {organization_id}")
-        if not name.strip() or role not in {"owner", "admin", "member"}:
+        if not name.strip() or role not in {"owner", "admin", "member", "client"}:
             raise ValidationError("valid person name and organization role are required")
         now = utcnow()
         person = self.company.save_person(Person(person_id or new_id("person"), organization_id, name.strip(), email,
@@ -452,8 +454,10 @@ class CompanyOS:
             raise NotFoundError("workspace not found in organization")
         if self.company.get_person(organization_id, person_id) is None:
             raise NotFoundError("person not found in organization")
-        if role not in {"admin", "operator", "viewer"}:
+        if role not in {"admin", "operator", "viewer", "client"}:
             raise ValidationError("unsupported workspace role")
+        if role == "client" and scope["kind"] != "client":
+            raise ValidationError("client portal role requires a client workspace")
         return self.company.save_workspace_membership(WorkspaceMembership(new_id("wm"), workspace_id, person_id, role, utcnow()))
 
     def create_project(self, organization_id: str, workspace_id: str, person_id: str, name: str,
@@ -552,7 +556,7 @@ class CompanyOS:
         membership = self.company.workspace_membership(workspace_id, person_id)
         if scope is None or scope["organization_id"] != organization_id or membership is None:
             raise AuthorizationError("person cannot access workspace")
-        if write and membership.role == "viewer":
+        if write and membership.role in {"viewer", "client"}:
             raise AuthorizationError("person cannot write workspace")
         return membership
 
