@@ -43,8 +43,11 @@ class FigmaConnector:
             self._get(f"https://api.figma.com/v1/files/{key}?depth=1")
             if "file_versions:read" in self.granted_permissions:
                 self._get(f"https://api.figma.com/v1/files/{key}/versions?page_size=1")
+            if "comments:read" in self.granted_permissions:
+                self._get(f"https://api.figma.com/v1/files/{key}/comments?page_size=1")
         proven=set(FIGMA_REQUIRED_PERMISSIONS)
         if "file_versions:read" in self.granted_permissions:proven.add("file_versions:read")
+        if "comments:read" in self.granted_permissions:proven.add("comments:read")
         return FigmaAccountIdentity(uid,_text(p.get("email")),frozenset(proven))
     def pull(self,cursor:str|None=None)->FigmaPullResult:
         state=_parse_cursor(cursor);route=self.owned_route_key

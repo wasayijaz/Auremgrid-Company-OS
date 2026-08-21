@@ -79,10 +79,10 @@ class AdapterContractTests(unittest.TestCase):
     def test_figma_optional_versions_emit_bounded_evidence_only_on_file_change(self):
         permissions=FIGMA_REQUIRED_PERMISSIONS|FIGMA_OPTIONAL_PERMISSIONS
         t=QueueTransport([
-            {"id":"u1","email":"owner@figma.test"},{"file":{"version":"v1"}},{"name":"Design","document":{}},{"versions":[{"id":"verify-only"}]},
-            {"file":{"version":"v1"}},{"name":"Design","document":{}},{"versions":[{"id":"ver1","label":"Client review token=secret","created_at":"2026-08-19T00:00:00Z","user":{"id":"u1","handle":"Reviewer"}}]},
+            {"id":"u1","email":"owner@figma.test"},{"file":{"version":"v1"}},{"name":"Design","document":{}},{"versions":[{"id":"verify-only"}]},{"comments":[]},
+            {"file":{"version":"v1"}},{"name":"Design","document":{}},{"comments":[]},{"versions":[{"id":"ver1","label":"Client review token=secret","created_at":"2026-08-19T00:00:00Z","user":{"id":"u1","handle":"Reviewer"}}]},
             {"file":{"version":"v1"}},
-            {"file":{"version":"v2"}},{"name":"Design","document":{}},{"versions":[{"id":"ver1","label":"Client review token=secret","created_at":"2026-08-19T00:00:00Z"},{"id":"ver2","label":"Approved","created_at":"2026-08-19T00:10:00Z"}]},
+            {"file":{"version":"v2"}},{"name":"Design","document":{}},{"comments":[]},{"versions":[{"id":"ver1","label":"Client review token=secret","created_at":"2026-08-19T00:00:00Z"},{"id":"ver2","label":"Approved","created_at":"2026-08-19T00:10:00Z"}]},
         ])
         connector=FigmaConnector("secret",t,file_workspace_mappings={"file:f1":"ws1"},expected_account_id="u1",granted_permissions=permissions)
         identity=connector.verify_credentials();self.assertEqual(identity.granted_permissions,permissions)
@@ -98,7 +98,7 @@ class AdapterContractTests(unittest.TestCase):
         third=connector.pull(second.next_cursor)
         self.assertEqual([event.source_key for event in third.events],["figma/files/f1","figma/files/f1/versions/ver1","figma/files/f1/versions/ver2"])
         self.assertEqual(sum("/versions" in call[1] for call in t.calls),3)
-        self.assertEqual(sum("/comments" in call[1] for call in t.calls),0)
+        self.assertEqual(sum("/comments" in call[1] for call in t.calls),3)
         self.assertEqual(sum("/files/f1?version=v1" in call[1] for call in t.calls),1)
 
     def test_figma_frame_path_metadata_is_bounded_for_deep_trees(self):
@@ -126,14 +126,11 @@ class AdapterContractTests(unittest.TestCase):
 
     def test_figma_optional_comments_emit_on_file_change(self):
         from auremgrid.connectors.figma import FIGMA_MAX_COMMENTS
-        permissions=FIGMA_REQUIRED_PERMISSIONS|frozenset({
-'
-comments:read
-'
-})
+        permissions=FIGMA_REQUIRED_PERMISSIONS|frozenset({"comments:read"})
         t=QueueTransport([
             {"id":"u1","email":"owner@figma.test"},{"file":{"version":"v1"}},{"name":"Design","document":{}},{"comments":[]},
             {"file":{"version":"v1"}},{"name":"Design","document":{}},{"comments":[]},
+            {"file":{"version":"v1"}},
             {"file":{"version":"v2"}},{"name":"Design","document":{}},{"comments":[{"id":"c1","body":"Looks good","user":{"id":"u2","name":"Alice"},"parent_id":"p1","resolved":False,"created_at":"2026-08-20T00:00:00Z"}]},
         ])
         connector=FigmaConnector("secret",t,file_workspace_mappings={"file:f1":"ws1"},expected_account_id="u1",granted_permissions=permissions)
