@@ -179,3 +179,79 @@ def restore_backup(source: str | Path, destination: str | Path, overwrite: bool 
         "recovery_mode": True,
         "outbound_dispatch": "disabled",
     }
+
+def rotate_backups(directory: str | Path, keep_daily: int = 7, keep_weekly: int = 4) -> list[dict[str, Any]]:
+    """Delete old backups beyond retention policy. Returns list of removed paths."""
+    backup_dir = Path(directory)
+    if not backup_dir.is_dir():
+        raise ValidationError(f"backup directory does not exist: {backup_dir}")
+    backups = []
+    for f in backup_dir.iterdir():
+        if not f.is_file() or f.suffix != ".sqlite":
+            continue
+        manifest = _manifest_path(f)
+        if manifest.is_file():
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+                backups.append({"path": f, "manifest": data})
+            except (json.JSONDecodeError, KeyError):
+                backups.append({"path": f, "manifest": {}})
+        else:
+            backups.append({"path": f, "manifest": {}})
+    if len(backups) <= keep_daily:
+        return []
+    backups.sort(key=lambda b: b["manifest"].get("created_at", ""), reverse=True)
+    kept = 0
+    removed = []
+    for b in backups:
+        if kept < keep_daily:
+            kept += 1
+        else:
+            b["path"].unlink(missing_ok=True)
+            mp = _manifest_path(b["path"])
+            mp.unlink(missing_ok=True)
+            removed.append({"path": str(b["path"]), "deleted": True})
+    return removed
+
+
+def check_integrity(connection: sqlite3.Connection) -> dict[str, Any]:
+    """Run integrity checks and return structured result."""
+    quick = str(connection.execute("PRAGMA quick_check").fetchone()[0] or "")
+    fk_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
+    wal = connection.execute("PRAGMA journal_mode").fetchone()[0]
+    version = schema_version(connection)
+    return {
+        "integrity": quick,
+        "foreign_key_violations": len(fk_errors),
+        "journal_mode": str(wal),
+        "schema_version": version,
+        "healthy": quick == "ok" and len(fk_errors) == 0,
+    }
+
+
+def list_backup_points(directory: str | Path) -> list[dict[str, Any]]:
+    """Read manifests and return a timeline of backup points."""
+    backup_dir = Path(directory)
+    if not backup_dir.is_dir():
+        return []
+    points = []
+    for f in backup_dir.iterdir():
+        if not f.is_file() or f.suffix != ".sqlite":
+            continue
+        manifest = _manifest_path(f)
+        if not manifest.is_file():
+            continue
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            points.append({
+                "path": str(f),
+                "created_at": data.get("created_at"),
+                "schema_version": data.get("schema_version"),
+                "sha256": data.get("sha256"),
+                "size_bytes": data.get("size_bytes"),
+                "integrity": data.get("integrity"),
+            })
+        except (json.JSONDecodeError, KeyError):
+            continue
+    points.sort(key=lambda p: p.get("created_at") or "", reverse=True)
+    return points
