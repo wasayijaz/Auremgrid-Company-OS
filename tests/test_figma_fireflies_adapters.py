@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json,unittest
-from auremgrid.connectors.figma import FigmaConnector,FIGMA_REQUIRED_PERMISSIONS,FIGMA_OPTIONAL_PERMISSIONS,FIGMA_MAX_FRAME_TEXT,FIGMA_MAX_FRAME_PATH_ITEMS
+from auremgrid.connectors.figma import FigmaConnector,FIGMA_REQUIRED_PERMISSIONS,FIGMA_OPTIONAL_PERMISSIONS,FIGMA_MAX_FRAME_TEXT,FIGMA_MAX_FRAME_PATH_ITEMS,FIGMA_MAX_COMMENTS
 from auremgrid.connectors.http import ConnectorTransportError,HttpResponse,HttpTransport
 
 class QueueTransport:
@@ -123,5 +123,32 @@ class AdapterContractTests(unittest.TestCase):
         with self.assertRaises(ConnectorTransportError) as raised:
             FigmaConnector("secret",HttpTransport(limited),file_workspace_mappings={"file:f1":"ws1"}).pull()
         self.assertTrue(raised.exception.retryable);self.assertEqual(raised.exception.retry_after,7)
+
+    def test_figma_optional_comments_emit_on_file_change(self):
+        from auremgrid.connectors.figma import FIGMA_MAX_COMMENTS
+        permissions=FIGMA_REQUIRED_PERMISSIONS|frozenset({
+'
+comments:read
+'
+})
+        t=QueueTransport([
+            {"id":"u1","email":"owner@figma.test"},{"file":{"version":"v1"}},{"name":"Design","document":{}},{"comments":[]},
+            {"file":{"version":"v1"}},{"name":"Design","document":{}},{"comments":[]},
+            {"file":{"version":"v2"}},{"name":"Design","document":{}},{"comments":[{"id":"c1","body":"Looks good","user":{"id":"u2","name":"Alice"},"parent_id":"p1","resolved":False,"created_at":"2026-08-20T00:00:00Z"}]},
+        ])
+        connector=FigmaConnector("secret",t,file_workspace_mappings={"file:f1":"ws1"},expected_account_id="u1",granted_permissions=permissions)
+        connector.verify_credentials()
+        first=connector.pull()
+        self.assertEqual([event.event_type for event in first.events],["file"])
+        second=connector.pull(first.next_cursor)
+        self.assertEqual(second.events,())
+        third=connector.pull(second.next_cursor)
+        self.assertEqual([event.event_type for event in third.events],["file","comment"])
+        comment=json.loads(third.events[-1].content)
+        self.assertEqual(comment["comment_id"],"c1")
+        self.assertEqual(comment["message"],"Looks good")
+        self.assertEqual(comment["resolved"],False)
+        self.assertEqual(comment["user"]["name"],"Alice")
+        self.assertTrue(sum("/comments" in call[1] for call in t.calls)>0)
 
 if __name__=="__main__":unittest.main()
