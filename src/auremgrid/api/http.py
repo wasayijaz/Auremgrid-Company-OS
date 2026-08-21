@@ -233,6 +233,9 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/dashboard/data":
                 self._json(200, self.os.dashboard.command(_need(params,"organization_id"),_need(params,"person_id")))
                 return
+            if parsed.path == "/dashboard/review-center":
+                self._json(200, self.os.dashboard.review_center(_need(params,"organization_id"),_need(params,"person_id")))
+                return
             if parsed.path == "/dashboard/client":
                 assert identity is not None
                 self._json(200, self.os.dashboard.client_hq(
