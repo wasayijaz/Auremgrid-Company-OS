@@ -261,13 +261,13 @@ python scripts/auremgrid.py bootstrap-auth --db "C:\data\auremgrid-demo.sqlite" 
 python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\auremgrid-demo.sqlite"
 ```
 
-The bootstrap command prints the session token once. Open `http://127.0.0.1:8791/` and paste that token when prompted. For a real organization database, create or import the organization and person records first, then bootstrap the first principal:
+The bootstrap command prints the session token once. Open `http://127.0.0.1:8791/`; the dashboard opens an in-page **Connect to Auremgrid** dialog where you enter that token. For a real organization database, create or import the organization and person records first, then bootstrap the first principal:
 
 ```text
 python scripts/auremgrid.py bootstrap-auth --db "C:\data\agency.sqlite" --organization <organization-id> --person <person-id> --email owner@example.invalid --workspace <workspace-id> --actor <legacy-actor-id>
 ```
 
-The token is not recoverable from the database; the dashboard stores the supplied value in browser-local storage, while API clients can keep it in an environment variable. Run one durable job in a separate process:
+The token is not recoverable from the database. The dashboard stores the supplied value in browser `localStorage`, so use it only on a trusted machine and browser profile. Do not use a shared/public computer or expose the dashboard through public hosting; clear the site’s local storage when finished. API clients can keep the token in an environment variable. Run one durable job in a separate process:
 
 ```text
 python scripts/auremgrid.py worker-once --db "C:\data\agency.sqlite" --organization <organization-id> --workspace <workspace-id> --worker-id local-worker-1

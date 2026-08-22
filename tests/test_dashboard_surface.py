@@ -84,6 +84,12 @@ class DashboardSurfaceTests(unittest.TestCase):
             "dashboard must update the ledger-status DOM node from backend health",
         )
 
+    def test_access_token_uses_an_in_page_login_dialog(self) -> None:
+        self.assertIn('id="access-token-dialog"', self.html)
+        self.assertIn('type="password"', self.html)
+        self.assertIn('localStorage.setItem("auremgrid_session",token)', self.html)
+        self.assertNotIn('window.prompt("Enter your Auremgrid access token")', self.html)
+
     def test_every_nav_surface_uses_a_real_backend_source(self) -> None:
         expected_modules = ("Campaigns", "Content", "Creative", "Meetings", "Automations", "Reports", "Integrations", "Settings")
         for name in expected_modules:

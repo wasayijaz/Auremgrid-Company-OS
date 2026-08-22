@@ -5,8 +5,9 @@ Use Python 3.12 or later. The default path needs no third-party package, network
 Run tests with `.\tools\test.ps1`. Start the server with `PYTHONPATH` set to
 `src` and run `python -m auremgrid.cli serve --host 127.0.0.1 --port 8791 --db
 auremgrid-demo.sqlite --seed`. Use `bootstrap-auth` for an existing owner, then
-enter the one-time session token when the dashboard opens. JSON endpoints do
-not trust query/body person or actor identifiers.
+open `http://127.0.0.1:8791/`: the dashboard shows an in-page **Connect to Auremgrid** dialog for the one-time session token. JSON endpoints do not trust query/body person or actor identifiers.
+
+The dashboard keeps the supplied token in browser `localStorage`. Use it only on a trusted machine and browser profile; never use a shared/public computer or publicly host the dashboard. Clear the site’s local storage when finished.
 
 Keep the SQLite database on durable storage. Use the online `backup` and
 `verify-backup` commands before upgrades; do not copy a live WAL file. Run
