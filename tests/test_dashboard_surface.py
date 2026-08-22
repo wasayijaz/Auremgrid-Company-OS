@@ -233,6 +233,26 @@ class DashboardSurfaceTests(unittest.TestCase):
             self.assertIn(f'id="{element_id}"', self.html)
             self.assertIn(handler, self.html, f"visible control {element_id} has no handler")
 
+    def test_work_board_list_toggle_preserves_filters_and_backend_detail_contract(self) -> None:
+        for marker in (
+            "function setWorkView(view)",
+            '$("board-view").onclick=()=>setWorkView("board")',
+            '$("list-view").onclick=()=>setWorkView("list")',
+            "filteredWork()",
+            'data-work-list-table',
+            'work-list-table',
+            'data-work-row="list"',
+            'data-work-state',
+            'Fetching /dashboard/client for this workspace.',
+            'Fetching /work/detail for the selected backend work item.',
+            'data-backend-route="/work/detail"',
+            'const data=await api(`/work/detail?',
+            "if(!item)throw new Error('The backend response did not include work_item.')",
+        ):
+            self.assertIn(marker, self.html)
+        self.assertNotIn("localWorkDetail", self.html)
+        self.assertNotIn("canonical board record remains usable", self.html)
+
     def test_407_shell_completion_surface_markers_are_present(self) -> None:
         for marker in (
             "dashboard-407-surface",
@@ -314,6 +334,11 @@ class DashboardSurfaceTests(unittest.TestCase):
             "Decision → workflow → outcome → learning",
         ):
             self.assertIn(marker, js)
+
+    def test_work_view_visibility_helpers_cannot_be_overridden(self) -> None:
+        css = self.root.joinpath("dashboard", "css", "04-shadcn-system.css").read_text(encoding="utf-8")
+        self.assertIn("[hidden]{display:none!important}", css)
+        self.assertIn(".sr-only{position:absolute!important", css)
 
 
 if __name__ == "__main__":

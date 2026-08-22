@@ -45,23 +45,28 @@
   --muted:var(--muted-foreground);
 }
 
+[hidden]{display:none!important}
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+
 html{scrollbar-gutter:stable}
 body{font-family:"Gellix",sans-serif;font-size:13px;line-height:1.45;background:var(--background)}
 button,input,select,textarea{font-family:inherit}
 
-/* ScrollArea: invisible at rest, minimal on hover/focus/active use. */
-:where(html,body,.nav,.side,.space-list,.tabs,.intelligence-prompts,.intelligence-findings,.brain-record-list,.brain-detail,.work-board,.work-table-wrap,.detail-body,.side-inspector,.annotation-history,#clients,#client-portfolio,#system-modules){
+/* ScrollArea: every track is hidden until that exact scroll container is used.
+ * Do not key this off html/body hover: those elements are effectively hovered
+ * for the whole viewport and make nested sidebar tracks look permanently on. */
+:where(html,body,.side,.nav,.space-list,.tabs,.intelligence-prompts,.intelligence-findings,.brain-record-list,.brain-detail,.work-board,.work-table-wrap,.detail-body,.side-inspector,.annotation-history,.table,.overview-action-table,#clients,#client-portfolio,#system-modules){
   scrollbar-width:thin;
   scrollbar-color:transparent transparent;
 }
-:where(html:hover,body:hover,.nav:hover,.nav:focus-within,.side:hover,.side:focus-within,.space-list:hover,.space-list:focus-within,.tabs:hover,.tabs:focus-within,.intelligence-prompts:hover,.intelligence-prompts:focus-within,.intelligence-findings:hover,.intelligence-findings:focus-within,.brain-record-list:hover,.brain-record-list:focus-within,.brain-detail:hover,.brain-detail:focus-within,.work-board:hover,.work-board:focus-within,.work-table-wrap:hover,.work-table-wrap:focus-within,.detail-body:hover,.detail-body:focus-within,.side-inspector:hover,.side-inspector:focus-within,.annotation-history:hover,.annotation-history:focus-within,#clients:hover,#clients:focus-within,#client-portfolio:hover,#client-portfolio:focus-within,#system-modules:hover,#system-modules:focus-within){
+:where(.side:hover,.side:focus-within,.side:active,.nav:hover,.nav:focus-within,.nav:active,.space-list:hover,.space-list:focus-within,.space-list:active,.tabs:hover,.tabs:focus-within,.tabs:active,.intelligence-prompts:hover,.intelligence-prompts:focus-within,.intelligence-prompts:active,.intelligence-findings:hover,.intelligence-findings:focus-within,.intelligence-findings:active,.brain-record-list:hover,.brain-record-list:focus-within,.brain-record-list:active,.brain-detail:hover,.brain-detail:focus-within,.brain-detail:active,.work-board:hover,.work-board:focus-within,.work-board:active,.work-table-wrap:hover,.work-table-wrap:focus-within,.work-table-wrap:active,.detail-body:hover,.detail-body:focus-within,.detail-body:active,.side-inspector:hover,.side-inspector:focus-within,.side-inspector:active,.annotation-history:hover,.annotation-history:focus-within,.annotation-history:active,.table:hover,.table:focus-within,.table:active,.overview-action-table:hover,.overview-action-table:focus-within,.overview-action-table:active,#clients:hover,#clients:focus-within,#clients:active,#client-portfolio:hover,#client-portfolio:focus-within,#client-portfolio:active,#system-modules:hover,#system-modules:focus-within,#system-modules:active){
   scrollbar-color:var(--scrollbar-thumb) transparent;
 }
-:where(html,body,.nav,.side,.space-list,.tabs,.intelligence-prompts,.intelligence-findings,.brain-record-list,.brain-detail,.work-board,.work-table-wrap,.detail-body,.side-inspector,.annotation-history,#clients,#client-portfolio,#system-modules)::-webkit-scrollbar{width:var(--scrollbar-size);height:var(--scrollbar-size)}
-:where(html,body,.nav,.side,.space-list,.tabs,.intelligence-prompts,.intelligence-findings,.brain-record-list,.brain-detail,.work-board,.work-table-wrap,.detail-body,.side-inspector,.annotation-history,#clients,#client-portfolio,#system-modules)::-webkit-scrollbar-track{background:transparent}
-:where(html,body,.nav,.side,.space-list,.tabs,.intelligence-prompts,.intelligence-findings,.brain-record-list,.brain-detail,.work-board,.work-table-wrap,.detail-body,.side-inspector,.annotation-history,#clients,#client-portfolio,#system-modules)::-webkit-scrollbar-thumb{background:transparent;border-radius:999px}
-:where(html:hover,body:hover,.nav:hover,.nav:focus-within,.side:hover,.side:focus-within,.space-list:hover,.space-list:focus-within,.tabs:hover,.tabs:focus-within,.intelligence-prompts:hover,.intelligence-prompts:focus-within,.intelligence-findings:hover,.intelligence-findings:focus-within,.brain-record-list:hover,.brain-record-list:focus-within,.brain-detail:hover,.brain-detail:focus-within,.work-board:hover,.work-board:focus-within,.work-table-wrap:hover,.work-table-wrap:focus-within,.detail-body:hover,.detail-body:focus-within,.side-inspector:hover,.side-inspector:focus-within,.annotation-history:hover,.annotation-history:focus-within,#clients:hover,#clients:focus-within,#client-portfolio:hover,#client-portfolio:focus-within,#system-modules:hover,#system-modules:focus-within)::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb)}
-:where(html,body,.nav,.side,.space-list,.tabs,.intelligence-prompts,.intelligence-findings,.brain-record-list,.brain-detail,.work-board,.work-table-wrap,.detail-body,.side-inspector,.annotation-history,#clients,#client-portfolio,#system-modules)::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-thumb-active)}
+:where(html,body,.side,.nav,.space-list,.tabs,.intelligence-prompts,.intelligence-findings,.brain-record-list,.brain-detail,.work-board,.work-table-wrap,.detail-body,.side-inspector,.annotation-history,.table,.overview-action-table,#clients,#client-portfolio,#system-modules)::-webkit-scrollbar{width:var(--scrollbar-size);height:var(--scrollbar-size)}
+:where(html,body,.side,.nav,.space-list,.tabs,.intelligence-prompts,.intelligence-findings,.brain-record-list,.brain-detail,.work-board,.work-table-wrap,.detail-body,.side-inspector,.annotation-history,.table,.overview-action-table,#clients,#client-portfolio,#system-modules)::-webkit-scrollbar-track{background:transparent}
+:where(html,body,.side,.nav,.space-list,.tabs,.intelligence-prompts,.intelligence-findings,.brain-record-list,.brain-detail,.work-board,.work-table-wrap,.detail-body,.side-inspector,.annotation-history,.table,.overview-action-table,#clients,#client-portfolio,#system-modules)::-webkit-scrollbar-thumb{background:transparent;border-radius:999px}
+:where(.side:hover,.side:focus-within,.side:active,.nav:hover,.nav:focus-within,.nav:active,.space-list:hover,.space-list:focus-within,.space-list:active,.tabs:hover,.tabs:focus-within,.tabs:active,.intelligence-prompts:hover,.intelligence-prompts:focus-within,.intelligence-prompts:active,.intelligence-findings:hover,.intelligence-findings:focus-within,.intelligence-findings:active,.brain-record-list:hover,.brain-record-list:focus-within,.brain-record-list:active,.brain-detail:hover,.brain-detail:focus-within,.brain-detail:active,.work-board:hover,.work-board:focus-within,.work-board:active,.work-table-wrap:hover,.work-table-wrap:focus-within,.work-table-wrap:active,.detail-body:hover,.detail-body:focus-within,.detail-body:active,.side-inspector:hover,.side-inspector:focus-within,.side-inspector:active,.annotation-history:hover,.annotation-history:focus-within,.annotation-history:active,.table:hover,.table:focus-within,.table:active,.overview-action-table:hover,.overview-action-table:focus-within,.overview-action-table:active,#clients:hover,#clients:focus-within,#clients:active,#client-portfolio:hover,#client-portfolio:focus-within,#client-portfolio:active,#system-modules:hover,#system-modules:focus-within,#system-modules:active)::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb)}
+:where(.side,.nav,.space-list,.tabs,.intelligence-prompts,.intelligence-findings,.brain-record-list,.brain-detail,.work-board,.work-table-wrap,.detail-body,.side-inspector,.annotation-history,.table,.overview-action-table,#clients,#client-portfolio,#system-modules)::-webkit-scrollbar-thumb:hover,:where(.side,.nav,.space-list,.tabs,.intelligence-prompts,.intelligence-findings,.brain-record-list,.brain-detail,.work-board,.work-table-wrap,.detail-body,.side-inspector,.annotation-history,.table,.overview-action-table,#clients,#client-portfolio,#system-modules)::-webkit-scrollbar-thumb:active{background:var(--scrollbar-thumb-active)}
 
 /* Accessible shadcn-style focus language. */
 :where(button,a,input,select,textarea,[tabindex]):focus-visible{outline:0;box-shadow:0 0 0 3px var(--ring);border-color:var(--accent)}
@@ -72,9 +77,11 @@ button,input,select,textarea{font-family:inherit}
 .side{padding:var(--space-4) var(--space-3) var(--space-3)}
 .brand{padding:var(--space-1) var(--space-2) var(--space-4)}
 .scope{margin:0 var(--space-1) var(--space-4);padding:var(--space-3);border-radius:var(--radius-lg)}
-.spaces{margin-bottom:var(--space-3)}
+.spaces{display:flex;flex:1 1 34vh;flex-direction:column;min-height:160px;max-height:min(44vh,420px);min-width:0;margin-bottom:var(--space-3);overflow:hidden}
+.spaces-head{flex:none}
+.space-list{flex:1 1 auto;min-height:0;overflow:auto;padding-right:2px}
 .space-button,.nav button{min-height:34px;padding:7px 9px;border-radius:var(--radius-md)}
-.nav{gap:2px;padding-right:2px}
+.nav{flex:1 1 66%;min-height:160px;min-width:0;gap:2px;padding-right:2px;overflow:auto}
 .nav-toggle{padding:11px 9px 5px}
 .side-foot{padding-top:var(--space-2)}
 .top{height:62px;padding:0 var(--space-6)}
@@ -104,6 +111,10 @@ button,input,select,textarea{font-family:inherit}
 
 /* One density system for cards, tiles, and grids. */
 .grid,.module-grid{gap:var(--space-3)}
+.page#page-command>.grid{row-gap:var(--space-3)}
+.page#page-command>#metrics+#dashboard-completion-overview{margin-top:var(--space-3);margin-bottom:var(--space-3)}
+.page#page-command>#dashboard-completion-overview+.grid{margin-top:0!important}
+.page#page-command>#dashboard-completion-overview>.card{min-height:148px}
 .card{padding:var(--space-4);border-radius:var(--radius-lg);box-shadow:0 1px 2px rgba(24,31,42,.035)}
 .card h2{margin-bottom:var(--space-3);font-size:13px;line-height:1.35}
 .metric{min-height:var(--tile-min-h);display:flex;flex-direction:column;justify-content:space-between}
@@ -169,6 +180,6 @@ dialog{padding:var(--space-5);border-radius:var(--radius-xl)}
 
 @media(max-width:1380px){.shell{grid-template-columns:232px minmax(0,1fr)}.content{padding:26px 28px 52px}}
 @media(max-width:1000px){.shell{grid-template-columns:72px minmax(0,1fr)}.content{padding:24px 22px 48px}.metric{min-height:98px}}
-@media(max-width:620px){html{scrollbar-gutter:auto}.content{padding:18px 14px 40px}.top{height:58px;padding:0 var(--space-3)}.grid,.module-grid{gap:10px}.card{padding:var(--space-3)}.metric{min-height:92px}.head{margin-bottom:var(--space-4)}.overview-toolbar{align-items:stretch}.overview-toolbar label,.overview-toolbar select{width:100%}.overview-toolbar .ghost{margin-left:0}.overview-toolbar button{flex:1}.brain-toolbar{padding:var(--space-4)}.detail-head,.detail-body{padding:var(--space-4)}}
+@media(max-width:620px){html{scrollbar-gutter:auto}.spaces{display:none}.nav{min-height:0}.content{padding:18px 14px 40px}.top{height:58px;padding:0 var(--space-3)}.grid,.module-grid{gap:10px}.card{padding:var(--space-3)}.metric{min-height:92px}.page#page-command>#metrics+#dashboard-completion-overview{margin-top:10px;margin-bottom:10px}.page#page-command>#dashboard-completion-overview>.card{min-height:132px}.head{margin-bottom:var(--space-4)}.overview-toolbar{align-items:stretch}.overview-toolbar label,.overview-toolbar select{width:100%}.overview-toolbar .ghost{margin-left:0}.overview-toolbar button{flex:1}.brain-toolbar{padding:var(--space-4)}.detail-head,.detail-body{padding:var(--space-4)}}
 
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}

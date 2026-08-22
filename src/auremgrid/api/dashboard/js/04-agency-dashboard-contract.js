@@ -180,11 +180,10 @@ showAccessTokenDialog();
       const comment=controls.querySelector('[data-work-comment]');
       if(comment)comment.onclick=async()=>{const input=controls.querySelector('[name="comment"]'),bodyText=input.value.trim();if(!bodyText){toast('Add a comment before saving');return}try{await api('/work/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({organization_id:org,workspace_id:workspace,person_id:person,work_item_id:item.id,body:bodyText})});input.value='';toast('Comment added');await openWorkDetail(item.id)}catch(error){toast(`Comment unavailable · ${error.message}`)}};
     }
-    const previousOpenWorkDetail407=openWorkDetail;
     openWorkDetail=async function(id){
-      const panel=ensureWorkSideInspector(),item=(workData.work||[]).find(row=>row.id===id)||{id,title:'Loading work',status:'captured'};
-      panel.classList.add('open');paintWorkInspector(item);
-      try{const data=await api(`/work/detail?organization_id=${encodeURIComponent(org)}&workspace_id=${encodeURIComponent(workspace)}&person_id=${encodeURIComponent(person)}&work_item_id=${encodeURIComponent(id)}`);paintWorkInspector(data.work_item||item,data)}catch(error){$('inspector-body').insertAdjacentHTML('afterbegin',honestState('degraded','Extended work detail unavailable',error.message))}
+      const panel=ensureWorkSideInspector();
+      panel.classList.add('open');$('inspector-status').textContent='Loading';$('inspector-title').textContent='Work detail';$('inspector-body').innerHTML=honestState('loading','Loading work detail','Fetching /work/detail for the selected backend work item.');
+      try{const data=await api(`/work/detail?organization_id=${encodeURIComponent(org)}&workspace_id=${encodeURIComponent(workspace)}&person_id=${encodeURIComponent(person)}&work_item_id=${encodeURIComponent(id)}`),item=data.work_item;if(!item)throw new Error('The backend response did not include work_item.');paintWorkInspector(item,data)}catch(error){$('inspector-status').textContent='Unavailable';$('inspector-title').textContent='Work detail unavailable';$('inspector-body').innerHTML=honestState('degraded','Work detail unavailable',error.message,'/work/detail')}
     };
 
     const previousRenderMarketing407=typeof renderMarketingModule==='function'?renderMarketingModule:null;

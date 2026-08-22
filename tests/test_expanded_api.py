@@ -68,6 +68,17 @@ class ExpandedApiTests(unittest.TestCase):
         status,module=self.get("/dashboard/module?organization_id=org_demo&workspace_id=ws_alpha&person_id=person_demo_owner&module=Campaigns")
         self.assertEqual(status,200);self.assertEqual(module["source_table"],"campaigns")
 
+    def test_dashboard_work_rows_open_through_backend_detail_contract(self) -> None:
+        status,hq=self.get("/dashboard/client?organization_id=org_demo&workspace_id=ws_alpha&person_id=person_demo_owner")
+        self.assertEqual(status,200);self.assertGreater(len(hq["work"]),0)
+        row=hq["work"][0]
+        for key in ("id","title","status","priority"):
+            self.assertIn(key,row)
+        status,detail=self.get(f"/work/detail?organization_id=org_demo&workspace_id=ws_alpha&person_id=person_demo_owner&work_item_id={row['id']}")
+        self.assertEqual(status,200)
+        self.assertEqual(detail["work_item"]["id"],row["id"])
+        self.assertIn("comments",detail);self.assertIn("files",detail);self.assertIn("versions",detail)
+
     def test_cross_workspace_rest_lookup_returns_no_records(self) -> None:
         outsider=self.os.create_person("org_demo","Prime only")
         self.os.add_person_to_workspace("org_demo","ws_alpha",outsider.id,"viewer")
