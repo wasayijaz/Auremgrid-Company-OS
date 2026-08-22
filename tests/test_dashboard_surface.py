@@ -258,6 +258,8 @@ class DashboardSurfaceTests(unittest.TestCase):
             "renderAgents407",
             "renderMarketingModule=async function",
             "renderIntelligence=function",
+            "data-intelligence-object",
+            "data.uncertainty?[data.uncertainty]",
             "/people?organization_id=",
             "people.capacity",
             "/dashboard/client?organization_id=",
