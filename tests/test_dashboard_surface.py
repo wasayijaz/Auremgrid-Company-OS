@@ -59,6 +59,24 @@ class DashboardSurfaceTests(unittest.TestCase):
         for marker in ("data-row-id", "data-stage-id", "stages.map(row", "proposals.map(row", "renderActionDescriptors(row)"):
             self.assertIn(marker, self.html)
 
+    def test_scenario_descriptor_buttons_require_backend_routes(self) -> None:
+        self.assertIn("actions=s.action_descriptors||s.allowed_actions||[]", self.html)
+        self.assertIn("a&&a.route", self.html)
+        self.assertIn("data-scenario-action", self.html)
+        self.assertIn("No backend route is available", self.html)
+
+    def test_brain_surface_names_all_canonical_collections_and_empty_states(self) -> None:
+        for marker in (
+            "current_truth", "Decisions", "Preferences", "Entities", "Conflicts",
+            "Proposed", "Sources", "History", "data.collections", "emptyLabel.toLowerCase()",
+        ):
+            self.assertIn(marker, self.html)
+        self.assertIn('"collections"', Path(__file__).parents[1].joinpath("src", "auremgrid", "services", "dashboard.py").read_text(encoding="utf-8"))
+
+    def test_cosmo_relationship_label_is_visible_without_renaming_operator(self) -> None:
+        self.assertIn("Cosmo · Auremgrid Intelligence", self.html)
+        self.assertIn('result["cosmo"]["name"]', Path(__file__).parents[1].joinpath("tests", "test_dashboard_service.py").read_text(encoding="utf-8"))
+
     def test_action_dialog_is_lazy_and_supports_descriptor_fields(self) -> None:
         for marker in ("ensureDashboardActionDialog", "required_fields", "one_of:", "artifact_contract", "idempotency_key", "dashboard-action-dialog"):
             self.assertIn(marker, self.html)

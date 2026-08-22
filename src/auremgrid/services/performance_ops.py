@@ -79,9 +79,24 @@ class PerformanceOperations:
 
     def _anomalies(self, org: str, ws: str, now: str, limit: int) -> list[dict[str, Any]]:
         results = []
-        snaps = self.conn.execute(
-            "SELECT id, campaign_id, metric_name, metric_value, captured_at FROM campaign_metric_snapshots WHERE organization_id=? AND workspace_id=? ORDER BY campaign_id, metric_name, captured_at DESC LIMIT 200",
-            (org, ws)).fetchall()
+        columns = {str(row[1]) for row in self.conn.execute("PRAGMA table_info(campaign_metric_snapshots)").fetchall()}
+        if {"metric_name", "metric_value"}.issubset(columns):
+            snaps = self.conn.execute(
+                "SELECT id, campaign_id, metric_name, metric_value, captured_at FROM campaign_metric_snapshots WHERE organization_id=? AND workspace_id=? ORDER BY campaign_id, metric_name, captured_at DESC LIMIT 200",
+                (org, ws)).fetchall()
+        else:
+            # The production migration stores a wide metric snapshot while
+            # older service fixtures use a metric_name/metric_value pair.
+            # Normalize the wide form here so anomaly detection uses the same
+            # canonical performance_insights schema in either database.
+            metric_names = [name for name in ("spend", "revenue", "leads", "impressions", "clicks", "cpl", "cac", "ctr", "cvr", "roas") if name in columns]
+            rows = self.conn.execute(
+                f"SELECT id, campaign_id, captured_at, {', '.join(metric_names)} FROM campaign_metric_snapshots WHERE organization_id=? AND workspace_id=? ORDER BY campaign_id, captured_at DESC LIMIT 200",
+                (org, ws)).fetchall()
+            snaps = [
+                {"id": row["id"], "campaign_id": row["campaign_id"], "metric_name": name, "metric_value": row[name], "captured_at": row["captured_at"]}
+                for row in rows for name in metric_names if row[name] is not None
+            ]
         grouped: dict[str, list] = {}
         for s in snaps:
             key = f"{s['campaign_id']}:{s['metric_name']}"

@@ -5,6 +5,7 @@ __pycache__/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+.auremgrid-backups/
 # Local test and coverage artifacts.
 .pytest_cache/
 .mypy_cache/

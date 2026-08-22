@@ -10,6 +10,7 @@ from auremgrid.api.http import serve
 from auremgrid.services.brain import CompanyOS
 from auremgrid.storage.backup import check_integrity, create_backup, list_backup_points, restore_backup, rotate_backups, verify_backup
 from auremgrid.services.worker import run_one_job
+from auremgrid.demo_agency import seed_realistic_agency_demo
 
 
 def _add_semantic_options(command: argparse.ArgumentParser) -> None:
@@ -47,6 +48,11 @@ def main(argv: list[str] | None = None) -> int:
 
     demo = sub.add_parser("demo", help="seed synthetic fixtures and run a sample search")
     demo.add_argument("--db", default=":memory:")
+
+    agency_demo = sub.add_parser("demo-agency", help="seed the realistic synthetic agency scenario")
+    agency_demo.add_argument("--db", default=":memory:")
+    agency_demo.add_argument("--organization", default="org_realistic_agency_demo")
+    agency_demo.add_argument("--owner", default="person_realistic_owner")
 
     brief = sub.add_parser("brief", help="print a client brief from the seeded demo")
     brief.add_argument("--db", default=":memory:")
@@ -107,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     worker.add_argument("--workspace")
     worker.add_argument("--worker-id", required=True)
 
-    for command in (demo, brief, serve_cmd, sync, onboard, backup, bootstrap_auth, worker):
+    for command in (demo, agency_demo, brief, serve_cmd, sync, onboard, backup, bootstrap_auth, worker):
         _add_semantic_options(command)
 
     args = parser.parse_args(argv)
@@ -208,6 +214,13 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             conn.close()
         print(json.dumps(result, indent=2))
+        return 0
+    if args.command == "demo-agency":
+        os = _company_os(args)
+        try:
+            print(json.dumps(seed_realistic_agency_demo(os, args.organization, args.owner), indent=2))
+        finally:
+            os.close()
         return 0
     if args.command == "backup-rotate":
         result = rotate_backups(args.dir, keep_daily=args.keep_daily, keep_weekly=args.keep_weekly)

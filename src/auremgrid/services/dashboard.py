@@ -755,6 +755,49 @@ class DashboardService(_ExistingDashboardService):
             identity,organization_id,workspace_id,person_id,moment,as_of,source_ids,
             self._visible_proposal_entity_ids(organization_id,workspace_id,moment,source_ids),
         )
+        # Decisions are canonical organization records.  A decision may be
+        # backed by a source (which must be visible to this actor) or remain a
+        # source-less ledger entry; never widen the source ACL while building
+        # the dashboard projection.
+        decisions = []
+        for decision in self.os.company.list_decisions(organization_id, workspace_id):
+            if decision.created_at is not None and decision.created_at > moment:
+                continue
+            if decision.effective_from is not None and decision.effective_from > moment:
+                continue
+            if decision.effective_until is not None and decision.effective_until <= moment:
+                continue
+            if decision.source_id and str(decision.source_id) not in source_ids:
+                continue
+            if decision.superseded_by:
+                continue
+            item = decision.to_dict()
+            item["kind"] = "decision"
+            item["state"] = "current"
+            decisions.append(item)
+        decisions.sort(key=lambda item: (item.get("effective_from") or "", item["id"]), reverse=True)
+
+        # Preferences are durable actor-scoped memories.  They are read only
+        # here and deliberately do not pretend to be sourced facts.
+        preferences = [
+            {**memory.to_dict(), "state": "recorded", "kind": "preference"}
+            for memory in self.os.store.list_memories(workspace_id, actor.id)
+            if memory.kind == "preference" and memory.recorded_at <= moment
+        ]
+
+        # Keep an immutable history collection separate from current truth:
+        # include every ACL-visible fact version, including superseded and
+        # stale observations, with its effective knowledge state at the read
+        # moment.  This preserves provenance without exposing hidden sources.
+        history = []
+        for fact in self.os.store.list_facts(workspace_id, source_ids, include_superseded=True):
+            if fact.recorded_at > moment or fact.observed_at > moment:
+                continue
+            item = fact.to_dict()
+            item["state"] = states.get(fact.id, "inferred")
+            item["historical"] = True
+            history.append(item)
+        history.sort(key=lambda item: (item.get("recorded_at") or "", item["id"]), reverse=True)
         workspace = self.os.store.get_workspace(workspace_id)
         graph = self.os.store.graph_generation_state(workspace_id)
         semantic = dict(getattr(self.os, "embedding_health", {}) or {})
@@ -796,12 +839,26 @@ class DashboardService(_ExistingDashboardService):
                 "conflict_groups": len(conflicts),
                 "pending_proposals": sum(item["status"] == "pending" for item in proposals),
                 "entities": len(entities),
+                "decisions": len(decisions),
+                "preferences": len(preferences),
+                "history": len(history),
             },
             "proposals": proposals,
             "conflicts": conflicts,
             "current_truths": sorted(truth_rows, key=lambda item: (item["subject"], item["predicate"], item["id"])),
             "entities": entities,
             "health": health,
+            # Explicit collection names are the stable dashboard read model.
+            "collections": {
+                "current_truth": sorted(truth_rows, key=lambda item: (item["subject"], item["predicate"], item["id"])),
+                "decisions": decisions,
+                "preferences": preferences,
+                "entities": entities,
+                "conflicts": conflicts,
+                "proposed": proposals,
+                "sources": [source.to_dict() for source in sources],
+                "history": history,
+            },
         }
 
     def _proposal_rows(

@@ -253,6 +253,28 @@ python scripts/auremgrid.py bootstrap-auth --db "C:\data\auremgrid-demo.sqlite" 
 python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\auremgrid-demo.sqlite"
 ```
 
+For a richer three-client agency walkthrough (Prime Clinics, BASE Ryder, and
+Evolve), use the isolated scenario seeder. It adds six
+linked projects plus delivery, review, campaign, creative, capacity, risk,
+decision, and Intelligence evidence records; all metrics are marked
+`demo_fixture`, and finance remains disconnected:
+
+```text
+python scripts/auremgrid.py demo-agency --db "C:\data\auremgrid-agency.sqlite"
+```
+
+To add the same scenario to the standard localhost demo—and keep the existing
+Demo Owner session scoped to it—seed the existing organization explicitly:
+
+```text
+python scripts/auremgrid.py demo-agency --db "auremgrid-demo.sqlite" --organization org_demo --owner person_demo_owner
+```
+
+The scenario currently contains 6 projects, 12 mixed-state work items, 9
+reviews, 9 risks, 3 campaigns, 6 creatives, and 3 measured content items.
+Running the command again upgrades missing fixture evidence without duplicating
+the operating records.
+
 The launcher is the zero-install path: it runs directly from this trusted
 checkout, does not change directory, install packages, or contact a network.
 Use an explicit absolute database path when operating outside the repository:

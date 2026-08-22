@@ -1771,6 +1771,18 @@ class CompanyOS:
             ],
         }
 
+    def seed_realistic_agency_demo(
+        self, organization_id: str | None = None, owner_person_id: str | None = None
+    ) -> dict[str, Any]:
+        """Seed the isolated three-client agency scenario.
+
+        Kept separate from :meth:`seed_demo` so existing minimal-demo
+        counts and fixtures remain unchanged.
+        """
+        from auremgrid.demo_agency import seed_realistic_agency_demo
+
+        return seed_realistic_agency_demo(self, organization_id, owner_person_id)
+
     def _supersede_matching(self, actor: Actor, incoming: Fact) -> None:
         source_ids = [source.id for source in self.store.allowed_sources(incoming.workspace_id, actor)]
         for existing in self.store.list_facts(incoming.workspace_id, source_ids, include_superseded=False):

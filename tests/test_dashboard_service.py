@@ -87,6 +87,31 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertNotIn("detail", result["health"]["semantic"])
         self.assertNotIn("Secret", repr(result))
 
+    def test_brain_exposes_explicit_collections_and_honest_empty_states(self) -> None:
+        result = self.dashboard.brain(self.owner_identity, self.org.id, self.ws.id, self.owner.id)
+        self.assertEqual(
+            set(result["collections"]),
+            {"current_truth", "decisions", "preferences", "entities", "conflicts", "proposed", "sources", "history"},
+        )
+        self.assertEqual(result["collections"]["decisions"], [])
+        self.assertEqual(result["collections"]["preferences"], [])
+        self.assertEqual(result["collections"]["history"], [])
+
+    def test_brain_collections_keep_hidden_sources_and_history_out_of_acl_scope(self) -> None:
+        self.os.ingest_text(
+            self.ws.id, self.ingest_actor.id, "visible-history.md", "FACT: Public | status | current",
+            "memory://visible-history", allowed_actor_ids=[self.visible_actor.id],
+        )
+        self.os.ingest_text(
+            self.ws.id, self.ingest_actor.id, "hidden-history.md", "FACT: Secret | status | hidden",
+            "memory://hidden-history", allowed_actor_ids=[self.hidden_actor.id],
+        )
+        result = self.dashboard.brain(self.owner_identity, self.org.id, self.ws.id, self.owner.id)
+        collections = result["collections"]
+        self.assertEqual({row["source_key"] for row in collections["sources"]}, {"visible-history.md"})
+        self.assertEqual({row["subject"] for row in collections["history"]}, {"Public"})
+        self.assertNotIn("Secret", repr(collections))
+
     def test_brain_hides_entities_and_aliases_supported_only_by_restricted_sources(self) -> None:
         hidden=self.os.ingest_text(
             self.ws.id,self.ingest_actor.id,"hidden-entity.md","private evidence","memory://hidden-entity",
