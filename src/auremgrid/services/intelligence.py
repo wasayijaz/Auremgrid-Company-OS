@@ -8,11 +8,16 @@ finding graph that the dashboard and agents can safely consume.
 """
 
 from datetime import datetime, timezone
+import hashlib
+import json
 import math
 import re
+import uuid
 from typing import Any
 
 from auremgrid.domain.errors import AuthorizationError, ValidationError
+from auremgrid.domain.models import AuditEvent
+from auremgrid.adapters.reasoning import StrategicReasoningProvider, invoke_reasoning_provider
 
 
 def _now() -> datetime:
@@ -210,11 +215,34 @@ class IntelligenceService:
         )
         recommendation_evaluation = self._recommendation_evaluation(findings, decision_links, analogues)
         deliberation = self._deliberation(findings, relationships, analogues, decision_links, recommended_plan)
+        model_reasoning, reasoning_meta = self._model_reasoning(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            person_id=person_id,
+            actor_id=actor_id,
+            scope=scope,
+            context=context,
+            evidence=evidence,
+            findings=findings,
+            relationships=relationships,
+            analogues=analogues,
+            decision_links=decision_links,
+            recommended_plan=recommended_plan,
+            scenario_inputs=scenario_inputs,
+        )
+        if model_reasoning is not None:
+            deliberation.update(model_reasoning)
+            deliberation["mode"] = "model_backed"
+        deliberation["provider_metadata"] = reasoning_meta
         for finding in findings:
             finding["deliberation"] = self._deliberation(
                 [finding], relationships, finding.get("historical_analogues", analogues),
                 finding.get("decision_action_outcome_learning", decision_links), recommended_plan,
             )
+            if model_reasoning is not None:
+                finding["deliberation"].update(model_reasoning)
+                finding["deliberation"]["mode"] = "model_backed"
+                finding["deliberation"]["provider_metadata"] = reasoning_meta
         return {
             "scope": scope,
             "context": context,
@@ -902,6 +930,182 @@ class IntelligenceService:
                 "evidence": [self._ref("decisions", decision["id"]), *[self._ref("work_events", row["id"]) for row in matched[:4]], *learning_refs[:4]],
             })
         return links
+
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        """Keep provider context JSON-compatible and strip obvious secrets."""
+        secret_terms = ("secret", "token", "password", "api_key", "authorization", "credential")
+        if isinstance(value, dict):
+            return {
+                str(key): "[REDACTED]" if any(term in str(key).lower() for term in secret_terms)
+                else IntelligenceService._json_safe(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [IntelligenceService._json_safe(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    @staticmethod
+    def _confidence_value(value: Any) -> dict[str, Any] | None:
+        if isinstance(value, dict):
+            value = value.get("score")
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(score) or not 0 <= score <= 1:
+            return None
+        return _confidence(score)
+
+    @classmethod
+    def _validate_model_reasoning(cls, value: Any) -> dict[str, Any]:
+        """Validate and normalize the intentionally small model output schema."""
+        if not isinstance(value, dict):
+            raise ValidationError("reasoning result must be an object")
+        required = ("hypotheses", "options", "scenarios", "recommendation", "confidence", "dissent")
+        if any(key not in value for key in required):
+            raise ValidationError("reasoning result is missing a required field")
+        for key in ("hypotheses", "options", "scenarios", "dissent"):
+            if not isinstance(value[key], list) or len(value[key]) > 12:
+                raise ValidationError(f"reasoning {key} must be a list of at most 12 items")
+        confidence = cls._confidence_value(value["confidence"])
+        if confidence is None:
+            raise ValidationError("reasoning confidence must be a score between 0 and 1")
+        recommendation = value["recommendation"]
+        if not isinstance(recommendation, dict) or not isinstance(recommendation.get("summary"), str):
+            raise ValidationError("reasoning recommendation must include a summary")
+        normalized: dict[str, Any] = {
+            "hypotheses": [], "options": [], "scenarios": [],
+            "recommendation": cls._json_safe(recommendation),
+            "confidence": confidence,
+            "dissent": [],
+        }
+        for key in ("hypotheses", "options", "scenarios", "dissent"):
+            for item in value[key]:
+                if not isinstance(item, dict):
+                    raise ValidationError(f"reasoning {key} items must be objects")
+                # Preserve provider detail, while keeping all returned values
+                # bounded and JSON-safe.  Confidence is normalized when present.
+                clean = cls._json_safe(item)
+                if "confidence" in item:
+                    normalized_confidence = cls._confidence_value(item["confidence"])
+                    if normalized_confidence is None:
+                        raise ValidationError(f"reasoning {key} confidence is invalid")
+                    clean["confidence"] = normalized_confidence
+                normalized[key].append(clean)
+        return normalized
+
+    def _model_reasoning(
+        self,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        person_id: str,
+        actor_id: str | None,
+        scope: dict[str, Any],
+        context: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        findings: list[dict[str, Any]],
+        relationships: list[dict[str, Any]],
+        analogues: list[dict[str, Any]],
+        decision_links: list[dict[str, Any]],
+        recommended_plan: dict[str, Any],
+        scenario_inputs: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        provider = getattr(self.os, "strategic_reasoning_provider", None)
+        evidence_refs = [item.get("object_ref") for item in evidence if item.get("object_ref")]
+        provider_context = self._json_safe({
+            "scope": scope,
+            "context": context,
+            # These are assembled only after workspace membership and Brain
+            # source ACL checks.  No store/provider handle is exposed.
+            "evidence": evidence,
+            "findings": findings,
+            "relationships": relationships,
+            "historical_analogues": analogues,
+            "decision_action_outcome_learning": decision_links,
+            "recommended_plan": recommended_plan,
+            "scenario_inputs": scenario_inputs,
+        })
+        hash_context = provider_context
+        # Current reads use a fresh watermark; keep that volatile timestamp
+        # out of the audit identity so unchanged dashboard refreshes dedupe.
+        if not context.get("historical"):
+            hash_context = dict(provider_context)
+            hash_context["scope"] = dict(provider_context.get("scope") or {})
+            hash_context["scope"]["as_of"] = "current"
+        context_hash = hashlib.sha256(
+            json.dumps(hash_context, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        base_meta: dict[str, Any] = {
+            "status": "not_configured" if provider is None else "configured",
+            "provider": None,
+            "model": None,
+            "version": None,
+            "evidence_count": len(evidence),
+            "evidence_refs": evidence_refs[:24],
+            "context_hash": context_hash,
+            "output_hash": None,
+            "fallback_reason": None,
+        }
+        if provider is None:
+            # Offline deterministic mode is the normal path; do not create a
+            # durable event for every dashboard read when no provider exists.
+            return None, base_meta
+        try:
+            raw, identity = invoke_reasoning_provider(provider, provider_context)
+            base_meta.update(identity)
+            normalized = self._validate_model_reasoning(dict(raw))
+            output_hash = hashlib.sha256(
+                json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            base_meta.update({"status": "used", "output_hash": output_hash})
+            self._record_reasoning_audit(workspace_id, actor_id, "used", base_meta)
+            return normalized, base_meta
+        except Exception as exc:
+            # Provider errors and malformed responses never replace the
+            # deterministic projection.  Record only a stable error class.
+            base_meta["status"] = "fallback"
+            base_meta["fallback_reason"] = (
+                "invalid_output" if isinstance(exc, ValidationError)
+                else str(exc).split(":", 1)[0][:100]
+            )
+            self._record_reasoning_audit(workspace_id, actor_id, "fallback", base_meta)
+            return None, base_meta
+
+    def _record_reasoning_audit(
+        self, workspace_id: str, actor_id: str | None, outcome: str, metadata: dict[str, Any]
+    ) -> None:
+        """Persist redacted run metadata; never persist prompt or model output."""
+        if not actor_id:
+            return
+        try:
+            detail = json.dumps(self._json_safe(metadata), sort_keys=True, separators=(",", ":"))
+            existing = self.os.store.conn.execute(
+                "SELECT 1 FROM audit_events WHERE workspace_id=? AND actor_id=? "
+                "AND action=? AND outcome=? AND detail=? LIMIT 1",
+                (workspace_id, actor_id, "intelligence.deliberate", outcome, detail),
+            ).fetchone()
+            if existing is not None:
+                return
+            self.os.store.create_audit(
+                AuditEvent(
+                    id=f"aud_{uuid.uuid4().hex[:16]}",
+                    workspace_id=workspace_id,
+                    actor_id=actor_id,
+                    action="intelligence.deliberate",
+                    target=workspace_id,
+                    outcome=outcome,
+                    detail=detail,
+                    recorded_at=_now(),
+                )
+            )
+        except Exception:
+            # Audit availability must not make a read-only intelligence call
+            # fail, especially for legacy fixtures without actor bindings.
+            return
 
     def _deliberation(
         self,

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import unittest
+import threading
+from http.client import HTTPConnection
+from pathlib import Path
 
-from auremgrid.demo_agency import ORG_ID, seed_realistic_agency_demo
+from auremgrid.demo_agency import DEMO_CREATIVE_PREVIEW, ORG_ID, seed_realistic_agency_demo
 from auremgrid.services.brain import CompanyOS
+from auremgrid.api.http import serve
 from tests.auth_support import issue_identity
 
 
@@ -63,6 +67,35 @@ class RealisticAgencyDemoTests(unittest.TestCase):
         _token, identity = issue_identity(self.os, "org_demo", "person_demo_owner", "ws_prime_clinics")
         self.assertEqual(len(self.os.dashboard.client_hq(identity, "org_demo", "ws_prime_clinics", "person_demo_owner")["projects"]), 2)
         self.assertEqual(self.os.company.workspace_scope("ws_prime_clinics")["organization_id"], "org_demo")
+
+    def test_creative_fixture_previews_are_real_assets_and_non_demo_media_is_untouched(self) -> None:
+        external_org = self.os.create_organization("External Customer", "org_external")
+        external_person = self.os.create_person(external_org.id, "External Owner", "external@example.invalid", role="owner", person_id="person_external")
+        external_ws = self.os.create_organization_workspace(external_org.id, "External Workspace", "client", "ws_external")
+        self.os.add_person_to_workspace(external_org.id, external_ws.id, external_person.id, "admin")
+        external_project = self.os.create_project(external_org.id, external_ws.id, external_person.id, "External Project")
+        external_deliverable = self.os.create_deliverable(external_org.id, external_ws.id, external_person.id, external_project.id, "Customer creative", "ad_creative")
+        seed_realistic_agency_demo(self.os)
+        rows = self.os.store.conn.execute("SELECT preview_url FROM deliverables WHERE organization_id=? AND type='ad_creative'", (ORG_ID,)).fetchall()
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(row["preview_url"] == DEMO_CREATIVE_PREVIEW for row in rows))
+        self.assertIsNone(self.os.company.get_deliverable(external_ws.id, external_deliverable.id).preview_url)
+        asset = Path(__file__).parents[1] / "src" / "auremgrid" / "api" / "dashboard" / "demo-agency-creative.svg"
+        self.assertTrue(asset.is_file())
+        self.assertIn("Synthetic demo fixture preview", asset.read_text(encoding="utf-8"))
+        server = serve(self.os, "127.0.0.1", 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = server.server_address
+            conn = HTTPConnection(host, port, timeout=5)
+            conn.request("GET", DEMO_CREATIVE_PREVIEW)
+            response = conn.getresponse(); body = response.read(); conn.close()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.getheader("Content-Type"), "image/svg+xml")
+            self.assertIn(b"Synthetic demo fixture preview", body)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=2)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">Auremgrid synthetic agency creative preview</title>
+  <desc id="desc">Synthetic demo fixture preview. No real client or production media is represented.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#122338"/>
+      <stop offset="1" stop-color="#246b83"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="675" fill="url(#bg)"/>
+  <circle cx="1020" cy="90" r="220" fill="#f3b34c" opacity=".22"/>
+  <circle cx="160" cy="630" r="240" fill="#74d1c8" opacity=".16"/>
+  <rect x="72" y="72" width="1056" height="531" rx="28" fill="#0b1728" opacity=".62" stroke="#8ddbd1" stroke-opacity=".45"/>
+  <text x="120" y="170" fill="#8ddbd1" font-family="Arial, sans-serif" font-size="22" letter-spacing="4">AUREMGRID · DEMO FIXTURE</text>
+  <text x="120" y="280" fill="#ffffff" font-family="Arial, sans-serif" font-size="68" font-weight="700">Make the next step</text>
+  <text x="120" y="358" fill="#ffffff" font-family="Arial, sans-serif" font-size="68" font-weight="700">easy to choose.</text>
+  <text x="124" y="430" fill="#c4d6e5" font-family="Arial, sans-serif" font-size="25">Synthetic client-ready creative preview · not production media</text>
+  <rect x="120" y="492" width="232" height="58" rx="29" fill="#f3b34c"/>
+  <text x="178" y="530" fill="#172238" font-family="Arial, sans-serif" font-size="21" font-weight="700">VIEW DETAILS</text>
+</svg>

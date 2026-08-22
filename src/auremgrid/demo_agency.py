@@ -13,6 +13,7 @@ from typing import Any
 
 ORG_ID = "org_realistic_agency_demo"
 SOURCE_PREFIX = "realistic_fixture_"
+DEMO_CREATIVE_PREVIEW = "/dashboard-assets/demo-agency-creative.svg"
 
 
 def _one(os: Any, sql: str, params: tuple[Any, ...]) -> Any:
@@ -126,6 +127,21 @@ def _ensure_review_variants(os: Any, org: str, ws: str, owner: str, project: Any
             os.decide_review(org, ws, owner, opened.id, decision)
 
 
+def _ensure_demo_creative_preview(os: Any, org: str, ws: str, brand: str) -> None:
+    """Backfill only the known synthetic creative fixture, never customer media."""
+    row = _one(
+        os,
+        "SELECT id,preview_url FROM deliverables WHERE organization_id=? AND workspace_id=? AND title=? AND type='ad_creative'",
+        (org, ws, f"{brand} client-ready creative"),
+    )
+    if row and not row["preview_url"]:
+        os.store.conn.execute(
+            "UPDATE deliverables SET preview_url=? WHERE organization_id=? AND workspace_id=? AND id=? AND type='ad_creative' AND (preview_url IS NULL OR preview_url='')",
+            (DEMO_CREATIVE_PREVIEW, org, ws, row["id"]),
+        )
+        os.store.conn.commit()
+
+
 def seed_realistic_agency_demo(os: Any, organization_id: str | None = None, owner_person_id: str | None = None) -> dict[str, Any]:
     """Seed the realistic agency scenario and return a compact inventory."""
     org_id = organization_id or ORG_ID
@@ -173,6 +189,7 @@ def seed_realistic_agency_demo(os: Any, organization_id: str | None = None, owne
         _ensure_work(os, ws.id, actor.id, f"work_{ws_id}_audience", f"{brand} audience segmentation", "review", "2026-09-05")
         _ensure_work(os, ws.id, actor.id, f"work_{ws_id}_handoff", f"{brand} launch handoff", "shipped", "2026-08-28")
         _ensure_review_variants(os, org_id, ws.id, operator.id, p1, brand)
+        _ensure_demo_creative_preview(os, org_id, ws.id, brand)
         campaign = _campaign(os, org_id, ws.id, operator.id, p2.id, f"{brand} Q3 Demand", "LinkedIn")
         if not _one(os, "SELECT id FROM campaign_metric_snapshots WHERE campaign_id=? AND source=?", (campaign["id"], "demo_fixture")):
             for spend, leads, impressions, clicks, revenue in ((900, 22, 21000, 620, 4800), (1300, 31, 27500, 790, 6900), (1600, 28, 26000, 710, 6100)):

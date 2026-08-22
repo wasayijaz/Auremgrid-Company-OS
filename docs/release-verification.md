@@ -34,6 +34,7 @@ This matrix maps the product definition of complete to authoritative implementat
 | 28. Backups are verifiable and restores are fenced | online backup API, checksum/quick/FK checks, manifests, atomic restore, session revocation, recovery mode, outbound disable, and projection rebuild test |
 | 29. Enabled live read synchronization is restart-safe and honest | Slack/ClickUp/Google Drive/Gmail/Figma/Fireflies account and permission verification, explicit workspace mappings, durable provider cursors/inbox/dedupe, baseline-first backfill, Drive reconciliation/descendant tasks, Gmail label lifecycle, version-fenced exact-file Figma polling/tombstones, bounded frame/section/comment evidence, and optional bounded named-version evidence with the parent file as the only lifecycle/object-count record; single-account Fireflies transcript polling with sanitized bounded transcript evidence and no delete/tombstone signal; no Figma model review or approval workflows/auto-created deliverables, reviews, or tasks; opaque cross-workspace quarantine, canonical ingestion, provider-aware retry timing, raw-DB secret scans, and no caller-controlled connected state |
 | 30. Brain retrieval is operable and explainable offline | dependency-free lexical fallback and local graph by default, opt-in local-only SentenceTransformers and explicitly configured Graphiti/Neo4j projection, full-workspace ACL gating before upstream lookup, canonical rehydration, bitemporal eligibility before scoring, bounded hybrid relevance/source-authority/recency contributions, deterministic ties, sanitized unavailable/degraded health, and effective knowledge state across REST/MCP/dashboard reads |
+| 31. Intelligence reasoning remains bounded and verifiable | `evaluate-intelligence` runs offline scenarios for ACL-scoped citations, uncertainty, structured reasoning, approval descriptors, no unauthorized actions, and malformed-provider deterministic fallback; see [AutoGPT adoption decision](autogpt-adoption.md) for the clean-room licensing and architecture boundary |
 
 Additional capability batch: feedback_patterns, performance_insights, forecasts,
 and retention_policies are guarded as newer authenticated service/route surfaces
@@ -45,6 +46,7 @@ Release checks:
 - Python compileall over src and tests
 - python scripts/dashboard_showcase_svg.py
 - git diff --check
+- `python -m auremgrid.cli evaluate-intelligence`
 - live Playwright dashboard interaction
 - on-disk schema and projection rebuild inspection
 

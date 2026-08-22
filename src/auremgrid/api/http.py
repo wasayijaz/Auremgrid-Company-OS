@@ -37,6 +37,7 @@ def _route_capability(path: str, method: str) -> str:
         if path in {"/knowledge-health", "/memory-proposals", "/search", "/entity", "/history", "/neighbors", "/sources", "/recent", "/brief"}: return "brain_read"
         if path == "/dashboard/brain" or path.startswith("/dashboard/intelligence"): return "brain_read"
         if path == "/dashboard/settings": return "workspace_read"
+        if path == "/reviews/annotations": return "workspace_read"
         return "workspace_read"
     if path in {"/approvals/decide", "/workflows/approvals/decide"}: return "approval_decide"
     if path.startswith("/jobs"): return "job_manage"
@@ -61,6 +62,7 @@ def _route_capability(path: str, method: str) -> str:
     if path in {"/clients/roster", "/meetings/responsibilities"} and method == "POST": return "people_manage"
     if path in {"/client-portal/intake/accept", "/client-portal/intake/decline"}: return "people_manage"
     if path in {"/client-portal/intake", "/client-portal/reviews/comment", "/client-portal/reviews/decide"} and method == "POST": return "client_portal"
+    if path in {"/reviews/annotations", "/reviews/annotations/resolve", "/reviews/annotations/supersede"}: return "workspace_write"
     if path in {"/organizations", "/workspaces"}: return "organization_manage"
     return "workspace_write"
 
@@ -188,9 +190,16 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/people":
                 organization_id,person_id=_need(params,"organization_id"),_need(params,"person_id")
-                if self.os.company.org_membership(organization_id,person_id) is None: raise AuthorizationError("organization membership required")
+                membership = self.os.company.org_membership(organization_id, person_id)
+                if membership is None: raise AuthorizationError("organization membership required")
+                if membership.role == "client": raise AuthorizationError("people directory requires agency membership")
                 items = self.os.company.list_people(organization_id)
                 self._json(200, {"people": [item.to_dict() for item in items]})
+                return
+            if parsed.path == "/people/detail":
+                self._json(200, self.os.dashboard.person_detail(
+                    _need(params, "organization_id"), _need(params, "person_id"), _need(params, "target_person_id"), params.get("workspace_id"), params.get("week_start")
+                ))
                 return
             if parsed.path == "/capacity":
                 assert identity is not None
@@ -224,6 +233,10 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self.os._require_person_access(organization_id, workspace_id, person_id)
                 items = self.os.company.list_reviews(workspace_id, params.get("status"))
                 self._json(200, {"reviews": [item.to_dict() for item in items]})
+                return
+            if parsed.path == "/reviews/annotations":
+                organization_id, workspace_id, person_id = _need(params, "organization_id"), _need(params, "workspace_id"), _need(params, "person_id")
+                self._json(200, {"annotations": self.os.list_review_annotations(organization_id, workspace_id, person_id, params.get("review_id"), params.get("include_closed", "1") != "0")})
                 return
             if parsed.path == "/clients/roster":
                 organization_id, workspace_id, person_id = _need(params, "organization_id"), _need(params, "workspace_id"), _need(params, "person_id")
@@ -325,6 +338,14 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200,{"notifications":self.os.agency_ops.attention(_need(params,"organization_id"),_need(params,"person_id"),_int(params.get("limit",20),"limit"))}); return
             if parsed.path == "/agents":
                 self._json(200,self.os.agent_ops.command_center(_need(params,"organization_id"),_need(params,"person_id"))); return
+            if parsed.path == "/agents/detail":
+                self._json(200, self.os.dashboard.agent_detail(
+                    _need(params, "organization_id"), _need(params, "person_id"), _need(params, "agent_id")
+                )); return
+            if parsed.path == "/dashboard/performance":
+                self._json(200, self.os.dashboard.performance_surface(
+                    _need(params, "organization_id"), _need(params, "workspace_id"), _need(params, "person_id")
+                )); return
             if parsed.path in {"/approvals","/automations","/reports"}:
                 organization_id,person_id=_need(params,"organization_id"),_need(params,"person_id")
                 if self.os.company.org_membership(organization_id,person_id) is None: raise AuthorizationError("organization membership required")
@@ -700,6 +721,27 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 item=self.os.add_deliverable_version(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"deliverable_id"),str(payload.get("notes","")),_optional_str(payload.get("file_url")));self._json(201,item.to_dict());return
             if parsed.path == "/reviews/comment":
                 item=self.os.add_review_comment(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"review_id"),_need(payload,"body"),_optional_float(payload.get("timestamp_seconds")));self._json(201,item.to_dict());return
+            if parsed.path == "/reviews/annotations":
+                item = self.os.create_review_annotation(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"), _need(payload, "person_id"),
+                    _need(payload, "review_id"), _need(payload, "annotation_type"), str(payload.get("body", "")),
+                    _optional_str(payload.get("source_locator")), payload.get("coordinates") or {},
+                    _optional_int(payload.get("page_number")), _optional_float(payload.get("start_seconds")),
+                    _optional_float(payload.get("end_seconds")), _optional_str(payload.get("idempotency_key")),
+                )
+                self._json(201, item); return
+            if parsed.path == "/reviews/annotations/resolve":
+                item = self.os.resolve_review_annotation(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"), _need(payload, "person_id"),
+                    _need(payload, "annotation_id"), _optional_str(payload.get("idempotency_key")), str(payload.get("note", "")),
+                )
+                self._json(200, item); return
+            if parsed.path == "/reviews/annotations/supersede":
+                item = self.os.supersede_review_annotation(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"), _need(payload, "person_id"),
+                    _need(payload, "annotation_id"), _optional_str(payload.get("replacement_annotation_id")), _optional_str(payload.get("idempotency_key")),
+                )
+                self._json(200, item); return
             if parsed.path == "/work/items":
                 item=self.os.work_ops.create(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"title"),_need(payload,"request"),_need(payload,"requested_by"),_optional_str(payload.get("project_id")),_optional_str(payload.get("campaign_id")),_optional_str(payload.get("parent_id")),str(payload.get("priority","normal")),[str(x) for x in payload.get("tags",[])],_optional_float(payload.get("estimate_hours")),_optional_str(payload.get("deadline")),str(payload.get("brief","")),str(payload.get("brain_context","")),_optional_float(payload.get("financial_value")));self._json(201,item.to_dict());return
             if parsed.path == "/work/items/update":

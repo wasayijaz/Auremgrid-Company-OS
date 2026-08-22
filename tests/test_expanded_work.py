@@ -29,7 +29,7 @@ class ExpandedWorkTests(unittest.TestCase):
         self.assertEqual(detail["files"][0]["title"],"Preview")
         self.assertEqual(detail["deliverables"],[]);self.assertEqual(detail["reviews"],[])
         self.assertEqual(detail["review_comments"],[])
-        self.assertEqual(detail["annotation_capabilities"]["video_timestamps"]["status"],"ready")
+        self.assertEqual(detail["annotation_capabilities"]["video_timestamps"]["status"],"not_available")
         self.assertEqual(detail["annotation_capabilities"]["image_points"]["status"],"not_available")
 
     def test_dependency_cycles_are_rejected(self)->None:

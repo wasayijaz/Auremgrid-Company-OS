@@ -67,7 +67,7 @@ This is an operating control plane, not a replacement for every specialist tool.
 | Feedback and learning | Record feedback, detect recurring patterns, promote preferences, approve/reject decisions | Implemented; pattern promotion requires configurable threshold |
 | Performance insights | Anomaly detection, creative and channel comparisons, insight approval workflow | Implemented; insights require sourced metric snapshots |
 | Forecasting | Revenue, client renewal, capacity, and utilization projections from recorded data | Implemented; projections are point-in-time and require historical data |
-| Intelligence Engine | Workspace and portfolio briefs from permitted evidence, canonical operating records, situation/change/hypothesis/scenario/impact/recommendation fields, historical analogues, decision-to-outcome learning links, and proposed action descriptors | Implemented as deterministic, read-only intelligence; no LLM deliberation or autonomous execution |
+| Intelligence Engine | Workspace and portfolio briefs from permitted evidence, canonical operating records, situation/change/hypothesis/scenario/impact/recommendation fields, historical analogues, decision-to-outcome learning links, and proposed action descriptors | Deterministic read-only intelligence with an optional injected model-reasoning provider; malformed/unavailable providers fall back and no provider can execute writes |
 | Data lifecycle and retention | Retention policies, scoped deletion with allowlist, workspace export, deletion audit trail | Implemented; outbound archive/redact actions remain future |
 
 ## How the system hangs together
@@ -126,9 +126,11 @@ The dashboard is a zero-build local application served by the Python HTTP proces
 
 The interface specifies Gellix as its UI family and resolves it from the local machine so the repository does not redistribute a proprietary font. Install a licensed local Gellix family for exact typography; the CSS retains a generic sans-serif safety fallback when Gellix is unavailable.
 
-The dashboard currently includes Command, Clients, Client HQ, Work board/list, Review Center, Campaigns, Content, Creative, Brain, Meetings, People/Capacity, Finance, Agents, Automations, Reports, Integrations, and Settings surfaces. Those screens call authenticated backend endpoints and preserve honest empty, disconnected, degraded, and permission-denied states. Unknown finance, campaign, or connector values remain unknown until sourced.
+The dashboard currently includes Command, Clients, Client HQ, Work board/list, Review Center, Campaigns, Content, Creative, Brain, Meetings, People/Capacity, Finance, Agents, Automations, Reports, Integrations, and Settings surfaces. Those screens call authenticated backend endpoints and preserve honest empty, disconnected, degraded, and permission-denied states. Visible actions either invoke a canonical authenticated route or are disabled with the backend-reported reason; the UI does not imply unsupported mutations. Unknown finance, campaign, or connector values remain unknown until sourced.
 
-The Intelligence rail calls `GET /dashboard/intelligence`; the Command overview also calls `GET /dashboard/intelligence/executive`. The engine composes permitted evidence and canonical operating records into findings with situation, changes, hypotheses, supporting/opposing evidence, scenarios, impact, recommendation, confidence, uncertainty, historical analogues, and decision-to-workflow-outcome-learning links where available. These are deterministic read projections. Suggested operations are returned as descriptors for canonical routes such as work capture, decision creation, and approval request; they require the caller's normal capability checks and, where applicable, explicit human approval.
+The Intelligence rail calls `GET /dashboard/intelligence`; the Command overview also calls `GET /dashboard/intelligence/executive`. The engine composes permitted evidence and canonical operating records into findings with situation, changes, hypotheses, supporting/opposing evidence, scenarios, impact, recommendation, confidence, uncertainty, historical analogues, and decision-to-workflow-outcome-learning links where available. These are read projections. An explicitly injected strategic-reasoning provider may add validated hypotheses, options, scenarios, recommendation, confidence, and dissent; it receives only the already ACL-scoped context, stores only hashed/redacted run metadata, and falls back to deterministic review on provider failure or malformed output. Suggested operations are returned as descriptors for canonical routes such as work capture, decision creation, and approval request; they require the caller's normal capability checks and, where applicable, explicit human approval.
+
+For a concrete JSON model endpoint outside tests, set `AUREMGRID_REASONING_ENDPOINT` and optionally `AUREMGRID_REASONING_MODEL`, `AUREMGRID_REASONING_VERSION`, `AUREMGRID_REASONING_API_KEY_ENV`, and `AUREMGRID_REASONING_TIMEOUT`. An absent endpoint keeps the deterministic offline path; an explicitly present but invalid configuration fails startup rather than silently pretending the provider is offline.
 
 ### Evidence, knowledge, and proposals
 
@@ -393,7 +395,7 @@ Bind an external environment reference, verify the provider account and mapped s
 
 ### CI and development
 
-Run the unittest suite with synthetic fixtures and injected connector transports. No private accounts or network access are needed. Networked semantic engines, upstream graph providers, LLM-backed deliberation, and unattended automations remain optional/experimental.
+Run the unittest suite with synthetic fixtures and injected connector transports. No private accounts or network access are needed. Networked semantic engines, upstream graph providers, strategic-reasoning providers, and unattended automations remain optional/experimental.
 
 ## Security and trust boundaries
 
@@ -417,6 +419,18 @@ python -m compileall -q src tests
 git diff --check
 ```
 
+The offline Intelligence contract evaluation can be run independently and is
+intended for release evidence:
+
+```text
+python -m auremgrid.cli evaluate-intelligence
+```
+
+It checks ACL-scoped citations, uncertainty, structured optional reasoning,
+approval descriptors, no unauthorized actions, and deterministic provider
+fallback. See [AutoGPT adoption decision](docs/autogpt-adoption.md) for the
+clean-room architecture and licensing decision.
+
 The offline suite must not require Docker, provider credentials, a private vault, or network access. Live provider tests use deterministic injected transports; they do not claim that a customer account was connected.
 
 ## Current limitations and roadmap
@@ -424,12 +438,12 @@ The offline suite must not require Docker, provider credentials, a private vault
 - No in-product OAuth installation/callback flow, webhook ingestion, or refresh-token rotation; credential binding is manual and environment-backed.
 - Google Drive bootstraps from a captured changes token, walks mapped folders/shared drives through durable continuation tasks, reconciles parent chains and descendants after moves, and retires objects only after ancestry is resolved. Gmail captures a history baseline before label backfill and maintains label membership lifecycle. Objects that match mappings owned by different workspaces create an organization-level redacted quarantine, block cursor promotion, and write no workspace evidence.
 - Figma supports verified, exact-file read polling with `current_user:read`, `file_metadata:read`, and `file_content:read`. A version-fenced file snapshot can retain bounded frame/section evidence; with explicit, proven `file_versions:read`, a changed file can also retain one bounded page of named-version evidence, and with explicit, proven `comments:read`, bounded comment evidence. The parent file remains the only lifecycle and object-count record. Review/approval workflows and auto-created deliverables, reviews, or tasks are out of scope. Fireflies supports verified, single-account read polling with `transcripts:read`, bounded to exactly one `account:<id>` mapping; it emits one sanitized, bounded transcript event per meeting from a durable date cursor and has no delete/tombstone signal. GitHub, advertising, and accounting systems remain disabled catalog entries only and do not report connected.
-- The Intelligence Engine is an evidence-backed deterministic read model. It can surface cross-domain relationships, hypotheses, parameterized what-if scenarios, proposed cross-wing plans, historical analogues, and decision/outcome/learning links from available records, but it is not yet an autonomous AI operating partner. It does not run LLM deliberation, infer hidden data, execute work, or contact external tools by itself.
-- Unattended automations, remote semantic providers, upstream OSS engines, LLM-backed strategic reasoning, and externally visible sends remain experimental or future gates. Local semantic retrieval and its deterministic fallback are available behind the provider/index boundary described above.
+- The Intelligence Engine is an evidence-backed read model. It can surface cross-domain relationships, hypotheses, parameterized what-if scenarios, proposed cross-wing plans, historical analogues, and decision/outcome/learning links from available records. Optional model-backed strategic reasoning is provider-injected, ACL-scoped, schema-validated, auditable without raw prompts/outputs, and read-only; it is not an autonomous execution path.
+- Unattended automations, remote semantic providers, upstream OSS engines, and externally visible sends remain experimental or future gates. Local semantic retrieval and its deterministic fallback are available behind the provider/index boundary described above.
 - SQLite is local-first, not a multi-region distributed database. External binary assets require a separate backup policy.
 - The standard-library HTTP server is appropriate for local/private operation; hardened public deployment needs an explicit reverse proxy, TLS, and access review.
 
-The next safe increments are OAuth/PKCE with a write-capable secret backend, webhooks and multiple provider installations, a transactional outbox boundary for externally visible sends, deeper Intelligence Engine reasoning/deliberation on top of the existing evidence contract, and continued rehearsal of the asset backup policy.
+The next safe increments are OAuth/PKCE with a write-capable secret backend, webhooks and multiple provider installations, a transactional outbox boundary for externally visible sends, richer provider adapters for the existing strategic-reasoning boundary, and continued rehearsal of the asset backup policy.
 
 ## Documentation map
 
@@ -451,6 +465,7 @@ The next safe increments are OAuth/PKCE with a write-capable secret backend, web
 - [MCP tools](docs/mcp-reference.md)
 - [Upgrade guide](docs/upgrade-guide.md)
 - [Release verification](docs/release-verification.md)
+- [AutoGPT adoption decision](docs/autogpt-adoption.md)
 
 Fixtures are synthetic. Never commit private client, employee, credential, or financial data.
 

@@ -113,11 +113,21 @@ class WorkOperations:
             result["review_comments"]=[dict(r) for r in self.conn.execute(
                 f"SELECT * FROM review_comments WHERE review_id IN ({marks}) ORDER BY created_at,id", review_ids
             ).fetchall()]
+            result["review_annotations"]=[self.company_os._annotation_dict(r) for r in self.conn.execute(
+                f"SELECT * FROM review_annotations WHERE review_id IN ({marks}) ORDER BY created_at,id", review_ids
+            ).fetchall()] if hasattr(self, "company_os") else []
         else:
             result["review_comments"]=[]
-        result["annotation_capabilities"]={
+            result["review_annotations"]=[]
+        # CompanyOS binds this reference after construction; keep the detail
+        # endpoint honest when WorkOperations is used in isolation in tests.
+        result["annotation_capabilities"] = getattr(self, "company_os", None).annotation_capabilities_for_deliverable(
+            workspace_id,
+            self.company_os.company.get_deliverable(workspace_id, result["deliverables"][0]["id"])
+        ) if getattr(self, "company_os", None) and result["deliverables"] else {
             "text_comments":{"status":"ready","route":"/reviews/comment"},
-            "video_timestamps":{"status":"ready","route":"/reviews/comment","field":"timestamp_seconds"},
+            "general_comments":{"status":"ready","route":"/reviews/annotations"},
+            "video_timestamps":{"status":"not_available","reason":"No video source is attached."},
             "image_points":{"status":"not_available"},
             "document_pages":{"status":"not_available"},
         }

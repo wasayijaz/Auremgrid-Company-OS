@@ -2456,6 +2456,63 @@ MIGRATIONS = (
         CREATE INDEX IF NOT EXISTS idx_asset_recovery_audit_entity ON asset_recovery_audit(organization_id, entity_type, entity_id, created_at);
         """,
     ),
+    Migration(
+        30,
+        "rich_review_annotations",
+        """
+        CREATE TABLE IF NOT EXISTS review_annotations (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            review_id TEXT NOT NULL,
+            deliverable_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            author_person_id TEXT NOT NULL,
+            annotation_type TEXT NOT NULL CHECK(annotation_type IN ('general_comment','image_point','image_region','document_page','document_region','video_timestamp','video_range')),
+            body TEXT NOT NULL,
+            source_locator TEXT,
+            coordinates_json TEXT NOT NULL DEFAULT '{}',
+            page_number INTEGER,
+            start_seconds REAL,
+            end_seconds REAL,
+            created_at TEXT NOT NULL,
+            idempotency_key TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(review_id) REFERENCES reviews(id),
+            FOREIGN KEY(deliverable_id) REFERENCES deliverables(id),
+            FOREIGN KEY(author_person_id) REFERENCES people(id),
+            UNIQUE(organization_id, workspace_id, author_person_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_review_annotations_review ON review_annotations(workspace_id, review_id, created_at);
+        CREATE TABLE IF NOT EXISTS review_annotation_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            annotation_id TEXT NOT NULL,
+            actor_person_id TEXT NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('created','resolved','superseded')),
+            replacement_annotation_id TEXT,
+            idempotency_key TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(annotation_id) REFERENCES review_annotations(id),
+            FOREIGN KEY(replacement_annotation_id) REFERENCES review_annotations(id),
+            FOREIGN KEY(actor_person_id) REFERENCES people(id),
+            UNIQUE(organization_id, workspace_id, actor_person_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_review_annotation_events_annotation ON review_annotation_events(annotation_id, created_at);
+        CREATE TRIGGER IF NOT EXISTS review_annotations_no_update BEFORE UPDATE ON review_annotations BEGIN SELECT RAISE(ABORT, 'review annotations are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS review_annotations_no_delete BEFORE DELETE ON review_annotations BEGIN SELECT RAISE(ABORT, 'review annotations are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS review_annotation_events_no_update BEFORE UPDATE ON review_annotation_events BEGIN SELECT RAISE(ABORT, 'review annotation events are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS review_annotation_events_no_delete BEFORE DELETE ON review_annotation_events BEGIN SELECT RAISE(ABORT, 'review annotation events are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS audit_review_annotation_events_insert AFTER INSERT ON review_annotation_events BEGIN
+            INSERT INTO ledger_audit VALUES ('audit_'||lower(hex(randomblob(8))),NEW.organization_id,NEW.workspace_id,NEW.actor_person_id,'person',NEW.action,'review_annotation',NEW.annotation_id,NEW.payload_json,CURRENT_TIMESTAMP);
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

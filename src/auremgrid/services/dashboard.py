@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from auremgrid.domain.errors import AuthorizationError
+from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
 from auremgrid.domain.security import AuthenticatedIdentity
 
 
@@ -605,12 +605,22 @@ class _ExistingDashboardService:
         now = datetime.now(timezone.utc)
 
         def row_view(row: Any) -> dict[str, Any]:
+            deliverable = self.os.company.get_deliverable(row["workspace_id"], row["deliverable_id"])
+            annotation_capabilities = self.os.annotation_capabilities_for_deliverable(row["workspace_id"], deliverable)
+            source_locator = (deliverable.final_url or deliverable.preview_url) if deliverable else None
+            if deliverable and not source_locator:
+                source_row = self.conn.execute("SELECT url FROM deliverable_files WHERE deliverable_id=? ORDER BY version DESC,created_at DESC LIMIT 1", (deliverable.id,)).fetchone()
+                source_locator = source_row[0] if source_row else None
             return {
                 "id": row["id"], "workspace_id": row["workspace_id"], "client": names.get(row["workspace_id"]),
                 "deliverable_id": row["deliverable_id"], "deliverable_title": row["deliverable_title"],
                 "deliverable_type": row["deliverable_type"], "version": row["version"], "kind": row["kind"],
                 "status": row["status"], "reviewer_person_id": row["reviewer_person_id"],
                 "opened_at": row["opened_at"], "closed_at": row["closed_at"], "decision": row["decision"],
+                "annotation_capabilities": annotation_capabilities,
+                "source_locator": source_locator,
+                "allowed_actions": [{"action": "add_annotation", "method": "POST", "route": "/reviews/annotations",
+                                     "payload": {"review_id": row["id"]}, "required_fields": ["annotation_type", "body"]}],
             }
 
         waiting_for_me: list[dict[str, Any]] = []
@@ -1155,6 +1165,51 @@ class DashboardService(_ExistingDashboardService):
                 "allowed_actions": actions,
             })
         return self._workflow_response(moment, historical, runs, rendered_stages)
+
+    def person_detail(self, organization_id: str, viewer_person_id: str, target_person_id: str, workspace_id: str | None = None, week_start: str | None = None) -> dict[str, Any]:
+        viewer_membership = self.os.company.org_membership(organization_id, viewer_person_id)
+        if viewer_membership is None:
+            raise AuthorizationError("organization membership required")
+        if viewer_membership.role == "client":
+            raise AuthorizationError("people directory requires agency membership")
+        person = self.conn.execute("SELECT * FROM people WHERE organization_id=? AND id=?", (organization_id, target_person_id)).fetchone()
+        if person is None: raise NotFoundError("person not found")
+        if workspace_id:
+            self.os._require_person_access(organization_id, workspace_id, viewer_person_id)
+            if not self.conn.execute("SELECT 1 FROM workspace_memberships WHERE workspace_id=? AND person_id=?", (workspace_id, target_person_id)).fetchone(): raise NotFoundError("person not found in workspace")
+        suffix = " AND workspace_id=?" if workspace_id else ""
+        scope = (organization_id, target_person_id, *((workspace_id,) if workspace_id else ()))
+        memberships = [dict(row) for row in self.conn.execute("""SELECT wm.workspace_id,w.name,wm.role FROM workspace_memberships wm JOIN workspaces w ON w.id=wm.workspace_id JOIN workspace_organization wo ON wo.workspace_id=w.id WHERE wo.organization_id=? AND wm.person_id=? ORDER BY w.name""", (organization_id, target_person_id)).fetchall()]
+        projects = [dict(row) for row in self.conn.execute("SELECT id,workspace_id,name,status,priority,due_date,health,progress FROM projects WHERE organization_id=? AND owner_person_id=?" + suffix + " ORDER BY due_date,name", scope).fetchall()]
+        work = [dict(row) for row in self.conn.execute("""SELECT wi.id,wi.workspace_id,wi.project_id,wi.title,wi.status,wi.needed_by,wi.estimate_hours,wi.actual_effort_hours FROM work_items wi JOIN workspace_organization wo ON wo.workspace_id=wi.workspace_id WHERE wo.organization_id=? AND wi.assignee_person_id=?""" + (" AND wi.workspace_id=?" if workspace_id else "") + " ORDER BY wi.needed_by,wi.title", scope).fetchall()]
+        reviews = [dict(row) for row in self.conn.execute("""SELECT rv.id,rv.workspace_id,rv.status,rv.decision,rv.opened_at,rv.closed_at,d.title AS deliverable_title FROM reviews rv JOIN deliverables d ON d.id=rv.deliverable_id WHERE rv.organization_id=? AND rv.reviewer_person_id=?""" + (" AND rv.workspace_id=?" if workspace_id else "") + " ORDER BY rv.opened_at DESC", scope).fetchall()]
+        skills = [dict(row) for row in self.conn.execute("SELECT s.name,s.category,ps.level FROM person_skills ps JOIN skills s ON s.id=ps.skill_id WHERE ps.person_id=? ORDER BY s.name", (target_person_id,)).fetchall()]
+        leave = [dict(row) for row in self.conn.execute("SELECT start_date,end_date,hours,status FROM leave_records WHERE organization_id=? AND person_id=? ORDER BY start_date DESC", (organization_id, target_person_id)).fetchall()]
+        week = week_start or datetime.now(timezone.utc).date().isoformat()
+        try:
+            board = self.os.capacity.weekly_board(organization_id, viewer_person_id, week, workspace_id)
+            capacity = next((row for row in board.get("people", []) if str(row.get("person_id")) == str(target_person_id)), None)
+        except (AuthorizationError, ValidationError): capacity = None
+        return {"person": dict(person), "memberships": memberships, "projects": projects, "work": work, "reviews": reviews, "skills": skills, "leave": leave, "capacity": capacity, "capacity_status": "sourced" if capacity else "unknown", "deadlines": [row for row in work if row.get("needed_by")]}
+
+    def agent_detail(self, organization_id: str, person_id: str, agent_id: str) -> dict[str, Any]:
+        if self.os.company.org_membership(organization_id, person_id) is None: raise AuthorizationError("organization membership required")
+        agent = self.conn.execute("SELECT * FROM agents WHERE organization_id=? AND id=?", (organization_id, agent_id)).fetchone()
+        if agent is None: raise NotFoundError("agent not found")
+        role = self.conn.execute("SELECT * FROM agent_roles WHERE id=? AND organization_id=?", (agent["role_id"], organization_id)).fetchone()
+        tasks = [dict(row) for row in self.conn.execute("SELECT * FROM agent_tasks WHERE organization_id=? AND agent_id=? ORDER BY created_at DESC LIMIT 25", (organization_id, agent_id)).fetchall()]
+        queue = [dict(row) for row in self.conn.execute("SELECT * FROM agent_queue_items WHERE organization_id=? AND agent_id=? ORDER BY enqueued_at DESC LIMIT 25", (organization_id, agent_id)).fetchall()]
+        runs = [dict(row) for row in self.conn.execute("SELECT * FROM agent_runs WHERE organization_id=? AND agent_id=? ORDER BY started_at DESC LIMIT 25", (organization_id, agent_id)).fetchall()]
+        completed = sum(row.get("status") == "completed" for row in runs); failed = sum(row.get("status") == "failed" for row in runs); finished = completed + failed
+        return {"agent": {**dict(agent), "capability": {"role": role["name"] if role else "Unknown", "description": role["description"] if role else "Unknown"}, "tools": _json_list(agent["tools"]), "write_permissions": _json_list(agent["write_permissions"]), "allowed_workspace_ids": _json_list(agent["allowed_workspace_ids"])}, "current_task": next((row for row in tasks if row.get("status") in {"running", "queued"}), None), "tasks": tasks, "queue": queue, "runs": runs, "quality": {"completed": completed, "failed": failed, "success_rate": completed / finished if finished else None}, "cost": {"total": sum(float(row.get("cost") or 0) for row in runs), "currency": "USD", "status": "sourced" if runs else "unknown"}, "budget": {"status": "not_configured", "amount": None, "currency": "USD"}}
+
+    def performance_surface(self, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any]:
+        self.os._require_person_access(organization_id, workspace_id, person_id)
+        campaigns = [dict(row) for row in self.conn.execute("""SELECT c.id,c.name,c.platform,c.status,c.budget,c.currency,m.spend,m.revenue,m.leads,m.impressions,m.clicks,m.ctr,m.cvr,m.roas,m.source,m.captured_at FROM campaigns c LEFT JOIN campaign_metric_snapshots m ON m.id=(SELECT m2.id FROM campaign_metric_snapshots m2 WHERE m2.campaign_id=c.id ORDER BY m2.captured_at DESC LIMIT 1) WHERE c.organization_id=? AND c.workspace_id=? ORDER BY c.updated_at DESC""", (organization_id, workspace_id)).fetchall()]
+        insights = [dict(row) for row in self.conn.execute("SELECT * FROM performance_insights WHERE organization_id=? AND workspace_id=? ORDER BY created_at DESC", (organization_id, workspace_id)).fetchall()]
+        creative = [dict(row) for row in self.conn.execute("""SELECT ca.id,ca.title,ca.platform,ca.format,ca.approval_state,AVG(cp.ctr) ctr,AVG(cp.cvr) cvr,AVG(cp.roas) roas,COUNT(cp.id) samples FROM creative_assets ca LEFT JOIN creative_performance cp ON cp.asset_id=ca.id WHERE ca.organization_id=? AND ca.workspace_id=? GROUP BY ca.id ORDER BY roas DESC""", (organization_id, workspace_id)).fetchall()]
+        attention = [row for row in campaigns if row.get("roas") is None or row.get("source") in {None, "", "not_connected"} or (row.get("roas") is not None and float(row["roas"]) < 1)]
+        return {"campaigns": campaigns, "creative_comparison": creative, "insights": insights, "attention": attention, "evidence_status": "sourced" if campaigns else "unknown"}
 
     def _fact_states(self, workspace_id: str, fact_ids: Iterable[str], moment: datetime) -> dict[str, str]:
         ids = list(fact_ids)

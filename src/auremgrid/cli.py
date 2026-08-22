@@ -10,6 +10,7 @@ from auremgrid.api.http import serve
 from auremgrid.services.brain import CompanyOS
 from auremgrid.storage.backup import check_integrity, create_backup, list_backup_points, restore_backup, rotate_backups, verify_backup
 from auremgrid.services.worker import run_one_job
+from auremgrid.services.intelligence_evaluation import run_intelligence_evaluations
 from auremgrid.demo_agency import seed_realistic_agency_demo
 
 
@@ -112,6 +113,10 @@ def main(argv: list[str] | None = None) -> int:
     worker.add_argument("--organization", required=True)
     worker.add_argument("--workspace")
     worker.add_argument("--worker-id", required=True)
+    sub.add_parser(
+        "evaluate-intelligence",
+        help="run the offline Intelligence contract evaluation scenarios",
+    )
 
     for command in (demo, agency_demo, brief, serve_cmd, sync, onboard, backup, bootstrap_auth, worker):
         _add_semantic_options(command)
@@ -226,6 +231,10 @@ def main(argv: list[str] | None = None) -> int:
         result = rotate_backups(args.dir, keep_daily=args.keep_daily, keep_weekly=args.keep_weekly)
         print(json.dumps(result, indent=2))
         return 0
+    if args.command == "evaluate-intelligence":
+        result = run_intelligence_evaluations()
+        print(json.dumps(result, indent=2))
+        return 0 if result["passed"] else 1
     return 1
 
 
