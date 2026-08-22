@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *.db
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 # Local test and coverage artifacts.
 .pytest_cache/
 .mypy_cache/

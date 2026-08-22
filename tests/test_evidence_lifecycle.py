@@ -8,6 +8,7 @@ from unittest.mock import patch
 from auremgrid.connectors.google_auth import ConnectorInboxRepository, ConnectorSourceEvent
 from auremgrid.domain.errors import ValidationError
 from auremgrid.services.brain import CompanyOS, new_id
+from tests.auth_support import LATEST_SCHEMA_VERSION
 
 
 class EvidenceLifecycleTests(unittest.TestCase):
@@ -33,7 +34,7 @@ class EvidenceLifecycleTests(unittest.TestCase):
         ).source
 
     def test_schema_13_has_durable_lifecycle_route_and_queue_tables(self) -> None:
-        self.assertEqual(self.os.store.schema_version, 22)
+        self.assertEqual(self.os.store.schema_version, LATEST_SCHEMA_VERSION)
         names = {row["name"] for row in self.os.store.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({
             "source_lifecycle_intervals", "provider_object_routes", "provider_object_route_events",

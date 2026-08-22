@@ -10,6 +10,7 @@ from auremgrid.domain.errors import AuthorizationError
 from auremgrid.domain.security import role_capabilities
 from auremgrid.services.auth import AuthService, hash_token
 from auremgrid.services.brain import CompanyOS
+from tests.auth_support import LATEST_SCHEMA_VERSION
 
 
 class AuthTests(unittest.TestCase):
@@ -115,7 +116,7 @@ class AuthFileStorageTests(unittest.TestCase):
                         "PRAGMA table_info(secret_bindings)"
                     ).fetchall()
                 }
-                self.assertEqual(upgraded.store.schema_version, 22)
+                self.assertEqual(upgraded.store.schema_version, LATEST_SCHEMA_VERSION)
                 self.assertIn("generation", columns)
             finally:
                 upgraded.close()

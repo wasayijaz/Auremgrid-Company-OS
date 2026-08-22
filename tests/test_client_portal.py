@@ -31,7 +31,7 @@ class ClientPortalOperationsTests(unittest.TestCase):
             self.org.id, self.ws.id, self.client_person.id, "New landing page", "Need a page for launch",
         )
         self.assertEqual(item["status"], "pending")
-        queue = self.os.client_portal.list_intake_queue(self.org.id, self.ws.id)
+        queue = self.os.client_portal.list_intake_queue(self.org.id, self.ws.id, self.staff.id)
         self.assertEqual(len(queue), 1)
         self.assertEqual(queue[0]["id"], item["id"])
 
@@ -45,7 +45,15 @@ class ClientPortalOperationsTests(unittest.TestCase):
         self.assertEqual(work_item.status, "captured")
         self.assertEqual(work_item.requested_by, self.client_person.id)
         # The intake queue for pending items is now empty.
-        self.assertEqual(self.os.client_portal.list_intake_queue(self.org.id, self.ws.id), [])
+        self.assertEqual(self.os.client_portal.list_intake_queue(self.org.id, self.ws.id, self.staff.id), [])
+        rows = self.os.store.conn.execute(
+            """SELECT action,entity_type,entity_id,principal_id FROM ledger_audit
+               WHERE entity_type='client_intake_request' ORDER BY rowid"""
+        ).fetchall()
+        self.assertEqual(
+            [(row["action"], row["entity_id"], row["principal_id"]) for row in rows],
+            [("create", item["id"], self.client_person.id), ("accept", item["id"], self.staff.id)],
+        )
 
     def test_double_decision_on_intake_request_is_rejected(self) -> None:
         item = self.os.client_portal.submit_intake_request(
@@ -68,6 +76,11 @@ class ClientPortalOperationsTests(unittest.TestCase):
         rows = self.os.client_portal.list_intake_requests(self.org.id, self.ws.id, self.client_person.id)
         self.assertEqual(rows[0]["status"], "declined")
         self.assertEqual(rows[0]["decision_note"], "Out of scope for this retainer")
+        audit = self.os.store.conn.execute(
+            """SELECT action,entity_type,principal_id,detail FROM ledger_audit
+               WHERE entity_type='client_intake_request' ORDER BY rowid DESC LIMIT 1"""
+        ).fetchone()
+        self.assertEqual((audit["action"], audit["principal_id"], audit["detail"]), ("decline", self.staff.id, "Out of scope for this retainer"))
 
     def test_client_cannot_submit_intake_into_another_workspace(self) -> None:
         with self.assertRaises(AuthorizationError):
@@ -79,6 +92,46 @@ class ClientPortalOperationsTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError):
             self.os.client_portal.submit_intake_request(
                 self.org.id, self.ws.id, self.staff.id, "Title", "Request",
+            )
+
+    def test_client_lists_only_their_own_intake_requests(self) -> None:
+        other_client = self.os.create_person(self.org.id, "Other Client", role="client")
+        self.os.add_person_to_workspace(self.org.id, self.ws.id, other_client.id, "client")
+        own = self.os.client_portal.submit_intake_request(
+            self.org.id, self.ws.id, self.client_person.id, "Own", "Visible",
+        )
+        self.os.client_portal.submit_intake_request(
+            self.org.id, self.ws.id, other_client.id, "Other", "Hidden",
+        )
+
+        rows = self.os.client_portal.list_intake_requests(self.org.id, self.ws.id, self.client_person.id)
+        self.assertEqual([row["id"] for row in rows], [own["id"]])
+
+    def test_client_cannot_read_staff_queue_or_decide_intake(self) -> None:
+        item = self.os.client_portal.submit_intake_request(
+            self.org.id, self.ws.id, self.client_person.id, "Title", "Request",
+        )
+        with self.assertRaises(AuthorizationError):
+            self.os.client_portal.list_intake_queue(self.org.id, self.ws.id, self.client_person.id)
+        with self.assertRaises(AuthorizationError):
+            self.os.client_portal.accept_intake_request(self.org.id, self.ws.id, self.client_person.id, item["id"])
+        with self.assertRaises(AuthorizationError):
+            self.os.client_portal.decline_intake_request(self.org.id, self.ws.id, self.client_person.id, item["id"])
+
+    def test_accept_intake_validates_workspace_assignee_and_decision_maker(self) -> None:
+        other_staff = self.os.create_person(self.org.id, "Other Staff", role="member")
+        self.os.add_person_to_workspace(self.org.id, self.other_ws.id, other_staff.id, "operator")
+        item = self.os.client_portal.submit_intake_request(
+            self.org.id, self.ws.id, self.client_person.id, "Title", "Request",
+        )
+
+        with self.assertRaises(AuthorizationError):
+            self.os.client_portal.accept_intake_request(
+                self.org.id, self.ws.id, self.staff.id, item["id"], assignee_id="actor_missing",
+            )
+        with self.assertRaises(AuthorizationError):
+            self.os.client_portal.accept_intake_request(
+                self.org.id, self.ws.id, self.staff.id, item["id"], decision_maker=other_staff.id,
             )
 
     def test_missing_intake_request_raises_not_found(self) -> None:
@@ -109,6 +162,13 @@ class ClientPortalOperationsTests(unittest.TestCase):
         self.assertEqual(decided.decision, "revision_requested")
         updated_deliverable = self.os.company.get_deliverable(self.ws.id, deliverable.id)
         self.assertEqual(updated_deliverable.revision_count, 1)
+        audit = self.os.store.conn.execute(
+            """SELECT action,entity_type,principal_id,detail FROM ledger_audit
+               WHERE principal_id=? ORDER BY rowid""",
+            (self.client_person.id,),
+        ).fetchall()
+        self.assertIn(("create", "review_comment", self.client_person.id, client_review.id), [tuple(row) for row in audit])
+        self.assertIn(("decide", "review", self.client_person.id, "revision_requested"), [tuple(row) for row in audit])
 
         with self.assertRaises(AuthorizationError):
             self.os.client_portal.add_client_review_comment(
@@ -141,4 +201,3 @@ class ClientPortalOperationsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

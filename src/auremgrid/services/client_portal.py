@@ -41,6 +41,38 @@ class ClientPortalOperations:
         ):
             raise AuthorizationError("person is not a client-portal member of this workspace")
 
+    def _require_staff_membership(self, organization_id: str, workspace_id: str, person_id: str) -> None:
+        scope = self.company.workspace_scope(workspace_id)
+        membership = self.company.workspace_membership(workspace_id, person_id)
+        if (
+            scope is None
+            or scope["organization_id"] != organization_id
+            or membership is None
+            or membership.role in {"viewer", "client"}
+        ):
+            raise AuthorizationError("person is not staff for this workspace")
+
+    def _require_workspace_actor(self, workspace_id: str, actor_id: str | None) -> None:
+        if actor_id is None:
+            return
+        if self.store.get_actor(workspace_id, actor_id) is None:
+            raise AuthorizationError("assignee is not an actor in this workspace")
+
+    def _audit(
+        self, organization_id: str, workspace_id: str, person_id: str,
+        action: str, entity_type: str, entity_id: str, detail: str,
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO ledger_audit(
+                id, organization_id, workspace_id, principal_type, principal_id,
+                action, entity_type, entity_id, detail, recorded_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                self.new_id("audit"), organization_id, workspace_id, "person", person_id,
+                action, entity_type, entity_id, detail, _now().isoformat(),
+            ),
+        )
+
     def submit_intake_request(
         self, organization_id: str, workspace_id: str, person_id: str,
         title: str, request: str, needed_by: str | None = None,
@@ -63,6 +95,7 @@ class ClientPortalOperations:
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             tuple(item.values()),
         )
+        self._audit(organization_id, workspace_id, person_id, "create", "client_intake_request", item["id"], "submitted")
         self.conn.commit()
         return item
 
@@ -70,22 +103,23 @@ class ClientPortalOperations:
         self, organization_id: str, workspace_id: str, person_id: str, status: str | None = None,
     ) -> list[dict[str, Any]]:
         self._require_client_membership(organization_id, workspace_id, person_id)
-        sql = "SELECT * FROM client_intake_requests WHERE workspace_id=?"
-        values: list[Any] = [workspace_id]
+        sql = """SELECT * FROM client_intake_requests
+                 WHERE organization_id=? AND workspace_id=? AND submitted_by_person_id=?"""
+        values: list[Any] = [organization_id, workspace_id, person_id]
         if status:
             sql += " AND status=?"
             values.append(status)
         rows = self.conn.execute(sql + " ORDER BY created_at DESC", values).fetchall()
         return [dict(row) for row in rows]
 
-    def list_intake_queue(self, organization_id: str, workspace_id: str) -> list[dict[str, Any]]:
+    def list_intake_queue(self, organization_id: str, workspace_id: str, staff_person_id: str) -> list[dict[str, Any]]:
         """Staff-facing read of the pending intake queue for a client workspace.
 
-        Callers are responsible for their own staff-capability authorization
-        before invoking this; it performs no client-membership check because
-        staff, not clients, use it.
+        Clients can list their own submitted requests through list_intake_requests;
+        this queue is for staff triage only.
         """
 
+        self._require_staff_membership(organization_id, workspace_id, staff_person_id)
         rows = self.conn.execute(
             """SELECT * FROM client_intake_requests
                WHERE organization_id=? AND workspace_id=? AND status='pending'
@@ -101,13 +135,13 @@ class ClientPortalOperations:
         """Staff confirms an intake request, creating the canonical WorkItem.
 
         This is the front-door gate: a client submission never becomes work
-        on its own. Callers must have already checked staff write access to
-        the workspace (e.g. via CompanyOS.capture_work's own authorization
-        path) before calling this; it re-validates the request row and
-        workspace scope but does not itself gate on staff capability, since
-        that check belongs to the calling actor-authorized surface.
+        on its own.
         """
 
+        self._require_staff_membership(organization_id, workspace_id, staff_person_id)
+        self._require_workspace_actor(workspace_id, assignee_id)
+        if decision_maker is not None:
+            self._require_staff_membership(organization_id, workspace_id, decision_maker)
         row = self.conn.execute(
             "SELECT * FROM client_intake_requests WHERE organization_id=? AND workspace_id=? AND id=?",
             (organization_id, workspace_id, intake_id),
@@ -129,12 +163,14 @@ class ClientPortalOperations:
                decided_by_person_id=?,decided_at=? WHERE id=?""",
             (item.id, staff_person_id, now.isoformat(), intake_id),
         )
+        self._audit(organization_id, workspace_id, staff_person_id, "accept", "client_intake_request", intake_id, item.id)
         self.conn.commit()
         return {"intake_request_id": intake_id, "work_item_id": item.id, "status": "accepted"}
 
     def decline_intake_request(
         self, organization_id: str, workspace_id: str, staff_person_id: str, intake_id: str, note: str = "",
     ) -> dict[str, Any]:
+        self._require_staff_membership(organization_id, workspace_id, staff_person_id)
         row = self.conn.execute(
             "SELECT * FROM client_intake_requests WHERE organization_id=? AND workspace_id=? AND id=?",
             (organization_id, workspace_id, intake_id),
@@ -149,6 +185,7 @@ class ClientPortalOperations:
                decided_by_person_id=?,decision_note=?,decided_at=? WHERE id=?""",
             (staff_person_id, note.strip() or None, now.isoformat(), intake_id),
         )
+        self._audit(organization_id, workspace_id, staff_person_id, "decline", "client_intake_request", intake_id, note.strip())
         self.conn.commit()
         return {"intake_request_id": intake_id, "status": "declined"}
 
@@ -172,9 +209,12 @@ class ClientPortalOperations:
         self._require_client_review(workspace_id, review_id)
         if not body.strip():
             raise ValidationError("review comment body is required")
-        return self.company.save_review_comment(
+        comment = self.company.save_review_comment(
             ReviewComment(self.new_id("reviewcomment"), review_id, person_id, body.strip(), None, _now())
         )
+        self._audit(organization_id, workspace_id, person_id, "create", "review_comment", comment.id, review_id)
+        self.conn.commit()
+        return comment
 
     def decide_client_review(
         self, organization_id: str, workspace_id: str, person_id: str, review_id: str, decision: str,
@@ -193,4 +233,6 @@ class ClientPortalOperations:
             self.company.update_deliverable(
                 Deliverable(**{**deliverable.__dict__, "approval_status": decision, "revision_count": revisions})
             )
+        self._audit(organization_id, workspace_id, person_id, "decide", "review", review_id, decision)
+        self.conn.commit()
         return updated

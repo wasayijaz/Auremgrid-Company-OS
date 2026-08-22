@@ -8,6 +8,7 @@ from pathlib import Path
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
 from auremgrid.services.brain import CompanyOS
 from auremgrid.storage.sqlite import SCHEMA
+from tests.auth_support import LATEST_SCHEMA_VERSION
 
 
 class OrganizationDeliveryTests(unittest.TestCase):
@@ -94,8 +95,14 @@ class MigrationTests(unittest.TestCase):
             conn.execute("INSERT INTO actors VALUES ('act_legacy','ws_legacy','Legacy Admin','admin','2026-01-01T00:00:00+00:00')")
             conn.execute("""INSERT INTO work_items(id,workspace_id,title,request,requested_by,needed_by,status,assignee_id,playbook_id,decision_maker,definition_of_done,created_at,updated_at)
                 VALUES ('work_legacy','ws_legacy','Legacy work','Preserve me','Client',NULL,'captured',NULL,NULL,NULL,'{}','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00')""");conn.commit();conn.close()
-            os=CompanyOS(path);item=os.store.get_work_item("ws_legacy","work_legacy")
-            self.assertEqual(os.store.schema_version,22);self.assertEqual(item.title,"Legacy work");self.assertEqual(item.priority,"normal");os.close()
+            os=CompanyOS(path)
+            try:
+                item=os.store.get_work_item("ws_legacy","work_legacy")
+                self.assertEqual(os.store.schema_version,LATEST_SCHEMA_VERSION)
+                self.assertEqual(item.title,"Legacy work")
+                self.assertEqual(item.priority,"normal")
+            finally:
+                os.close()
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from auremgrid.adapters.graphiti_upstream import (
     episode_id,
 )
 from auremgrid.services.brain import CompanyOS
+from tests.auth_support import LATEST_SCHEMA_VERSION
 
 
 class FakeGraphiti:
@@ -366,7 +367,7 @@ class UpstreamGraphitiTests(unittest.TestCase):
             os.store.conn.commit()
             os.close()
             replayed = CompanyOS(path, graph_projection=UpstreamGraphitiProjection(client=FakeGraphiti()))
-            self.assertEqual(replayed.store.schema_version, 22)
+            self.assertEqual(replayed.store.schema_version, LATEST_SCHEMA_VERSION)
             self.assertEqual(
                 replayed.store.conn.execute("SELECT COUNT(*) FROM graphiti_episode_mappings").fetchone()[0], 1
             )

@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from auremgrid.storage.migrations import MIGRATIONS
+
+
+LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
+
 
 def issue_identity(
     os: Any,

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from auremgrid.adapters.semantic import EmbeddingHealth, EmbeddingProviderError
 from auremgrid.services.brain import CompanyOS
+from tests.auth_support import LATEST_SCHEMA_VERSION
 
 
 class TinySemanticProvider:
@@ -122,7 +123,7 @@ class SemanticRetrievalTests(unittest.TestCase):
             self.assertEqual(len(row["vector"]), 64 * 4)
             first.close()
             second = CompanyOS(path)
-            self.assertEqual(second.store.schema_version, 22)
+            self.assertEqual(second.store.schema_version, LATEST_SCHEMA_VERSION)
             bundle = second.search(ws.id, actor.id, "launch")
             self.assertIn(result.document_id, {item.payload.get("document_id") for item in bundle.items})
             second.close()

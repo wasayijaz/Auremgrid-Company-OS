@@ -9,6 +9,7 @@ from pathlib import Path
 from auremgrid.domain.errors import NotFoundError, ValidationError
 from auremgrid.services.brain import CompanyOS, new_id
 from auremgrid.services.job_ops import JobOperations
+from tests.auth_support import LATEST_SCHEMA_VERSION
 
 
 class JobOperationTests(unittest.TestCase):
@@ -28,7 +29,7 @@ class JobOperationTests(unittest.TestCase):
         self.os.close()
 
     def test_schema_v11_auth_control_tables_exist_without_secret_values(self) -> None:
-        self.assertEqual(self.os.store.schema_version, 22)
+        self.assertEqual(self.os.store.schema_version, LATEST_SCHEMA_VERSION)
         secret_columns = [
             row["name"]
             for row in self.os.store.conn.execute("PRAGMA table_info(secret_bindings)").fetchall()
@@ -81,7 +82,7 @@ class JobOperationTests(unittest.TestCase):
             connection.close()
 
             upgraded = CompanyOS(path)
-            self.assertEqual(upgraded.store.schema_version, 22)
+            self.assertEqual(upgraded.store.schema_version, LATEST_SCHEMA_VERSION)
             restored = upgraded.workflow_ops.summary(org.id, ws.id, person.id, run["id"])
             self.assertEqual(restored["run"]["definition_key"], "client_request")
             upgraded.close()

@@ -10,6 +10,7 @@ from unittest.mock import patch
 from auremgrid.domain.errors import AuthorizationError, ValidationError
 from auremgrid.services.brain import CompanyOS
 from auremgrid.storage.migrations import migrate
+from tests.auth_support import LATEST_SCHEMA_VERSION
 
 
 class ClientAccountRosterTests(unittest.TestCase):
@@ -296,11 +297,11 @@ class ClientAccountRosterTests(unittest.TestCase):
             )
             first.store.conn.execute("DELETE FROM schema_migrations WHERE version=20")
             first.store.conn.commit()
-            self.assertEqual(migrate(first.store.conn), 22)
+            self.assertEqual(migrate(first.store.conn), LATEST_SCHEMA_VERSION)
             first.close()
             second = CompanyOS(path)
             try:
-                self.assertEqual(second.store.schema_version, 22)
+                self.assertEqual(second.store.schema_version, LATEST_SCHEMA_VERSION)
                 roster = second.client_ops.get_client_roster(org.id, ws.id, owner.id)
                 self.assertEqual(roster["version"], 1)
             finally:

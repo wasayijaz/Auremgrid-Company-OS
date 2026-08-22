@@ -90,6 +90,14 @@ class ClientPortalHttpTests(unittest.TestCase):
         )
         self.assertIn(status, (403, 404))
 
+    def test_client_cannot_call_same_workspace_staff_queue_endpoint(self) -> None:
+        status, _ = self.request(
+            "GET",
+            "/client-portal/intake/queue?organization_id=org_portal_http&workspace_id=ws_portal_http",
+            self.client_token,
+        )
+        self.assertEqual(status, 403)
+
     def test_client_identity_lacks_workspace_write_capability(self) -> None:
         status, me = self.request(
             "GET", "/auth/me?organization_id=org_portal_http&workspace_id=ws_portal_http", self.client_token,
@@ -111,4 +119,3 @@ class ClientPortalHttpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

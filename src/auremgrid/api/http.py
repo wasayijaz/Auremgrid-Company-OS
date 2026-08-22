@@ -355,23 +355,23 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/feedback/patterns":
                 assert identity is not None
                 org, ws, person_id = identity.organization_id, _need(params, "workspace_id"), identity.person_id
-                self._json(200, self.os.feedback_ops.list_patterns(org, ws, person_id, params.get("category"), params.get("status"))); return
+                self._json(200, self.os.feedback.list_patterns(org, ws, person_id, params.get("category"), params.get("status"))); return
             if parsed.path == "/insights/performance":
                 assert identity is not None
                 org, ws, person_id = identity.organization_id, _need(params, "workspace_id"), identity.person_id
-                self._json(200, self.os.performance_ops.list_insights(org, ws, person_id, params.get("status"), params.get("insight_type"))); return
+                self._json(200, self.os.performance.list_insights(org, ws, person_id, params.get("status"), params.get("insight_type"))); return
             if parsed.path == "/forecasts":
                 assert identity is not None
                 org, person_id = identity.organization_id, identity.person_id
-                self._json(200, self.os.forecast_ops.list_forecasts(org, person_id, params.get("forecast_type"), params.get("status"))); return
+                self._json(200, self.os.forecasts.list_forecasts(org, person_id, params.get("forecast_type"), params.get("status"))); return
             if parsed.path == "/retention/policies":
                 assert identity is not None
                 org, person_id = identity.organization_id, identity.person_id
-                self._json(200, self.os.retention_ops.list_policies(org, person_id, params.get("scope"))); return
+                self._json(200, self.os.retention.list_policies(org, person_id, params.get("scope"))); return
             if parsed.path == "/export/workspace":
                 assert identity is not None
                 org, ws, person_id = identity.organization_id, _need(params, "workspace_id"), identity.person_id
-                self._json(200, self.os.retention_ops.export_workspace(org, ws, person_id)); return
+                self._json(200, self.os.retention.export_workspace(org, ws, person_id)); return
             self._json(404, {"error": "not_found"})
         except Exception as exc:
             self._handle_error(exc)
@@ -717,38 +717,38 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/feedback/record":
                 assert identity is not None
                 org, ws, person_id = identity.organization_id, _need(payload, "workspace_id"), identity.person_id
-                self._json(200, self.os.feedback_ops.record_feedback(
+                self._json(200, self.os.feedback.record_feedback(
                     org, ws, person_id, _need(payload, "category"), _need(payload, "raw_feedback"),
                     _need(payload, "source_type"), _optional_str(payload.get("source_id"))
                 )); return
             if parsed.path == "/feedback/patterns/promote":
                 assert identity is not None
                 org, ws, person_id = identity.organization_id, _need(payload, "workspace_id"), identity.person_id
-                self._json(200, self.os.feedback_ops.promote_pattern(org, ws, person_id, _need(payload, "pattern_id"))); return
+                self._json(200, self.os.feedback.promote_pattern(org, ws, person_id, _need(payload, "pattern_id"))); return
             if parsed.path == "/feedback/patterns/decide":
                 assert identity is not None
                 org, ws, person_id = identity.organization_id, _need(payload, "workspace_id"), identity.person_id
-                self._json(200, self.os.feedback_ops.decide_pattern(
+                self._json(200, self.os.feedback.decide_pattern(
                     org, ws, person_id, _need(payload, "pattern_id"), _need(payload, "decision")
                 )); return
             if parsed.path == "/insights/performance/generate":
                 assert identity is not None
                 org, ws, person_id = identity.organization_id, _need(payload, "workspace_id"), identity.person_id
-                self._json(200, self.os.performance_ops.generate_insights(org, ws, person_id, _optional_str(payload.get("insight_type")))); return
+                self._json(200, self.os.performance.generate_insights(org, ws, person_id, _optional_str(payload.get("insight_type")))); return
             if parsed.path == "/insights/performance/decide":
                 assert identity is not None
                 org, ws, person_id = identity.organization_id, _need(payload, "workspace_id"), identity.person_id
-                self._json(200, self.os.performance_ops.decide_insight(
+                self._json(200, self.os.performance.decide_insight(
                     org, ws, person_id, _need(payload, "insight_id"), _need(payload, "decision")
                 )); return
             if parsed.path == "/forecasts/generate":
                 assert identity is not None
                 org, person_id = identity.organization_id, identity.person_id
-                self._json(200, self.os.forecast_ops.generate_forecasts(org, person_id, _optional_str(payload.get("forecast_type")))); return
+                self._json(200, self.os.forecasts.generate_forecasts(org, person_id, _optional_str(payload.get("forecast_type")))); return
             if parsed.path == "/retention/policies":
                 assert identity is not None
                 org, person_id = identity.organization_id, identity.person_id
-                self._json(200, self.os.retention_ops.create_policy(
+                self._json(200, self.os.retention.create_policy(
                     org, person_id, _need(payload, "scope"), _need(payload, "data_category"),
                     _int(payload.get("max_age_days"), "max_age_days"), _need(payload, "action"),
                     _optional_str(payload.get("scope_id"))
@@ -756,7 +756,7 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/retention/execute":
                 assert identity is not None
                 org, person_id = identity.organization_id, identity.person_id
-                self._json(200, self.os.retention_ops.execute_deletion(
+                self._json(200, self.os.retention.execute_deletion(
                     org, person_id, _need(payload, "table_name"), [str(item) for item in payload.get("record_ids", [])],
                     _need(payload, "reason"), _optional_str(payload.get("policy_id"))
                 )); return

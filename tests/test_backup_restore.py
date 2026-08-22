@@ -8,6 +8,7 @@ from pathlib import Path
 from auremgrid.domain.errors import AuthenticationError, ValidationError
 from auremgrid.services.brain import CompanyOS
 from auremgrid.storage.backup import create_backup, restore_backup, verify_backup
+from tests.auth_support import LATEST_SCHEMA_VERSION
 
 
 class BackupRestoreTests(unittest.TestCase):
@@ -26,7 +27,7 @@ class BackupRestoreTests(unittest.TestCase):
             os.close()
 
             self.assertEqual(manifest["integrity"], "ok")
-            self.assertEqual(manifest["schema_version"], 22)
+            self.assertEqual(manifest["schema_version"], LATEST_SCHEMA_VERSION)
             sidecar = json.loads(backup_path.with_suffix(".sqlite.manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(sidecar["sha256"], manifest["sha256"])
             restored = restore_backup(backup_path, restored_path)

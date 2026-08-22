@@ -24,6 +24,7 @@ from auremgrid.connectors.google_drive import (
     DRIVE_API, GOOGLE_FOLDER, DriveBackfillTask, GoogleDriveConnector,
     GoogleDriveMappingOverlap,
 )
+from tests.auth_support import LATEST_SCHEMA_VERSION
 from auremgrid.domain.errors import AuthorizationError, ValidationError
 from auremgrid.services.brain import CompanyOS, new_id
 
@@ -62,7 +63,7 @@ class GoogleConnectorTests(unittest.TestCase):
         self.os.close()
 
     def test_v12_schema_has_connector_inbox_without_token_value_columns(self) -> None:
-        self.assertEqual(self.os.store.schema_version, 22)
+        self.assertEqual(self.os.store.schema_version, LATEST_SCHEMA_VERSION)
         self.assertTrue(
             {
                 "connector_cursors",
