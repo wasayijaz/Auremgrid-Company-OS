@@ -340,6 +340,10 @@ class DashboardSurfaceTests(unittest.TestCase):
         self.assertIn("[hidden]{display:none!important}", css)
         self.assertIn(".sr-only{position:absolute!important", css)
 
+    def test_completion_style_is_inserted_beside_its_actual_parent(self) -> None:
+        self.assertIn("systemStyles.parentNode.insertBefore(css,systemStyles)", self.html)
+        self.assertNotIn("document.head.insertBefore(css,systemStyles)", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()
