@@ -527,6 +527,346 @@ class BrainOperations:
         result.update({"status":status,"promoted_type":promoted_type,"promoted_id":promoted_id,"reviewed_by_person_id":person_id,"reviewed_at":_now().isoformat()})
         return result
 
+    def create_folder(self, identity: Any, workspace_id: str, name: str,
+        parent_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+        organization_id, person_id = self._brain_identity(identity, workspace_id, "brain_propose", write=True)
+        name = self._clean_name(name, "folder name")
+        self._validate_folder_parent(workspace_id, parent_id)
+        payload = {"name": name, "parent_id": parent_id}
+        prior = self._idempotent_row("brain_folders", workspace_id, person_id, idempotency_key)
+        if prior is not None:
+            self._require_same_payload(dict(prior), payload, ("name", "parent_id"))
+            return dict(prior)
+        now = _now().isoformat()
+        item = {
+            "id": self._id("brain_folder"), "organization_id": organization_id,
+            "workspace_id": workspace_id, "parent_id": parent_id, "name": name,
+            "created_by_person_id": person_id, "created_at": now, "updated_at": now,
+            "version": 1, "idempotency_key": idempotency_key,
+        }
+        with self.os.store.atomic(immediate=True):
+            self.conn.execute("""INSERT INTO brain_folders(
+                id,organization_id,workspace_id,parent_id,name,created_by_person_id,
+                created_at,updated_at,version,idempotency_key
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)""", tuple(item.values()))
+            self._brain_audit(organization_id, workspace_id, "folder", item["id"], "create", person_id, 1, idempotency_key, payload, now)
+        return item
+
+    def create_collection(self, identity: Any, workspace_id: str, name: str,
+        folder_id: str | None = None, description: str = "", visibility: str = "owner",
+        idempotency_key: str | None = None) -> dict[str, Any]:
+        organization_id, person_id = self._brain_identity(identity, workspace_id, "brain_propose", write=True)
+        name = self._clean_name(name, "collection name")
+        visibility = self._visibility(visibility)
+        self._require_folder(workspace_id, folder_id)
+        payload = {"name": name, "folder_id": folder_id, "description": description, "visibility": visibility}
+        prior = self._idempotent_row("brain_collections", workspace_id, person_id, idempotency_key, "owner_person_id")
+        if prior is not None:
+            self._require_same_payload(dict(prior), payload, ("name", "folder_id", "description", "visibility"))
+            return dict(prior)
+        now = _now().isoformat()
+        item = {
+            "id": self._id("brain_collection"), "organization_id": organization_id,
+            "workspace_id": workspace_id, "folder_id": folder_id, "name": name,
+            "description": description, "owner_person_id": person_id, "visibility": visibility,
+            "created_at": now, "updated_at": now, "version": 1, "idempotency_key": idempotency_key,
+        }
+        with self.os.store.atomic(immediate=True):
+            self.conn.execute("""INSERT INTO brain_collections(
+                id,organization_id,workspace_id,folder_id,name,description,owner_person_id,
+                visibility,created_at,updated_at,version,idempotency_key
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", tuple(item.values()))
+            self._brain_audit(organization_id, workspace_id, "collection", item["id"], "create", person_id, 1, idempotency_key, payload, now)
+        return item
+
+    def create_tag(self, identity: Any, workspace_id: str, name: str, color: str | None = None,
+        idempotency_key: str | None = None) -> dict[str, Any]:
+        organization_id, person_id = self._brain_identity(identity, workspace_id, "brain_propose", write=True)
+        name = self._clean_name(name, "tag name")
+        normalized = _norm(name)
+        if not normalized:
+            raise ValidationError("tag name is required")
+        payload = {"name": name, "normalized_name": normalized, "color": color}
+        prior = self._idempotent_row("brain_tags", workspace_id, person_id, idempotency_key)
+        if prior is not None:
+            self._require_same_payload(dict(prior), payload, ("name", "normalized_name", "color"))
+            return dict(prior)
+        existing = self.conn.execute(
+            "SELECT * FROM brain_tags WHERE workspace_id=? AND normalized_name=?",
+            (workspace_id, normalized),
+        ).fetchone()
+        if existing is not None:
+            return dict(existing)
+        now = _now().isoformat()
+        item = {
+            "id": self._id("brain_tag"), "organization_id": organization_id,
+            "workspace_id": workspace_id, "name": name, "normalized_name": normalized,
+            "color": color, "created_by_person_id": person_id,
+            "created_at": now, "updated_at": now, "version": 1,
+            "idempotency_key": idempotency_key,
+        }
+        with self.os.store.atomic(immediate=True):
+            self.conn.execute("""INSERT INTO brain_tags(
+                id,organization_id,workspace_id,name,normalized_name,color,created_by_person_id,
+                created_at,updated_at,version,idempotency_key
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""", tuple(item.values()))
+            self._brain_audit(organization_id, workspace_id, "tag", item["id"], "create", person_id, 1, idempotency_key, payload, now)
+        return item
+
+    def tag_source(self, identity: Any, workspace_id: str, source_id: str, tag_id: str,
+        idempotency_key: str | None = None) -> dict[str, Any]:
+        organization_id, person_id = self._brain_identity(identity, workspace_id, "brain_propose", write=True)
+        self._require_tag(workspace_id, tag_id)
+        self._require_allowed_source(identity, workspace_id, source_id)
+        prior = self._idempotent_row("brain_source_tags", workspace_id, person_id, idempotency_key, "tagged_by_person_id")
+        if prior is not None:
+            self._require_same_payload(dict(prior), {"source_id": source_id, "tag_id": tag_id}, ("source_id", "tag_id"))
+            return dict(prior)
+        existing = self.conn.execute(
+            "SELECT * FROM brain_source_tags WHERE workspace_id=? AND source_id=? AND tag_id=?",
+            (workspace_id, source_id, tag_id),
+        ).fetchone()
+        if existing is not None:
+            return dict(existing)
+        now = _now().isoformat()
+        item = {
+            "organization_id": organization_id, "workspace_id": workspace_id,
+            "source_id": source_id, "tag_id": tag_id,
+            "tagged_by_person_id": person_id, "created_at": now,
+            "idempotency_key": idempotency_key,
+        }
+        with self.os.store.atomic(immediate=True):
+            self.conn.execute("INSERT INTO brain_source_tags VALUES (?,?,?,?,?,?,?)", tuple(item.values()))
+            self._brain_audit(organization_id, workspace_id, "source_tag", source_id, "tag", person_id, None, idempotency_key, {"source_id": source_id, "tag_id": tag_id}, now)
+        return item
+
+    def tag_document(self, identity: Any, workspace_id: str, document_id: str, tag_id: str,
+        idempotency_key: str | None = None) -> dict[str, Any]:
+        organization_id, person_id = self._brain_identity(identity, workspace_id, "brain_propose", write=True)
+        self._require_tag(workspace_id, tag_id)
+        document = self.os.store.get_document(workspace_id, document_id)
+        if document is None:
+            raise NotFoundError("document not found")
+        self._require_allowed_source(identity, workspace_id, document.source_id)
+        prior = self._idempotent_row("brain_document_tags", workspace_id, person_id, idempotency_key, "tagged_by_person_id")
+        if prior is not None:
+            self._require_same_payload(dict(prior), {"document_id": document_id, "tag_id": tag_id}, ("document_id", "tag_id"))
+            return dict(prior)
+        existing = self.conn.execute(
+            "SELECT * FROM brain_document_tags WHERE workspace_id=? AND document_id=? AND tag_id=?",
+            (workspace_id, document_id, tag_id),
+        ).fetchone()
+        if existing is not None:
+            return dict(existing)
+        now = _now().isoformat()
+        item = {
+            "organization_id": organization_id, "workspace_id": workspace_id,
+            "document_id": document_id, "tag_id": tag_id,
+            "tagged_by_person_id": person_id, "created_at": now,
+            "idempotency_key": idempotency_key,
+        }
+        with self.os.store.atomic(immediate=True):
+            self.conn.execute("INSERT INTO brain_document_tags VALUES (?,?,?,?,?,?,?)", tuple(item.values()))
+            self._brain_audit(organization_id, workspace_id, "document_tag", document_id, "tag", person_id, None, idempotency_key, {"document_id": document_id, "tag_id": tag_id}, now)
+        return item
+
+    def add_collection_item(self, identity: Any, workspace_id: str, collection_id: str,
+        item_type: str, item_id: str, idempotency_key: str | None = None) -> dict[str, Any]:
+        organization_id, person_id = self._brain_identity(identity, workspace_id, "brain_propose", write=True)
+        collection = self._require_collection_for_write(workspace_id, collection_id, person_id)
+        if item_type == "source":
+            self._require_allowed_source(identity, workspace_id, item_id)
+        elif item_type == "document":
+            document = self.os.store.get_document(workspace_id, item_id)
+            if document is None:
+                raise NotFoundError("document not found")
+            self._require_allowed_source(identity, workspace_id, document.source_id)
+        else:
+            raise ValidationError("collection item type is invalid")
+        prior = self._idempotent_row("brain_collection_items", workspace_id, person_id, idempotency_key, "added_by_person_id")
+        if prior is not None:
+            self._require_same_payload(dict(prior), {"collection_id": collection_id, "item_type": item_type, "item_id": item_id}, ("collection_id", "item_type", "item_id"))
+            return dict(prior)
+        existing = self.conn.execute(
+            """SELECT * FROM brain_collection_items
+               WHERE workspace_id=? AND collection_id=? AND item_type=? AND item_id=?""",
+            (workspace_id, collection_id, item_type, item_id),
+        ).fetchone()
+        if existing is not None:
+            return dict(existing)
+        now = _now().isoformat()
+        item = {
+            "organization_id": organization_id, "workspace_id": workspace_id,
+            "collection_id": collection["id"], "item_type": item_type,
+            "item_id": item_id, "added_by_person_id": person_id,
+            "created_at": now, "idempotency_key": idempotency_key,
+        }
+        with self.os.store.atomic(immediate=True):
+            self.conn.execute("INSERT INTO brain_collection_items VALUES (?,?,?,?,?,?,?,?)", tuple(item.values()))
+            self._brain_audit(organization_id, workspace_id, "collection_item", collection_id, "add_item", person_id, None, idempotency_key, {"item_type": item_type, "item_id": item_id}, now)
+        return item
+
+    def list_tagged_sources(self, identity: Any, workspace_id: str, tag_id: str) -> list[dict[str, Any]]:
+        self._brain_identity(identity, workspace_id, "brain_read", write=False)
+        self._require_tag(workspace_id, tag_id)
+        allowed = sorted(self._allowed_source_ids(identity, workspace_id))
+        if not allowed:
+            return []
+        marks = ",".join("?" for _ in allowed)
+        rows = self.conn.execute(
+            f"""SELECT s.*, t.created_at AS tagged_at FROM brain_source_tags t
+                JOIN sources s ON s.id=t.source_id AND s.workspace_id=t.workspace_id
+                WHERE t.workspace_id=? AND t.tag_id=? AND t.source_id IN ({marks})
+                ORDER BY t.created_at ASC, s.id ASC""",
+            (workspace_id, tag_id, *allowed),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_tagged_documents(self, identity: Any, workspace_id: str, tag_id: str) -> list[dict[str, Any]]:
+        self._brain_identity(identity, workspace_id, "brain_read", write=False)
+        self._require_tag(workspace_id, tag_id)
+        allowed = sorted(self._allowed_source_ids(identity, workspace_id))
+        if not allowed:
+            return []
+        marks = ",".join("?" for _ in allowed)
+        rows = self.conn.execute(
+            f"""SELECT d.*, t.created_at AS tagged_at FROM brain_document_tags t
+                JOIN documents d ON d.id=t.document_id AND d.workspace_id=t.workspace_id
+                WHERE t.workspace_id=? AND t.tag_id=? AND d.source_id IN ({marks})
+                ORDER BY t.created_at ASC, d.id ASC""",
+            (workspace_id, tag_id, *allowed),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_collection_items(self, identity: Any, workspace_id: str, collection_id: str) -> list[dict[str, Any]]:
+        _, person_id = self._brain_identity(identity, workspace_id, "brain_read", write=False)
+        self._require_collection_for_read(workspace_id, collection_id, person_id)
+        allowed = self._allowed_source_ids(identity, workspace_id)
+        rows = self.conn.execute(
+            """SELECT * FROM brain_collection_items
+               WHERE workspace_id=? AND collection_id=?
+               ORDER BY created_at ASC, item_type ASC, item_id ASC""",
+            (workspace_id, collection_id),
+        ).fetchall()
+        output = []
+        for row in rows:
+            if row["item_type"] == "source":
+                if row["item_id"] not in allowed:
+                    continue
+            else:
+                document = self.os.store.get_document(workspace_id, row["item_id"])
+                if document is None or document.source_id not in allowed:
+                    continue
+            output.append(dict(row))
+        return output
+
+    def save_view(self, identity: Any, workspace_id: str, name: str, *,
+        query: Any, filters: Any | None = None, sort: Any | None = None,
+        folder_id: str | None = None, description: str = "", visibility: str = "owner",
+        idempotency_key: str | None = None) -> dict[str, Any]:
+        organization_id, person_id = self._brain_identity(identity, workspace_id, "brain_propose", write=True)
+        name = self._clean_name(name, "saved view name")
+        visibility = self._visibility(visibility)
+        self._require_folder(workspace_id, folder_id)
+        query_json = self._json_payload(query, "query")
+        filters_json = self._json_payload(filters or {}, "filters")
+        sort_json = self._json_payload(sort or [], "sort")
+        payload = {
+            "name": name, "description": description, "visibility": visibility,
+            "folder_id": folder_id, "query_json": query_json,
+            "filters_json": filters_json, "sort_json": sort_json,
+        }
+        prior = self._idempotent_row("brain_saved_views", workspace_id, person_id, idempotency_key, "owner_person_id")
+        if prior is not None:
+            self._require_same_payload(dict(prior), payload, tuple(payload.keys()))
+            return self._saved_view_from_row(prior)
+        now = _now().isoformat()
+        view_id = self._id("brain_view")
+        item = {
+            "id": view_id, "organization_id": organization_id, "workspace_id": workspace_id,
+            "folder_id": folder_id, "name": name, "description": description,
+            "owner_person_id": person_id, "visibility": visibility, "query_json": query_json,
+            "filters_json": filters_json, "sort_json": sort_json, "created_at": now,
+            "updated_at": now, "version": 1, "idempotency_key": idempotency_key,
+        }
+        with self.os.store.atomic(immediate=True):
+            self.conn.execute("""INSERT INTO brain_saved_views(
+                id,organization_id,workspace_id,folder_id,name,description,owner_person_id,
+                visibility,query_json,filters_json,sort_json,created_at,updated_at,version,idempotency_key
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", tuple(item.values()))
+            self._insert_saved_view_version(view_id, organization_id, workspace_id, 1, name, description, visibility, query_json, filters_json, sort_json, person_id, "created", now)
+            self._brain_audit(organization_id, workspace_id, "saved_view", view_id, "create", person_id, 1, idempotency_key, payload, now)
+        return self._saved_view_from_row(item)
+
+    def update_view(self, identity: Any, workspace_id: str, saved_view_id: str, *,
+        name: str | None = None, query: Any | None = None, filters: Any | None = None,
+        sort: Any | None = None, description: str | None = None, visibility: str | None = None,
+        folder_id: str | None = None, idempotency_key: str | None = None,
+        reason: str = "updated") -> dict[str, Any]:
+        organization_id, person_id = self._brain_identity(identity, workspace_id, "brain_propose", write=True)
+        row = self.os.store.get_brain_saved_view(workspace_id, saved_view_id)
+        if row is None:
+            raise NotFoundError("saved view not found")
+        if row["owner_person_id"] != person_id:
+            raise AuthorizationError("saved view owner required")
+        prior = self._prior_mutation(workspace_id, "saved_view", saved_view_id, "update", idempotency_key)
+        if prior is not None:
+            return self._saved_view_from_row(self.os.store.get_brain_saved_view(workspace_id, saved_view_id))
+        next_name = self._clean_name(name, "saved view name") if name is not None else str(row["name"])
+        next_description = description if description is not None else str(row["description"])
+        next_visibility = self._visibility(visibility) if visibility is not None else str(row["visibility"])
+        next_folder_id = folder_id if folder_id is not None else row["folder_id"]
+        self._require_folder(workspace_id, next_folder_id)
+        query_json = self._json_payload(query, "query") if query is not None else str(row["query_json"])
+        filters_json = self._json_payload(filters, "filters") if filters is not None else str(row["filters_json"])
+        sort_json = self._json_payload(sort, "sort") if sort is not None else str(row["sort_json"])
+        payload = {
+            "name": next_name, "description": next_description, "visibility": next_visibility,
+            "folder_id": next_folder_id, "query_json": query_json,
+            "filters_json": filters_json, "sort_json": sort_json,
+        }
+        old_payload = {key: row[key] for key in payload}
+        if payload == old_payload:
+            return self._saved_view_from_row(row)
+        now = _now().isoformat()
+        next_version = int(row["version"]) + 1
+        with self.os.store.atomic(immediate=True):
+            cursor = self.conn.execute("""UPDATE brain_saved_views
+                SET folder_id=?,name=?,description=?,visibility=?,query_json=?,
+                    filters_json=?,sort_json=?,updated_at=?,version=?
+                WHERE workspace_id=? AND id=? AND version=?""",
+                (next_folder_id, next_name, next_description, next_visibility, query_json,
+                 filters_json, sort_json, now, next_version, workspace_id, saved_view_id, row["version"]))
+            if cursor.rowcount != 1:
+                raise ValidationError("saved view version changed")
+            self._insert_saved_view_version(saved_view_id, organization_id, workspace_id, next_version, next_name, next_description, next_visibility, query_json, filters_json, sort_json, person_id, reason, now)
+            self._brain_audit(organization_id, workspace_id, "saved_view", saved_view_id, "update", person_id, next_version, idempotency_key, payload, now)
+        return self._saved_view_from_row(self.os.store.get_brain_saved_view(workspace_id, saved_view_id))
+
+    def get_view(self, identity: Any, workspace_id: str, saved_view_id: str) -> dict[str, Any]:
+        _, person_id = self._brain_identity(identity, workspace_id, "brain_read", write=False)
+        row = self.os.store.get_brain_saved_view(workspace_id, saved_view_id)
+        if row is None:
+            raise NotFoundError("saved view not found")
+        if row["visibility"] != "shared" and row["owner_person_id"] != person_id:
+            raise NotFoundError("saved view not found")
+        return self._saved_view_from_row(row)
+
+    def list_views(self, identity: Any, workspace_id: str) -> list[dict[str, Any]]:
+        _, person_id = self._brain_identity(identity, workspace_id, "brain_read", write=False)
+        rows = self.conn.execute(
+            """SELECT * FROM brain_saved_views
+               WHERE workspace_id=? AND (visibility='shared' OR owner_person_id=?)
+               ORDER BY updated_at DESC, id DESC""",
+            (workspace_id, person_id),
+        ).fetchall()
+        return [self._saved_view_from_row(row) for row in rows]
+
+    def view_versions(self, identity: Any, workspace_id: str, saved_view_id: str) -> list[dict[str, Any]]:
+        self.get_view(identity, workspace_id, saved_view_id)
+        rows = self.os.store.list_brain_saved_view_versions(workspace_id, saved_view_id)
+        return [self._saved_view_version_from_row(row) for row in rows]
+
     def knowledge_health(self, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any]:
         self.os._require_person_access(organization_id,workspace_id,person_id)
         issues=[]
@@ -560,6 +900,144 @@ class BrainOperations:
             projection_rows=self.conn.execute("SELECT * FROM projection_state WHERE workspace_id=?",(workspace_id,)).fetchall()
         projections=[dict(r) for r in projection_rows]
         return {"issues":[dict(r) for r in self.conn.execute("SELECT * FROM knowledge_health_issues WHERE workspace_id=? AND status='open' ORDER BY severity",(workspace_id,)).fetchall()],"projections":projections}
+
+    def _brain_identity(self, identity: Any, workspace_id: str, capability: str, write: bool) -> tuple[str, str]:
+        if not hasattr(identity, "person_id"):
+            raise AuthorizationError("authenticated identity is required")
+        if identity.workspace_id not in {None, workspace_id}:
+            raise AuthorizationError("identity is outside requested scope")
+        identity.require(capability)
+        self.os._require_person_access(identity.organization_id, workspace_id, identity.person_id, write=write)
+        return identity.organization_id, identity.person_id
+
+    @staticmethod
+    def _clean_name(value: str, label: str) -> str:
+        cleaned = " ".join(str(value).split())
+        if not cleaned:
+            raise ValidationError(f"{label} is required")
+        return cleaned
+
+    @staticmethod
+    def _visibility(value: str | None) -> str:
+        if value not in {"owner", "shared"}:
+            raise ValidationError("visibility must be owner or shared")
+        return value
+
+    @staticmethod
+    def _json_payload(value: Any, label: str) -> str:
+        try:
+            return json.dumps(value, sort_keys=True, separators=(",", ":"))
+        except TypeError as exc:
+            raise ValidationError(f"{label} must be JSON serializable") from exc
+
+    def _saved_view_from_row(self, row: Any) -> dict[str, Any]:
+        item = dict(row)
+        item["query"] = json.loads(str(item.pop("query_json")))
+        item["filters"] = json.loads(str(item.pop("filters_json")))
+        item["sort"] = json.loads(str(item.pop("sort_json")))
+        return item
+
+    def _saved_view_version_from_row(self, row: Any) -> dict[str, Any]:
+        item = dict(row)
+        item["query"] = json.loads(str(item.pop("query_json")))
+        item["filters"] = json.loads(str(item.pop("filters_json")))
+        item["sort"] = json.loads(str(item.pop("sort_json")))
+        return item
+
+    def _brain_audit(self, organization_id: str, workspace_id: str, entity_type: str, entity_id: str,
+        action: str, actor_person_id: str, version: int | None, idempotency_key: str | None,
+        payload: dict[str, object], created_at: str) -> None:
+        self.os.store.record_brain_audit(
+            audit_id=self._id("brain_audit"), organization_id=organization_id,
+            workspace_id=workspace_id, entity_type=entity_type, entity_id=entity_id,
+            action=action, actor_person_id=actor_person_id, version=version,
+            idempotency_key=idempotency_key, payload=payload, created_at=created_at,
+        )
+
+    def _insert_saved_view_version(self, saved_view_id: str, organization_id: str, workspace_id: str,
+        version: int, name: str, description: str, visibility: str, query_json: str,
+        filters_json: str, sort_json: str, changed_by_person_id: str, reason: str, created_at: str) -> None:
+        self.conn.execute("""INSERT INTO brain_saved_view_versions(
+            id,saved_view_id,organization_id,workspace_id,version,name,description,visibility,
+            query_json,filters_json,sort_json,changed_by_person_id,change_reason,created_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+            self._id("brain_view_ver"), saved_view_id, organization_id, workspace_id, version,
+            name, description, visibility, query_json, filters_json, sort_json,
+            changed_by_person_id, reason, created_at,
+        ))
+
+    def _idempotent_row(self, table: str, workspace_id: str, person_id: str,
+        idempotency_key: str | None, person_column: str = "created_by_person_id") -> Any:
+        if idempotency_key is None:
+            return None
+        return self.conn.execute(
+            f"SELECT * FROM {table} WHERE workspace_id=? AND {person_column}=? AND idempotency_key=?",
+            (workspace_id, person_id, idempotency_key),
+        ).fetchone()
+
+    def _prior_mutation(self, workspace_id: str, entity_type: str, entity_id: str,
+        action: str, idempotency_key: str | None) -> Any:
+        if idempotency_key is None:
+            return None
+        return self.conn.execute(
+            """SELECT * FROM brain_mutation_audit
+               WHERE workspace_id=? AND entity_type=? AND entity_id=? AND action=? AND idempotency_key=?
+               ORDER BY created_at DESC,id DESC LIMIT 1""",
+            (workspace_id, entity_type, entity_id, action, idempotency_key),
+        ).fetchone()
+
+    @staticmethod
+    def _require_same_payload(row: dict[str, Any], payload: dict[str, Any], fields: tuple[str, ...]) -> None:
+        if any(row.get(field) != payload.get(field) for field in fields):
+            raise ValidationError("idempotency key was already used for a different mutation")
+
+    def _require_folder(self, workspace_id: str, folder_id: str | None) -> None:
+        if folder_id is None:
+            return
+        if self.os.store.get_brain_folder(workspace_id, folder_id) is None:
+            raise NotFoundError("folder not found")
+
+    def _validate_folder_parent(self, workspace_id: str, parent_id: str | None) -> None:
+        if parent_id is None:
+            return
+        seen: set[str] = set()
+        cursor = parent_id
+        while cursor is not None:
+            if cursor in seen:
+                raise ValidationError("folder hierarchy has a cycle")
+            seen.add(cursor)
+            folder = self.os.store.get_brain_folder(workspace_id, cursor)
+            if folder is None:
+                raise NotFoundError("parent folder not found")
+            cursor = folder["parent_id"]
+            if len(seen) > 25:
+                raise ValidationError("folder hierarchy is too deep")
+
+    def _require_tag(self, workspace_id: str, tag_id: str) -> dict[str, object]:
+        tag = self.os.store.get_brain_tag(workspace_id, tag_id)
+        if tag is None:
+            raise NotFoundError("tag not found")
+        return tag
+
+    def _require_collection_for_read(self, workspace_id: str, collection_id: str, person_id: str) -> dict[str, object]:
+        collection = self.os.store.get_brain_collection(workspace_id, collection_id)
+        if collection is None:
+            raise NotFoundError("collection not found")
+        if collection["visibility"] != "shared" and collection["owner_person_id"] != person_id:
+            raise NotFoundError("collection not found")
+        return collection
+
+    def _require_collection_for_write(self, workspace_id: str, collection_id: str, person_id: str) -> dict[str, object]:
+        collection = self.os.store.get_brain_collection(workspace_id, collection_id)
+        if collection is None:
+            raise NotFoundError("collection not found")
+        if collection["owner_person_id"] != person_id:
+            raise AuthorizationError("collection owner required")
+        return collection
+
+    def _require_allowed_source(self, identity: Any, workspace_id: str, source_id: str) -> None:
+        if source_id not in self._allowed_source_ids(identity, workspace_id):
+            raise NotFoundError("source not found")
 
     def _authorize(self, organization_id: str, workspace_id: str | None, person_id: str, write: bool) -> None:
         if workspace_id: self.os._require_person_access(organization_id,workspace_id,person_id,write=write)

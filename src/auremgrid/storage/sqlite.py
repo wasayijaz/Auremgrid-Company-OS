@@ -2457,6 +2457,76 @@ class SqliteStore:
             results.append((document, source))
         return results
 
+    def get_brain_folder(self, workspace_id: str, folder_id: str) -> dict[str, object] | None:
+        row = self.conn.execute(
+            "SELECT * FROM brain_folders WHERE workspace_id=? AND id=?",
+            (workspace_id, folder_id),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_brain_collection(self, workspace_id: str, collection_id: str) -> dict[str, object] | None:
+        row = self.conn.execute(
+            "SELECT * FROM brain_collections WHERE workspace_id=? AND id=?",
+            (workspace_id, collection_id),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_brain_tag(self, workspace_id: str, tag_id: str) -> dict[str, object] | None:
+        row = self.conn.execute(
+            "SELECT * FROM brain_tags WHERE workspace_id=? AND id=?",
+            (workspace_id, tag_id),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_brain_saved_view(self, workspace_id: str, saved_view_id: str) -> dict[str, object] | None:
+        row = self.conn.execute(
+            "SELECT * FROM brain_saved_views WHERE workspace_id=? AND id=?",
+            (workspace_id, saved_view_id),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_brain_saved_view_versions(self, workspace_id: str, saved_view_id: str) -> list[dict[str, object]]:
+        rows = self.conn.execute(
+            """SELECT * FROM brain_saved_view_versions
+               WHERE workspace_id=? AND saved_view_id=?
+               ORDER BY version ASC""",
+            (workspace_id, saved_view_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_brain_audit(
+        self,
+        *,
+        audit_id: str,
+        organization_id: str,
+        workspace_id: str,
+        entity_type: str,
+        entity_id: str,
+        action: str,
+        actor_person_id: str,
+        version: int | None,
+        idempotency_key: str | None,
+        payload: dict[str, object],
+        created_at: str,
+    ) -> dict[str, object]:
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        self.conn.execute(
+            """INSERT INTO brain_mutation_audit(
+                id,organization_id,workspace_id,entity_type,entity_id,action,
+                actor_person_id,version,idempotency_key,payload_json,created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                audit_id, organization_id, workspace_id, entity_type, entity_id, action,
+                actor_person_id, version, idempotency_key, payload_json, created_at,
+            ),
+        )
+        self._commit()
+        row = self.conn.execute(
+            "SELECT * FROM brain_mutation_audit WHERE id=?",
+            (audit_id,),
+        ).fetchone()
+        return dict(row)
+
     def _source_from_row(self, row: sqlite3.Row) -> SourceArtifact:
         return SourceArtifact(
             id=row["id"],

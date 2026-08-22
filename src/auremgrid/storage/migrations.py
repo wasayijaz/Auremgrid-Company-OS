@@ -2112,6 +2112,186 @@ MIGRATIONS = (
         CREATE INDEX IF NOT EXISTS idx_retention_policies_org ON retention_policies(organization_id, scope);
         """
     ),
+    Migration(
+        27,
+        "brain_workspace_persistence",
+        """
+        CREATE TABLE IF NOT EXISTS brain_folders (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            parent_id TEXT,
+            name TEXT NOT NULL,
+            created_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            idempotency_key TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(parent_id) REFERENCES brain_folders(id),
+            CHECK(parent_id IS NULL OR parent_id <> id),
+            UNIQUE(workspace_id, parent_id, name),
+            UNIQUE(workspace_id, created_by_person_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_folders_workspace ON brain_folders(workspace_id, parent_id, name);
+
+        CREATE TABLE IF NOT EXISTS brain_collections (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            folder_id TEXT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            owner_person_id TEXT NOT NULL,
+            visibility TEXT NOT NULL CHECK(visibility IN ('owner','shared')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            idempotency_key TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(folder_id) REFERENCES brain_folders(id),
+            UNIQUE(workspace_id, folder_id, name),
+            UNIQUE(workspace_id, owner_person_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_collections_workspace ON brain_collections(workspace_id, folder_id, visibility);
+
+        CREATE TABLE IF NOT EXISTS brain_tags (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            color TEXT,
+            created_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            idempotency_key TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            UNIQUE(workspace_id, normalized_name),
+            UNIQUE(workspace_id, created_by_person_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_tags_workspace ON brain_tags(workspace_id, normalized_name);
+
+        CREATE TABLE IF NOT EXISTS brain_source_tags (
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            tag_id TEXT NOT NULL,
+            tagged_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            idempotency_key TEXT,
+            PRIMARY KEY(workspace_id, source_id, tag_id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(source_id) REFERENCES sources(id),
+            FOREIGN KEY(tag_id) REFERENCES brain_tags(id),
+            UNIQUE(workspace_id, tagged_by_person_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_source_tags_tag ON brain_source_tags(workspace_id, tag_id);
+
+        CREATE TABLE IF NOT EXISTS brain_document_tags (
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            tag_id TEXT NOT NULL,
+            tagged_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            idempotency_key TEXT,
+            PRIMARY KEY(workspace_id, document_id, tag_id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(document_id) REFERENCES documents(id),
+            FOREIGN KEY(tag_id) REFERENCES brain_tags(id),
+            UNIQUE(workspace_id, tagged_by_person_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_document_tags_tag ON brain_document_tags(workspace_id, tag_id);
+
+        CREATE TABLE IF NOT EXISTS brain_collection_items (
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            collection_id TEXT NOT NULL,
+            item_type TEXT NOT NULL CHECK(item_type IN ('source','document')),
+            item_id TEXT NOT NULL,
+            added_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            idempotency_key TEXT,
+            PRIMARY KEY(workspace_id, collection_id, item_type, item_id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(collection_id) REFERENCES brain_collections(id),
+            UNIQUE(workspace_id, added_by_person_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_collection_items_collection ON brain_collection_items(workspace_id, collection_id, item_type);
+
+        CREATE TABLE IF NOT EXISTS brain_saved_views (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            folder_id TEXT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            owner_person_id TEXT NOT NULL,
+            visibility TEXT NOT NULL CHECK(visibility IN ('owner','shared')),
+            query_json TEXT NOT NULL,
+            filters_json TEXT NOT NULL,
+            sort_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            idempotency_key TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(folder_id) REFERENCES brain_folders(id),
+            UNIQUE(workspace_id, folder_id, name),
+            UNIQUE(workspace_id, owner_person_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_saved_views_workspace ON brain_saved_views(workspace_id, folder_id, visibility);
+
+        CREATE TABLE IF NOT EXISTS brain_saved_view_versions (
+            id TEXT PRIMARY KEY,
+            saved_view_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            visibility TEXT NOT NULL CHECK(visibility IN ('owner','shared')),
+            query_json TEXT NOT NULL,
+            filters_json TEXT NOT NULL,
+            sort_json TEXT NOT NULL,
+            changed_by_person_id TEXT NOT NULL,
+            change_reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(saved_view_id) REFERENCES brain_saved_views(id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            UNIQUE(saved_view_id, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_saved_view_versions_view ON brain_saved_view_versions(saved_view_id, version);
+
+        CREATE TABLE IF NOT EXISTS brain_mutation_audit (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            actor_person_id TEXT NOT NULL,
+            version INTEGER,
+            idempotency_key TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_mutation_audit_entity ON brain_mutation_audit(workspace_id, entity_type, entity_id, created_at);
+        """
+    ),
+
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
