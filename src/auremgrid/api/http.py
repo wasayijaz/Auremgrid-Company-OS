@@ -25,6 +25,7 @@ JOB_TYPES = {"report.generate", "projection.rebuild", "agent.run", "automation.e
 def _route_capability(path: str, method: str) -> str:
     if method == "GET":
         if path.startswith("/jobs"): return "job_manage"
+        if path == "/client-portal/intake/queue": return "people_manage"
         if path == "/auth/me": return "workspace_read"
         if path == "/finance": return "finance_read"
         if path == "/capacity": return "workspace_read"
@@ -72,13 +73,12 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         params = {key: values[0] for key, values in parse_qs(parsed.query).items()}
         try:
-           identity = None
-           if parsed.path not in {"/", "/dashboard", "/health"}:
+            identity = None
             if parsed.path not in {"/", "/dashboard", "/health", "/metrics", "/health/detailed"}:
-               identity = self._authenticate_request(parsed.path, "GET", params)
-           if parsed.path == "/health":
-               self._json(200, {"ok": True, "schema_version": self.os.store.schema_version})
-               return
+                identity = self._authenticate_request(parsed.path, "GET", params)
+            if parsed.path == "/health":
+                self._json(200, {"ok": True, "schema_version": self.os.store.schema_version})
+                return
             if parsed.path == "/metrics":
                 from auremgrid.observability import get_metrics
                 self._json(200, get_metrics().snapshot())
@@ -346,13 +346,32 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200,{"intake_requests":items}); return
             if parsed.path == "/client-portal/intake/queue":
                 organization_id,workspace_id,person_id=_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id")
-                self.os._require_person_access(organization_id,workspace_id,person_id)
-                items=self.os.client_portal.list_intake_queue(organization_id,workspace_id)
+                items=self.os.client_portal.list_intake_queue(organization_id,workspace_id,person_id)
                 self._json(200,{"intake_requests":items}); return
             if parsed.path == "/client-portal/reviews":
                 organization_id,workspace_id,person_id=_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id")
                 items=self.os.client_portal.list_client_reviews(organization_id,workspace_id,person_id)
                 self._json(200,{"reviews":items}); return
+            if parsed.path == "/feedback/patterns":
+                assert identity is not None
+                org, ws, person_id = identity.organization_id, _need(params, "workspace_id"), identity.person_id
+                self._json(200, self.os.feedback_ops.list_patterns(org, ws, person_id, params.get("category"), params.get("status"))); return
+            if parsed.path == "/insights/performance":
+                assert identity is not None
+                org, ws, person_id = identity.organization_id, _need(params, "workspace_id"), identity.person_id
+                self._json(200, self.os.performance_ops.list_insights(org, ws, person_id, params.get("status"), params.get("insight_type"))); return
+            if parsed.path == "/forecasts":
+                assert identity is not None
+                org, person_id = identity.organization_id, identity.person_id
+                self._json(200, self.os.forecast_ops.list_forecasts(org, person_id, params.get("forecast_type"), params.get("status"))); return
+            if parsed.path == "/retention/policies":
+                assert identity is not None
+                org, person_id = identity.organization_id, identity.person_id
+                self._json(200, self.os.retention_ops.list_policies(org, person_id, params.get("scope"))); return
+            if parsed.path == "/export/workspace":
+                assert identity is not None
+                org, ws, person_id = identity.organization_id, _need(params, "workspace_id"), identity.person_id
+                self._json(200, self.os.retention_ops.export_workspace(org, ws, person_id)); return
             self._json(404, {"error": "not_found"})
         except Exception as exc:
             self._handle_error(exc)
@@ -695,6 +714,52 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 item=self.os.workflow_ops.cancel_run(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),
                     _need(payload,"run_id"),_need(payload,"reason"),_optional_int(payload.get("expected_version")))
                 self._json(200,item); return
+            if parsed.path == "/feedback/record":
+                assert identity is not None
+                org, ws, person_id = identity.organization_id, _need(payload, "workspace_id"), identity.person_id
+                self._json(200, self.os.feedback_ops.record_feedback(
+                    org, ws, person_id, _need(payload, "category"), _need(payload, "raw_feedback"),
+                    _need(payload, "source_type"), _optional_str(payload.get("source_id"))
+                )); return
+            if parsed.path == "/feedback/patterns/promote":
+                assert identity is not None
+                org, ws, person_id = identity.organization_id, _need(payload, "workspace_id"), identity.person_id
+                self._json(200, self.os.feedback_ops.promote_pattern(org, ws, person_id, _need(payload, "pattern_id"))); return
+            if parsed.path == "/feedback/patterns/decide":
+                assert identity is not None
+                org, ws, person_id = identity.organization_id, _need(payload, "workspace_id"), identity.person_id
+                self._json(200, self.os.feedback_ops.decide_pattern(
+                    org, ws, person_id, _need(payload, "pattern_id"), _need(payload, "decision")
+                )); return
+            if parsed.path == "/insights/performance/generate":
+                assert identity is not None
+                org, ws, person_id = identity.organization_id, _need(payload, "workspace_id"), identity.person_id
+                self._json(200, self.os.performance_ops.generate_insights(org, ws, person_id, _optional_str(payload.get("insight_type")))); return
+            if parsed.path == "/insights/performance/decide":
+                assert identity is not None
+                org, ws, person_id = identity.organization_id, _need(payload, "workspace_id"), identity.person_id
+                self._json(200, self.os.performance_ops.decide_insight(
+                    org, ws, person_id, _need(payload, "insight_id"), _need(payload, "decision")
+                )); return
+            if parsed.path == "/forecasts/generate":
+                assert identity is not None
+                org, person_id = identity.organization_id, identity.person_id
+                self._json(200, self.os.forecast_ops.generate_forecasts(org, person_id, _optional_str(payload.get("forecast_type")))); return
+            if parsed.path == "/retention/policies":
+                assert identity is not None
+                org, person_id = identity.organization_id, identity.person_id
+                self._json(200, self.os.retention_ops.create_policy(
+                    org, person_id, _need(payload, "scope"), _need(payload, "data_category"),
+                    _int(payload.get("max_age_days"), "max_age_days"), _need(payload, "action"),
+                    _optional_str(payload.get("scope_id"))
+                )); return
+            if parsed.path == "/retention/execute":
+                assert identity is not None
+                org, person_id = identity.organization_id, identity.person_id
+                self._json(200, self.os.retention_ops.execute_deletion(
+                    org, person_id, _need(payload, "table_name"), [str(item) for item in payload.get("record_ids", [])],
+                    _need(payload, "reason"), _optional_str(payload.get("policy_id"))
+                )); return
             work_action = {
                 "/work/capture": "capture_work",
                 "/work/capture_work": "capture_work",

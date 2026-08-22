@@ -1982,7 +1982,7 @@ MIGRATIONS = (
             ) THEN RAISE(ABORT,'client intake requires a client workspace') END;
         END;
         """,
-    ),,
+    ),
     Migration(
         23,
         "feedback_learning",

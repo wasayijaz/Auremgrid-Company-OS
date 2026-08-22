@@ -60,6 +60,10 @@ from auremgrid.services.job_ops import JobOperations
 from auremgrid.services.secrets import EnvironmentSecretStore, SecretBindingService
 from auremgrid.services.integration_ops import IntegrationOperations
 from auremgrid.services.client_portal import ClientPortalOperations
+from auremgrid.services.feedback_ops import FeedbackOperations
+from auremgrid.services.performance_ops import PerformanceOperations
+from auremgrid.services.forecast_ops import ForecastOperations
+from auremgrid.services.retention_ops import RetentionOperations
 from auremgrid.adapters.semantic import (
     DeterministicFallbackEmbeddingProvider,
     EmbeddingProvider,
@@ -133,6 +137,10 @@ class CompanyOS:
         self.secrets = SecretBindingService(self.store.conn, new_id, EnvironmentSecretStore())
         self.integrations = IntegrationOperations(self)
         self.client_portal = ClientPortalOperations(self.store, self.company, new_id)
+        self.feedback = FeedbackOperations(self.store.conn, new_id, self._require_person_access)
+        self.performance = PerformanceOperations(self.store.conn, new_id, self._require_person_access)
+        self.forecasts = ForecastOperations(self.store.conn, new_id, self._require_person_access)
+        self.retention = RetentionOperations(self.store.conn, new_id, self._require_person_access)
         self.rebuild_projections(rebuild_graph=graph_projection is None)
         if graph_projection is not None:
             self._restore_durable_graph_generations()
