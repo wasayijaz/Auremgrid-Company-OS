@@ -195,6 +195,10 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 if membership is None: raise AuthorizationError("organization membership required")
                 if membership.role == "client": raise AuthorizationError("people directory requires agency membership")
                 items = self.os.company.list_people(organization_id)
+                workspace_id = _optional_str(params.get("workspace_id"))
+                if workspace_id:
+                    self.os._require_person_access(organization_id, workspace_id, person_id)
+                    items = [item for item in items if self.os.company.workspace_membership(workspace_id, item.id) is not None]
                 self._json(200, {"people": [item.to_dict() for item in items]})
                 return
             if parsed.path == "/people/detail":
@@ -607,6 +611,39 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._json(201, item.to_dict())
                 return
+            if parsed.path == "/contracts":
+                item = self.os.client_ops.create_contract(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"),
+                    _need(payload, "person_id"), _need(payload, "kind"),
+                    _need(payload, "billing_model"), _need(payload, "start_date"),
+                    _optional_float(payload.get("value")), str(payload.get("currency", "USD")),
+                    _optional_str(payload.get("end_date")), _optional_str(payload.get("renewal_date")),
+                )
+                self._json(201, item)
+                return
+            if parsed.path == "/scope/allowances":
+                item = self.os.client_ops.add_scope_allowance(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"),
+                    _need(payload, "person_id"), _need(payload, "contract_id"),
+                    _need(payload, "service_category"), _need(payload, "period"),
+                    _optional_float(payload.get("included_quantity")),
+                    _optional_float(payload.get("included_hours")),
+                    _optional_int(payload.get("revision_limit")),
+                )
+                self._json(201, item)
+                return
+            if parsed.path == "/scope/usage":
+                item = self.os.client_ops.record_scope_usage(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"),
+                    _need(payload, "person_id"), _need(payload, "contract_id"),
+                    _need(payload, "allowance_id"), _need(payload, "period_start"),
+                    _number(payload, "delivered"),
+                    _optional_float(payload.get("in_review")) or 0.0,
+                    _optional_float(payload.get("requested")) or 0.0,
+                    _optional_float(payload.get("used_hours")) or 0.0,
+                )
+                self._json(201, item)
+                return
             if parsed.path == "/deliverables":
                 item = self.os.create_deliverable(
                     _need(payload, "organization_id"), _need(payload, "workspace_id"),
@@ -755,6 +792,24 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                     _need(payload,"person_id"), float(_need(payload,"amount")), _need(payload,"category"),
                     _need(payload,"incurred_at"), _need(payload,"source"), str(payload.get("currency", "USD")),
                 )); return
+            if parsed.path == "/finance/revenue":
+                self._json(201, self.os.agency_ops.record_revenue(
+                    _need(payload,"organization_id"), _optional_str(payload.get("workspace_id")),
+                    _need(payload,"person_id"), _number(payload,"amount"), _need(payload,"recognized_at"),
+                    _need(payload,"source"), str(payload.get("kind", "retainer")),
+                    str(payload.get("currency", "USD")), _optional_str(payload.get("project_id")),
+                )); return
+            if parsed.path == "/finance/connect":
+                self._json(200, self.os.agency_ops.connect_finance(
+                    _need(payload,"organization_id"), _need(payload,"person_id"), _need(payload,"provider"),
+                )); return
+            if parsed.path == "/finance/invoices":
+                self._json(201, self.os.agency_ops.record_invoice(
+                    _need(payload,"organization_id"), _need(payload,"workspace_id"), _need(payload,"person_id"),
+                    _number(payload,"amount"), _need(payload,"issued_at"), _need(payload,"due_at"),
+                    _need(payload,"source"), str(payload.get("currency", "USD")),
+                    _optional_str(payload.get("external_id")), str(payload.get("status", "issued")),
+                )); return
             if parsed.path == "/finance/budgets":
                 self._json(201, self.os.agency_ops.record_budget(
                     _need(payload,"organization_id"), _optional_str(payload.get("workspace_id")),
@@ -812,10 +867,10 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                     _optional_str(payload.get("selected_level")),_optional_str(payload.get("override_reason")) or "",
                 ));return
             if parsed.path == "/agents/runs/start":
-                self._json(201,self.os.agent_ops.start_run(_need(payload,"organization_id"),_need(payload,"agent_id"),_need(payload,"task_id")));return
+                self._json(201,self.os.agent_ops.start_run(_need(payload,"organization_id"),_need(payload,"person_id"),_need(payload,"agent_id"),_need(payload,"task_id")));return
             if parsed.path == "/agents/runs/claim":
                 item = self.os.agent_ops.claim_next_task(
-                    _need(payload,"organization_id"), _need(payload,"agent_id")
+                    _need(payload,"organization_id"), _need(payload,"person_id"), _need(payload,"agent_id")
                 )
                 self._json(200, {"run": item}); return
             if parsed.path == "/agents/runs/trace":
@@ -911,6 +966,12 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 item=self.os.work_ops.update(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"work_item_id"),payload.get("changes") or {});self._json(200,item.to_dict());return
             if parsed.path == "/work/items/transition":
                 item=self.os.work_ops.transition(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"work_item_id"),_need(payload,"to_status"),str(payload.get("reason","")),_optional_int(payload.get("expected_version")),_optional_str(payload.get("idempotency_key")));self._json(200,item);return
+            if parsed.path == "/work/items/assign":
+                item=self.os.work_ops.assign(
+                    _need(payload,"organization_id"), _need(payload,"workspace_id"),
+                    _need(payload,"person_id"), _need(payload,"work_item_id"),
+                    _need(payload,"assignee_person_id"),
+                ); self._json(200,item.to_dict()); return
             if parsed.path == "/work/dependencies":
                 self._json(201,self.os.work_ops.add_dependency(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"work_item_id"),_need(payload,"depends_on_id"),str(payload.get("kind","blocks"))));return
             if parsed.path == "/work/comments":
@@ -1208,8 +1269,19 @@ def _int(value: Any, key: str) -> int:
     except (TypeError, ValueError) as exc:
         raise ValidationError(f"{key} must be an integer") from exc
 
+def _float(value: Any, key: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{key} must be a number") from exc
+
+def _number(payload: dict[str, Any], key: str) -> float:
+    if key not in payload or payload.get(key) is None:
+        raise ValidationError(f"{key} is required")
+    return _float(payload.get(key), key)
+
 def _optional_float(value: Any) -> float | None:
-    return float(value) if value is not None else None
+    return _float(value, "value") if value is not None else None
 
 
 def _optional_int(value: Any) -> int | None:

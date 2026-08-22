@@ -21,7 +21,7 @@ class AgentAutomationTests(unittest.TestCase):
         luna=next(a for a in self.agents if a["name"]=="Luna")
         self.os.agent_ops.configure_agent(self.org.id,self.owner.id,luna["id"],"local",["work.list"],[self.ws.id],["domain.write"])
         task=self.os.agent_ops.enqueue_task(self.org.id,self.owner.id,luna["id"],"Inspect work","List open work",self.ws.id)
-        run=self.os.agent_ops.start_run(self.org.id,luna["id"],task["id"])
+        run=self.os.agent_ops.start_run(self.org.id,self.owner.id,luna["id"],task["id"])
         self.os.agent_ops.record_tool_call(self.org.id,luna["id"],run["id"],"work.list",{},"0 items")
         completed=self.os.agent_ops.complete_run(self.org.id,luna["id"],run["id"],"No open work",10,5,0.01,["work_items"])
         self.assertEqual(completed["status"],"completed")

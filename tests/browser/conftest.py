@@ -37,6 +37,8 @@ class DashboardFixture:
     owner_token: str
     viewer_person_id: str
     viewer_token: str
+    client_person_id: str
+    client_token: str
     workspaces: tuple[str, ...]
 
 
@@ -62,6 +64,8 @@ def dashboard_app() -> Iterator[DashboardFixture]:
     # Viewers intentionally have no auth_manage capability, so do not attempt
     # an actor binding; all browser GETs derive access from the membership.
     viewer_token, _ = issue_identity(os, ORG_ID, viewer_id, workspaces[0])
+    client_id = "person_client_prime"
+    client_token, _ = issue_identity(os, ORG_ID, client_id, workspaces[0])
 
     server = serve(os, "127.0.0.1", 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -70,7 +74,7 @@ def dashboard_app() -> Iterator[DashboardFixture]:
     try:
         yield DashboardFixture(
             f"http://{host}:{port}", ORG_ID, "person_realistic_owner", owner_token,
-            viewer_id, viewer_token, workspaces,
+            viewer_id, viewer_token, client_id, client_token, workspaces,
         )
     finally:
         server.shutdown()
@@ -126,6 +130,23 @@ def owner_page(browser: Browser, dashboard_app: DashboardFixture) -> Iterator[Pa
 def viewer_page(browser: Browser, dashboard_app: DashboardFixture) -> Iterator[Page]:
     context = browser.new_context(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
     _install_session(context, dashboard_app.viewer_token)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
+    page.on("requestfailed", lambda request: errors.append(f"request failed: {request.url.split('?')[0]}"))
+    page._dashboard_browser_errors = errors  # type: ignore[attr-defined]
+    page._dashboard_fixture = dashboard_app  # type: ignore[attr-defined]
+    try:
+        yield page
+    finally:
+        context.close()
+
+
+@pytest.fixture
+def client_page(browser: Browser, dashboard_app: DashboardFixture) -> Iterator[Page]:
+    context = browser.new_context(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
+    _install_session(context, dashboard_app.client_token)
     page = context.new_page()
     errors: list[str] = []
     page.on("pageerror", lambda error: errors.append(str(error)))

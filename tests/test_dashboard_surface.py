@@ -199,6 +199,15 @@ class DashboardSurfaceTests(unittest.TestCase):
         for marker in ("id=\"finance-body\"", "renderFinanceSurface", "/finance?", "recognized_revenue", "outstanding_revenue"):
             self.assertIn(marker, self.html)
         self.assertNotIn('<div class="card"><span class="state off">Not connected</span>', self.html)
+        for marker in ("data-finance-connect", "data-finance-revenue", "data-finance-invoice", "/finance/connect", "/finance/revenue", "/finance/invoices"):
+            self.assertIn(marker, self.html)
+
+    def test_scope_surface_exposes_contract_allowance_usage_and_history_actions(self) -> None:
+        for marker in ("data-scope-contract", "data-scope-allowance", "data-scope-usage", "/contracts", "/scope/allowances", "/scope/usage", "period_history", "generated"):
+            self.assertIn(marker, self.html)
+        http = self.root.joinpath("http.py").read_text(encoding="utf-8")
+        for path in ("/contracts", "/scope/allowances", "/scope/usage", "/finance/connect", "/finance/revenue", "/finance/invoices"):
+            self.assertIn(path, http)
 
     def test_marketing_surfaces_have_permission_aware_backend_create_flows(self) -> None:
         for marker in ("marketingFlows", "canOperateWorkspace", "renderMarketingModule", "openMarketingCreate"):

@@ -45,7 +45,7 @@ class AgentRunObservabilityTests(unittest.TestCase):
             priority=9,
         )
 
-        run = self.os.agent_ops.claim_next_task(self.org.id, self.agent["id"])
+        run = self.os.agent_ops.claim_next_task(self.org.id, self.owner.id, self.agent["id"])
         self.assertIsNotNone(run)
         self.assertEqual(run["task_id"], task["id"])
         first = self.os.agent_ops.record_trace(
@@ -93,7 +93,7 @@ class AgentRunObservabilityTests(unittest.TestCase):
             "Inspect hidden client",
             self.hidden.id,
         )
-        run = self.os.agent_ops.start_run(self.org.id, self.agent["id"], task["id"])
+        run = self.os.agent_ops.start_run(self.org.id, self.owner.id, self.agent["id"], task["id"])
         self.os.agent_ops.complete_run(self.org.id, self.agent["id"], run["id"], "Done")
 
         self.assertEqual(self.os.agent_ops.list_runs(self.org.id, self.viewer.id), [])
@@ -103,6 +103,50 @@ class AgentRunObservabilityTests(unittest.TestCase):
             )
         with self.assertRaises(NotFoundError):
             self.os.agent_ops.run_detail(self.org.id, self.viewer.id, run["id"])
+
+    def test_viewer_cannot_claim_or_start_a_hidden_workspace_task(self) -> None:
+        task = self.os.agent_ops.enqueue_task(
+            self.org.id, self.owner.id, self.agent["id"], "Hidden claim", "Inspect hidden work", self.hidden.id
+        )
+        self.assertIsNone(self.os.agent_ops.claim_next_task(self.org.id, self.viewer.id, self.agent["id"]))
+        with self.assertRaises(AuthorizationError):
+            self.os.agent_ops.start_run(self.org.id, self.viewer.id, self.agent["id"], task["id"])
+
+    def test_dashboard_agent_surfaces_are_workspace_isolated(self) -> None:
+        primary_task = self.os.agent_ops.enqueue_task(
+            self.org.id, self.owner.id, self.agent["id"], "Primary task", "Read primary work", self.primary.id
+        )
+        primary_run = self.os.agent_ops.start_run(self.org.id, self.owner.id, self.agent["id"], primary_task["id"])
+        self.os.agent_ops.complete_run(self.org.id, self.agent["id"], primary_run["id"], "Primary result")
+
+        hidden_task = self.os.agent_ops.enqueue_task(
+            self.org.id, self.owner.id, self.agent["id"], "Hidden task", "Read hidden work", self.hidden.id
+        )
+        hidden_run = self.os.agent_ops.start_run(self.org.id, self.owner.id, self.agent["id"], hidden_task["id"])
+        self.os.agent_ops.complete_run(self.org.id, self.agent["id"], hidden_run["id"], "Hidden result")
+
+        center = self.os.agent_ops.command_center(self.org.id, self.viewer.id)
+        self.assertEqual([row["id"] for row in center["recent_runs"]], [primary_run["id"]])
+        command = self.os.dashboard.command(self.org.id, self.viewer.id)
+        dashboard_agent = next(row for row in command["agents"] if row["id"] == self.agent["id"])
+        self.assertEqual(dashboard_agent["runtime"]["runs_total"], 1)
+        self.assertEqual(dashboard_agent["allowed_workspace_ids"], f'["{self.primary.id}"]')
+
+        detail = self.os.dashboard.agent_detail(self.org.id, self.viewer.id, self.agent["id"])
+        self.assertEqual([row["id"] for row in detail["runs"]], [primary_run["id"]])
+        self.assertEqual([row["workspace_id"] for row in detail["tasks"]], [self.primary.id])
+        self.assertEqual([row["task_id"] for row in detail["queue"]], [primary_task["id"]])
+        self.assertEqual(detail["agent"]["allowed_workspace_ids"], [self.primary.id])
+
+        hidden_only = next(
+            item for item in self.os.agent_ops.seed_primary_agents(self.org.id, self.owner.id)
+            if item["name"] == "Terra"
+        )
+        self.os.agent_ops.configure_agent(
+            self.org.id, self.owner.id, hidden_only["id"], "local", ["work.list"], [self.hidden.id], []
+        )
+        with self.assertRaises(NotFoundError):
+            self.os.dashboard.agent_detail(self.org.id, self.viewer.id, hidden_only["id"])
 
 
 if __name__ == "__main__":

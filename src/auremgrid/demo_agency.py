@@ -232,7 +232,7 @@ def _ensure_operating_depth(
             intent = {"Sol": ["strategize"], "Terra": ["implement"], "Luna": ["execute"]}[agent["name"]]
             task = os.agent_ops.enqueue_task(org_id, owner_id, agent["id"], title, "Review the synthetic agency fixture and return a concise readiness note.", workspaces[0], priority=30, intent_tags=intent)
         if not _one(os, "SELECT id FROM agent_runs WHERE task_id=?", (task["id"],)):
-            run = os.agent_ops.start_run(org_id, agent["id"], task["id"])
+            run = os.agent_ops.start_run(org_id, owner_id, agent["id"], task["id"])
             os.agent_ops.complete_run(org_id, agent["id"], run["id"], f"{agent['name']} fixture check complete; no external actions taken.", source_refs=["demo_fixture"])
 
     automation_name = "Fixture: flag client review changes"

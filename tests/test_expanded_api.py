@@ -64,6 +64,19 @@ class ExpandedApiTests(unittest.TestCase):
         status,scope=self.get("/scope/status?organization_id=org_demo&workspace_id=ws_alpha&person_id=person_demo_owner")
         self.assertEqual(status,200);self.assertIn(scope["status"],{"no_contract","no_allowances","no_usage","unknown","recorded","over_scope"})
 
+    def test_scope_contract_allowance_and_usage_writes_are_authenticated_and_scoped(self) -> None:
+        common={"organization_id":"org_demo","workspace_id":"ws_alpha","person_id":"person_demo_owner"}
+        status,contract=self.post("/contracts",{**common,"kind":"retainer","billing_model":"monthly","start_date":"2026-08-01","value":5000})
+        self.assertEqual(status,201);self.assertEqual(contract["status"],"active")
+        status,allowance=self.post("/scope/allowances",{**common,"contract_id":contract["id"],"service_category":"content","period":"2026-08","included_quantity":10})
+        self.assertEqual(status,201);self.assertEqual(allowance["contract_id"],contract["id"])
+        status,usage=self.post("/scope/usage",{**common,"contract_id":contract["id"],"allowance_id":allowance["id"],"period_start":"2026-08-01","delivered":12})
+        self.assertEqual(status,201);self.assertEqual(usage["usage_percent"],120.0)
+        status,error=self.post("/scope/usage",{**common,"contract_id":contract["id"],"allowance_id":allowance["id"],"period_start":"2026-08-01"})
+        self.assertEqual(status,400);self.assertIn("delivered is required",error["message"])
+        status,error=self.post("/contracts",{**common,"person_id":"person_not_the_token_owner","kind":"retainer","billing_model":"monthly","start_date":"2026-08-01"})
+        self.assertEqual(status,403);self.assertEqual(error["error"],"authorization_error")
+
     def test_campaign_creative_finance_and_agent_run_completion_routes(self) -> None:
         common={"organization_id":"org_demo","workspace_id":"ws_alpha","person_id":"person_demo_owner"}
         status,campaign=self.post("/campaigns",{**common,"name":"Lifecycle","objective":"Leads","platform":"meta"})
@@ -76,9 +89,16 @@ class ExpandedApiTests(unittest.TestCase):
         self.assertEqual(status,201)
         status,version=self.post("/creative/versions",{**common,"asset_id":creative["id"],"file_url":"https://example.test/v1.png","notes":"First cut"})
         self.assertEqual(status,201);self.assertEqual(version["version"],1)
-        self.os.agency_ops.connect_finance("org_demo","person_demo_owner","accounting-test")
+        status,connection=self.post("/finance/connect",{"organization_id":"org_demo","person_id":"person_demo_owner","provider":"accounting-test"})
+        self.assertEqual(status,200);self.assertEqual(connection["status"],"connected")
         status,cost=self.post("/finance/costs",{**common,"amount":125,"category":"labor","incurred_at":"2026-08-01","source":"timesheets"})
         self.assertEqual(status,201);self.assertEqual(cost["amount"],125)
+        status,revenue=self.post("/finance/revenue",{**common,"amount":5000,"recognized_at":"2026-08-01","source":"accounting-test"})
+        self.assertEqual(status,201);self.assertEqual(revenue["amount"],5000)
+        status,invoice=self.post("/finance/invoices",{**common,"amount":1200,"issued_at":"2026-08-01","due_at":"2026-08-15","source":"accounting-test"})
+        self.assertEqual(status,201);self.assertEqual(invoice["status"],"issued")
+        status,finance=self.get("/finance?organization_id=org_demo&workspace_id=ws_alpha&person_id=person_demo_owner")
+        self.assertEqual(status,200);self.assertEqual(finance["recognized_revenue"],5000);self.assertEqual(finance["outstanding_revenue"],1200)
 
         luna=next(item for item in self.os.agent_ops.seed_primary_agents("org_demo","person_demo_owner") if item["name"]=="Luna")
         self.os.agent_ops.configure_agent("org_demo","person_demo_owner",luna["id"],"local",["work.list"],["ws_alpha"],["domain.write"])

@@ -49,11 +49,12 @@ class AgencyOperations:
         impressions: float | None = None, clicks: float | None = None) -> dict[str, Any]:
         self.authorize(organization_id,workspace_id,person_id,write=True)
         if not self.conn.execute("SELECT id FROM campaigns WHERE organization_id=? AND workspace_id=? AND id=?",(organization_id,workspace_id,campaign_id)).fetchone(): raise NotFoundError("campaign not found")
+        if not isinstance(source, str) or not source.strip(): raise ValidationError("campaign metric source is required")
         if any(value is not None and value < 0 for value in (spend, revenue, leads, impressions, clicks)): raise ValidationError("campaign metrics cannot be negative")
         def ratio(a: float | None,b: float | None,m: float=1.0) -> float | None: return round(a/b*m,4) if a is not None and b else None
         item={"id":self.new_id("metric"),"organization_id":organization_id,"workspace_id":workspace_id,"campaign_id":campaign_id,
             "captured_at":_now().isoformat(),"spend":spend,"revenue":revenue,"leads":leads,"impressions":impressions,"clicks":clicks,
-            "cpl":ratio(spend,leads),"cac":None,"ctr":ratio(clicks,impressions,100),"cvr":ratio(leads,clicks,100),"roas":ratio(revenue,spend),"source":source}
+            "cpl":ratio(spend,leads),"cac":None,"ctr":ratio(clicks,impressions,100),"cvr":ratio(leads,clicks,100),"roas":ratio(revenue,spend),"source":source.strip()}
         self.conn.execute("INSERT INTO campaign_metric_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",tuple(item.values())); self.conn.commit(); return item
 
     def campaign_performance(self, organization_id: str, workspace_id: str, person_id: str, campaign_id: str) -> dict[str, Any]:
@@ -226,11 +227,12 @@ class AgencyOperations:
         self.authorize(organization_id,workspace_id,person_id,write=True)
         if not self.conn.execute("SELECT id FROM creative_assets WHERE organization_id=? AND workspace_id=? AND id=?",(organization_id,workspace_id,asset_id)).fetchone():raise NotFoundError("creative asset not found")
         if campaign_id and not self.conn.execute("SELECT id FROM campaigns WHERE organization_id=? AND workspace_id=? AND id=?", (organization_id, workspace_id, campaign_id)).fetchone(): raise NotFoundError("campaign not found")
+        if not isinstance(source, str) or not source.strip(): raise ValidationError("creative performance source is required")
         if any(value is not None and value < 0 for value in (impressions, clicks, conversions, spend, revenue)): raise ValidationError("creative metrics cannot be negative")
         ratio=lambda a,b,m=1:round(a/b*m,4) if a is not None and b else None
         item={"id":self.new_id("creativeperf"),"asset_id":asset_id,"campaign_id":campaign_id,"captured_at":_now().isoformat(),
             "impressions":impressions,"clicks":clicks,"conversions":conversions,"spend":spend,"revenue":revenue,
-            "ctr":ratio(clicks,impressions,100),"cvr":ratio(conversions,clicks,100),"roas":ratio(revenue,spend),"source":source}
+            "ctr":ratio(clicks,impressions,100),"cvr":ratio(conversions,clicks,100),"roas":ratio(revenue,spend),"source":source.strip()}
         self.conn.execute("INSERT INTO creative_performance VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",tuple(item.values()));self.conn.commit();return item
 
     def create_content(self, organization_id: str, workspace_id: str, person_id: str, title: str,

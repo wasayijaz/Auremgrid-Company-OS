@@ -141,6 +141,18 @@ def test_work_board_list_filters_detail_comment_and_status_lanes(owner_page: Pag
     expect(inspector).to_have_class(re.compile("open"))
     expect(page.locator("#inspector-title")).not_to_have_text("Work detail")
     expect(inspector.locator("#inspector-body")).to_contain_text("Status transitions")
+    expect(inspector.locator("[data-work-transition='assigned']")).to_have_count(0)
+    assignment = inspector.locator("[data-work-assign]")
+    if assignment.count():
+        assignee = inspector.locator("select[name=assignee_person_id]")
+        assignee.select_option(index=1)
+        with page.expect_response(
+            lambda response: response.url.endswith("/work/items/assign")
+            and response.request.method == "POST"
+        ):
+            assignment.click()
+        expect(page.locator("#toast")).to_contain_text("Work assigned")
+        expect(inspector).to_contain_text("Owner")
     transition = inspector.locator("[data-work-transition]").first
     expect(transition).to_be_visible()
     with page.expect_response(
@@ -157,6 +169,33 @@ def test_work_board_list_filters_detail_comment_and_status_lanes(owner_page: Pag
         inspector.get_by_role("button", name="Add comment").click()
     expect(page.locator("#toast")).to_contain_text("Comment added")
     expect(inspector.locator("#inspector-body")).to_contain_text("Browser verification comment")
+
+
+def test_new_work_captures_delivery_context_and_assigns_a_person(owner_page: Page, dashboard_app: DashboardFixture) -> None:
+    page = owner_page
+    open_dashboard(page, dashboard_app)
+    wait_for_command_data(page)
+    wait_for_work(page)
+    page.locator("#capture").click()
+    modal = page.locator("#capture-modal")
+    expect(modal).to_be_visible()
+    expect(modal.locator("select[name=project_id] option")).not_to_have_count(1)
+    expect(modal.locator("select[name=assignee_person_id] option")).not_to_have_count(1)
+    modal.locator("input[name=title]").fill("Browser delivery work")
+    modal.locator("textarea[name=request]").fill("Create a backend-connected delivery item")
+    modal.locator("input[name=requested_by]").fill("Browser QA")
+    modal.locator("select[name=project_id]").select_option(index=1)
+    modal.locator("select[name=assignee_person_id]").select_option(index=1)
+    modal.locator("select[name=priority]").select_option("high")
+    modal.locator("input[name=estimate_hours]").fill("4.5")
+    modal.locator("input[name=tags]").fill("qa, delivery")
+    modal.locator("textarea[name=brief]").fill("Verify project, priority, tags, estimate, and owner.")
+    with page.expect_response(lambda response: response.url.endswith("/work/items/assign") and response.request.method == "POST"):
+        with page.expect_response(lambda response: response.url.endswith("/work/items") and response.request.method == "POST"):
+            modal.get_by_role("button", name="Capture").click()
+    expect(page.locator("#toast")).to_contain_text("captured and assigned")
+    expect(page.locator("[data-work-id]", has_text="Browser delivery work")).to_be_visible()
+    assert_no_browser_errors(page)
 
 
 def test_intelligence_context_drawer_and_degraded_state(owner_page: Page, dashboard_app: DashboardFixture) -> None:
@@ -192,6 +231,221 @@ def test_disconnected_finance_and_integrations(owner_page: Page, dashboard_app: 
     expect(page.locator("#finance-body")).to_contain_text(re.compile("Not connected|No financial source is connected", re.I))
     page.locator(".nav button[data-name='Integrations']").click()
     expect(page.locator("#system-modules")).to_contain_text(re.compile("not connected|credentials", re.I))
+
+
+def test_integration_onboarding_binds_only_environment_reference(owner_page: Page, dashboard_app: DashboardFixture) -> None:
+    page = owner_page
+    open_dashboard(page, dashboard_app)
+    wait_for_command_data(page)
+    page.locator(".nav button[data-name='Integrations']").click()
+    page.get_by_role("button", name="Configure integration").click()
+    dialog = page.locator("#integration-onboarding-dialog")
+    expect(dialog).to_be_visible()
+    expect(dialog).to_contain_text(re.compile("never paste an API key", re.I), use_inner_text=True)
+    dialog.locator("select[name=source]").select_option("slack")
+    dialog.locator("input[name=expected_account_id]").fill("T_BROWSER")
+    dialog.locator("input[name=external_key]").fill("C_BROWSER")
+    dialog.locator("input[name=reference]").fill("env:AUREMGRID_BROWSER_SLACK_TOKEN")
+    with page.expect_response(lambda response: response.url.endswith("/integrations/credentials") and response.request.method == "POST"):
+        dialog.get_by_role("button", name="Save configuration").click()
+    expect(page.locator("#toast")).to_contain_text("configuration saved")
+    card = page.locator("[data-integration-id]", has_text="slack")
+    expect(card).to_contain_text("unverified")
+    expect(page.locator("body")).not_to_contain_text("AUREMGRID_BROWSER_SLACK_TOKEN")
+    response = page.request.get(
+        f"{dashboard_app.base_url}/integrations?organization_id={dashboard_app.organization_id}",
+        headers={"Authorization": f"Bearer {dashboard_app.owner_token}"},
+    )
+    assert response.ok
+    serialized = response.text()
+    assert "AUREMGRID_BROWSER_SLACK_TOKEN" not in serialized
+    assert "reference" not in response.json()["integrations"][-1].get("credential", {})
+    assert_no_browser_errors(page)
+
+
+def test_client_portal_submits_intake_and_staff_accepts_into_work(
+    browser, client_page: Page, dashboard_app: DashboardFixture,
+) -> None:
+    client = client_page
+    owner_headers = {"Authorization": f"Bearer {dashboard_app.owner_token}"}
+    projects = client.request.get(
+        f"{dashboard_app.base_url}/projects?organization_id={dashboard_app.organization_id}"
+        f"&workspace_id={dashboard_app.workspaces[0]}&person_id={dashboard_app.owner_person_id}",
+        headers=owner_headers,
+    ).json()["projects"]
+    deliverable_response = client.request.post(
+        f"{dashboard_app.base_url}/deliverables", headers=owner_headers,
+        data={"organization_id": dashboard_app.organization_id, "workspace_id": dashboard_app.workspaces[0],
+              "person_id": dashboard_app.owner_person_id, "project_id": projects[0]["id"],
+              "title": "Browser client approval proof", "type": "report"},
+    )
+    assert deliverable_response.ok
+    review_response = client.request.post(
+        f"{dashboard_app.base_url}/reviews", headers=owner_headers,
+        data={"organization_id": dashboard_app.organization_id, "workspace_id": dashboard_app.workspaces[0],
+              "person_id": dashboard_app.owner_person_id, "deliverable_id": deliverable_response.json()["id"],
+              "kind": "client", "reviewer_person_id": dashboard_app.client_person_id},
+    )
+    assert review_response.ok
+    review_id = review_response.json()["id"]
+
+    open_dashboard(client, dashboard_app)
+    wait_for_command_data(client)
+    expect(client.locator(".nav button[data-name='Client Portal']")).to_be_visible()
+    client.locator(".nav button[data-name='Client Portal']").click()
+    form = client.locator("[data-client-intake-form]")
+    form.locator("input[name=title]").fill("Browser client launch request")
+    form.locator("textarea[name=request]").fill("Please prepare the approved launch handoff package.")
+    with client.expect_response(lambda response: response.url.endswith("/client-portal/intake") and response.request.method == "POST"):
+        form.get_by_role("button", name="Submit request").click()
+    expect(client.locator("#system-modules")).to_contain_text("Browser client launch request")
+    review_card = client.locator(f"[data-client-review-id='{review_id}']")
+    review_card.locator(f"[data-client-review-comment='{review_id}']").fill("Approved claims and layout reviewed by the client.")
+    with client.expect_response(lambda response: response.url.endswith("/client-portal/reviews/comment") and response.request.method == "POST"):
+        review_card.get_by_role("button", name="Add comment").click()
+    expect(client.locator("#toast")).to_contain_text("comment added")
+    review_card = client.locator(f"[data-client-review-id='{review_id}']")
+    client.once("dialog", lambda dialog: dialog.accept())
+    with client.expect_response(lambda response: response.url.endswith("/client-portal/reviews/decide") and response.request.method == "POST"):
+        review_card.get_by_role("button", name="Approve").click()
+    expect(client.locator("#toast")).to_contain_text("decision recorded")
+    expect(client.locator(f"[data-client-review-id='{review_id}']")).to_contain_text("approved")
+    assert_no_browser_errors(client)
+
+    owner_context = browser.new_context(viewport={"width": 1440, "height": 1000})
+    owner_context.add_init_script(
+        f"localStorage.setItem('auremgrid_session', {dashboard_app.owner_token!r});"
+    )
+    staff = owner_context.new_page()
+    try:
+        open_dashboard(staff, dashboard_app)
+        wait_for_command_data(staff)
+        staff.locator(".nav button[data-name='Client Portal']").click()
+        request_card = staff.locator("[data-intake-id]", has_text="Browser client launch request")
+        expect(request_card).to_be_visible()
+        with staff.expect_response(lambda response: response.url.endswith("/client-portal/intake/accept") and response.request.method == "POST"):
+            request_card.get_by_role("button", name="Accept into Work").click()
+        expect(staff.locator("#toast")).to_contain_text("accepted into Work")
+        work = staff.request.get(
+            f"{dashboard_app.base_url}/dashboard/client?organization_id={dashboard_app.organization_id}"
+            f"&workspace_id={dashboard_app.workspaces[0]}&person_id={dashboard_app.owner_person_id}",
+            headers={"Authorization": f"Bearer {dashboard_app.owner_token}"},
+        )
+        assert work.ok
+        assert any(item["title"] == "Browser client launch request" for item in work.json()["work"])
+    finally:
+        owner_context.close()
+
+
+def test_agent_operations_inspector_observes_canonical_runs(owner_page: Page, dashboard_app: DashboardFixture) -> None:
+    page = owner_page
+    open_dashboard(page, dashboard_app)
+    wait_for_command_data(page)
+    page.locator(".nav button[data-name='Agents']").click()
+    cards = page.locator("[data-agent-id]")
+    cards.first.wait_for(state="visible", timeout=10_000)
+    cards.first.click()
+    inspector = page.locator("#agent-side-inspector")
+    expect(inspector).to_have_class(re.compile("open"))
+    expect(inspector).to_contain_text("Operate this worker")
+    expect(inspector).to_contain_text("Queue")
+    expect(inspector).to_contain_text("Recent runs")
+    run = inspector.locator("[data-agent-run-id]").first
+    run.wait_for(state="visible", timeout=10_000)
+    with page.expect_response(lambda response: "/agents/runs/detail?" in response.url and response.request.method == "GET"):
+        run.click()
+    expect(inspector.locator("[data-agent-run-detail]")).to_contain_text(re.compile("Run|output|No output", re.I))
+    assert_no_browser_errors(page)
+
+
+def test_client_health_tab_renders_explainable_backend_contract(owner_page: Page, dashboard_app: DashboardFixture) -> None:
+    page = owner_page
+    open_dashboard(page, dashboard_app)
+    wait_for_command_data(page)
+    page.locator("#clients [data-client]").first.click()
+    page.locator("#client-tabs [data-tab='Health']").click()
+    body = page.locator("#client-body")
+    expect(body).to_contain_text("Client health")
+    expect(body.locator(".metric-value")).not_to_have_text("Unknown")
+    expect(body.locator("article.card.module")).to_have_count(6)
+    expect(body).to_contain_text("delivery", use_inner_text=True)
+    assert_no_browser_errors(page)
+
+
+def test_projects_has_backend_list_create_detail_and_deliverables(owner_page: Page, dashboard_app: DashboardFixture) -> None:
+    page = owner_page
+    open_dashboard(page, dashboard_app)
+    wait_for_command_data(page)
+    page.locator(".nav button[data-name='Projects']").click()
+    expect(page.locator("#page-work .page-title")).to_have_text("Projects")
+    expect(page.locator("#capture")).to_be_hidden()
+    cards = page.locator("#work-board [data-project-id]")
+    cards.first.wait_for(state="visible", timeout=10_000)
+    initial_count = cards.count()
+
+    page.locator("[data-create-project]").click()
+    dialog = page.locator("#project-create-dialog")
+    dialog.locator("input[name=name]").fill("Browser verification project")
+    dialog.locator("textarea[name=description]").fill("Canonical project created from the dashboard")
+    dialog.locator("select[name=priority]").select_option("high")
+    with page.expect_response(lambda response: response.url.endswith("/projects") and response.request.method == "POST"):
+        dialog.get_by_role("button", name="Create project").click()
+    expect(page.locator("#toast")).to_contain_text("Project created")
+    expect(page.locator("#work-board [data-project-id]")).to_have_count(initial_count + 1)
+
+    page.locator("#work-board [data-project-id]").filter(has_text="Browser verification project").click()
+    inspector = page.locator("#project-side-inspector")
+    expect(inspector).to_have_class(re.compile("open"))
+    expect(inspector).to_contain_text("Canonical project created from the dashboard")
+    expect(inspector).to_contain_text("Deliverables")
+
+    prompt_values = iter(("Browser verification deliverable", "campaign_output"))
+    page.on("dialog", lambda prompt: prompt.accept(next(prompt_values)))
+    with page.expect_response(lambda response: response.url.endswith("/deliverables") and response.request.method == "POST"):
+        inspector.get_by_role("button", name="Add deliverable").click()
+    expect(inspector).to_contain_text("Browser verification deliverable")
+    assert_no_browser_errors(page)
+
+
+def test_review_center_exposes_server_granted_decisions(owner_page: Page, dashboard_app: DashboardFixture) -> None:
+    page = owner_page
+    open_dashboard(page, dashboard_app)
+    wait_for_command_data(page)
+    page.locator(".nav button[data-name='Review']").click()
+    action = page.locator("[data-review-decision='approved']").first
+    action.wait_for(state="visible", timeout=10_000)
+    page.once("dialog", lambda dialog: dialog.accept())
+    with page.expect_response(lambda response: response.url.endswith("/reviews/decide") and response.request.method == "POST"):
+        action.click()
+    expect(page.locator("#toast")).to_contain_text("Review approved")
+    assert_no_browser_errors(page)
+
+
+def test_content_cards_open_and_advance_backend_lifecycle(owner_page: Page, dashboard_app: DashboardFixture) -> None:
+    page = owner_page
+    open_dashboard(page, dashboard_app)
+    wait_for_command_data(page)
+    page.locator(".nav button[data-name='Content']").click()
+    page.get_by_role("button", name="Create content item").click()
+    dialog = page.locator("#dashboard-action-dialog")
+    dialog.locator("[data-marketing-field='title']").fill("Lifecycle browser proof")
+    dialog.locator("[data-marketing-field='objective']").fill("Verify the canonical content lifecycle")
+    dialog.locator("[data-marketing-field='audience']").fill("Agency operators")
+    with page.expect_response(lambda response: response.url.endswith("/content") and response.request.method == "POST"):
+        dialog.get_by_role("button", name=re.compile("create", re.I)).click()
+    card = page.locator("[data-content-id]", has_text="Lifecycle browser proof")
+    card.wait_for(state="visible", timeout=10_000)
+    card.click()
+    assert_no_browser_errors(page)
+    inspector = page.locator("#content-side-inspector")
+    expect(inspector).to_have_class(re.compile("open"))
+    advance = inspector.locator("[data-content-advance]")
+    expect(advance).to_be_visible()
+    page.once("dialog", lambda dialog: dialog.accept())
+    with page.expect_response(lambda response: response.url.endswith("/content/advance") and response.request.method == "POST"):
+        advance.click()
+    expect(page.locator("#toast")).to_contain_text("Content advanced to")
+    assert_no_browser_errors(page)
 
 
 def test_viewer_permission_denial_and_read_only_inspector(viewer_page: Page, dashboard_app: DashboardFixture) -> None:

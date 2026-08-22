@@ -26,6 +26,31 @@ class AgencyOperationsTests(unittest.TestCase):
         self.assertEqual(metric["ctr"],2)
         self.assertIsNone(metric["cac"])
 
+    def test_metric_sources_are_required_and_normalized(self) -> None:
+        campaign=self.os.agency_ops.create_campaign(self.org.id,self.ws.id,self.owner.id,"Lead Gen","Booked calls","meta")
+        creative=self.os.agency_ops.create_creative(self.org.id,self.ws.id,self.owner.id,"Lead ad","image",campaign_id=campaign["id"])
+        for source in (None,"","   "):
+            with self.subTest(kind="campaign",source=source), self.assertRaisesRegex(ValidationError,"campaign metric source is required"):
+                self.os.agency_ops.record_campaign_metrics(
+                    self.org.id,self.ws.id,self.owner.id,campaign["id"],source,impressions=100,
+                )
+        for source in (None,"","\t "):
+            with self.subTest(kind="creative",source=source), self.assertRaisesRegex(ValidationError,"creative performance source is required"):
+                self.os.agency_ops.record_creative_performance(
+                    self.org.id,self.ws.id,self.owner.id,creative["id"],source,impressions=100,
+                )
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM campaign_metric_snapshots").fetchone()[0],0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM creative_performance").fetchone()[0],0)
+
+        campaign_metric=self.os.agency_ops.record_campaign_metrics(
+            self.org.id,self.ws.id,self.owner.id,campaign["id"],"  manual import  ",impressions=100,
+        )
+        creative_metric=self.os.agency_ops.record_creative_performance(
+            self.org.id,self.ws.id,self.owner.id,creative["id"],"  platform sync  ",impressions=100,
+        )
+        self.assertEqual(campaign_metric["source"],"manual import")
+        self.assertEqual(creative_metric["source"],"platform sync")
+
     def test_creative_library_is_workspace_scoped_and_searchable(self) -> None:
         self.os.agency_ops.create_creative(self.org.id,self.ws.id,self.owner.id,"Consultation room ad","image",style_tags=["consultation-room","clinical"])
         hits=self.os.agency_ops.search_creative(self.org.id,self.ws.id,self.member.id,"consultation")

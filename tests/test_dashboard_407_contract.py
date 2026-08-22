@@ -16,9 +16,9 @@ class Dashboard407ContractTests(unittest.TestCase):
         self.assertNotIn("cosmoCommandForm)if(cosmoCommandForm)cosmoCommandForm.onsubmit=event=>{event.preventDefault();const query=$(\'command\').value.trim();if(!query)return;$('ask-modal')", self.bundle)
 
     def test_navigation_and_overview_controls_are_present(self) -> None:
-        for marker in ("NAV_GROUPS_PARITY407", "'Signals'", "'Performance'", "overview-period", "overview-attention", "overview-export", "auremgrid-portfolio.csv", "Over scope", "Healthy"):
+        for marker in ("NAV_GROUPS_PARITY407", "'Signals'", "'Performance'", "Current canonical snapshot", "overview-attention", "overview-export", "auremgrid-portfolio.csv", "Over scope", "Healthy"):
             self.assertIn(marker, self.bundle)
-        self.assertIn("period scopes trend and report context without hiding portfolio membership", self.bundle)
+        self.assertNotIn("overview-period", self.bundle)
         self.assertIn("uniqueAttention407", self.bundle)
         self.assertIn("uniqueAttention(", self.bundle)
         self.assertIn("Build first snapshot", self.bundle)

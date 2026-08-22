@@ -27,6 +27,39 @@ class AgentOperations:
     def __init__(self, conn: Any, new_id: Callable[[str], str], company: Any, approvals: Any, client_ops: Any, capacity: Any | None = None) -> None:
         self.conn, self.new_id, self.company, self.approvals, self.client_ops, self.capacity = conn, new_id, company, approvals, client_ops, capacity
 
+    def visible_workspace_ids(self, organization_id: str, person_id: str) -> set[str]:
+        """Return only workspaces in *organization_id* that this person belongs to.
+
+        Workspace memberships are organization-scoped through ``workspace_organization``;
+        joining that table here prevents a person who belongs to workspaces in another
+        organization from accidentally widening an agent response.
+        """
+        rows = self.conn.execute(
+            """SELECT wm.workspace_id
+               FROM workspace_memberships wm
+               JOIN workspace_organization wo ON wo.workspace_id=wm.workspace_id
+               WHERE wm.person_id=? AND wo.organization_id=?""",
+            (person_id, organization_id),
+        ).fetchall()
+        return {str(row[0]) for row in rows}
+
+    @staticmethod
+    def _visible_workspace_clause(column: str, visible: set[str]) -> tuple[str, list[Any]]:
+        if not visible:
+            return f"{column} IS NULL", []
+        marks = ",".join("?" for _ in visible)
+        return f"({column} IS NULL OR {column} IN ({marks}))", sorted(visible)
+
+    @staticmethod
+    def _redacted_agent(row: Any, visible: set[str]) -> dict[str, Any]:
+        agent = dict(row)
+        try:
+            allowed = json.loads(agent.get("allowed_workspace_ids") or "[]")
+        except (TypeError, ValueError):
+            allowed = []
+        agent["allowed_workspace_ids"] = _json([str(item) for item in allowed if str(item) in visible])
+        return agent
+
     def seed_primary_agents(self, organization_id: str, owner_person_id: str) -> list[dict[str, Any]]:
         if self.company.org_membership(organization_id, owner_person_id) is None:
             raise AuthorizationError("organization membership required")
@@ -215,13 +248,15 @@ class AgentOperations:
         self.conn.commit()
         return task
 
-    def start_run(self, organization_id: str, agent_id: str, task_id: str) -> dict[str, Any]:
+    def start_run(self, organization_id: str, person_id: str, agent_id: str, task_id: str) -> dict[str, Any]:
         task = self.conn.execute(
             "SELECT * FROM agent_tasks WHERE organization_id=? AND agent_id=? AND id=?",
             (organization_id, agent_id, task_id),
         ).fetchone()
         if task is None or task["status"] != "queued":
             raise ValidationError("queued agent task required")
+        if task["workspace_id"] is not None and task["workspace_id"] not in self.visible_workspace_ids(organization_id, person_id):
+            raise AuthorizationError("agent task workspace is not visible to caller")
         now = _now().isoformat()
         run = {
             "id": self.new_id("run"),
@@ -246,7 +281,7 @@ class AgentOperations:
         self.conn.commit()
         return run
 
-    def claim_next_task(self, organization_id: str, agent_id: str) -> dict[str, Any] | None:
+    def claim_next_task(self, organization_id: str, person_id: str, agent_id: str) -> dict[str, Any] | None:
         """Claim the highest-priority queued task that remains inside the agent scope."""
         agent = self.conn.execute(
             "SELECT * FROM agents WHERE organization_id=? AND id=?",
@@ -255,6 +290,7 @@ class AgentOperations:
         if agent is None:
             raise NotFoundError("agent not found")
         allowed = set(json.loads(agent["allowed_workspace_ids"]))
+        visible = self.visible_workspace_ids(organization_id, person_id)
         rows = self.conn.execute(
             """SELECT t.* FROM agent_queue_items q
                JOIN agent_tasks t ON t.id=q.task_id
@@ -263,8 +299,8 @@ class AgentOperations:
             (organization_id, agent_id),
         ).fetchall()
         for task in rows:
-            if task["workspace_id"] is None or task["workspace_id"] in allowed:
-                return self.start_run(organization_id, agent_id, task["id"])
+            if task["workspace_id"] is None or task["workspace_id"] in allowed and task["workspace_id"] in visible:
+                return self.start_run(organization_id, person_id, agent_id, task["id"])
         return None
 
     def record_tool_call(
@@ -385,8 +421,13 @@ class AgentOperations:
     def command_center(self, organization_id: str, person_id: str) -> dict[str, Any]:
         if self.company.org_membership(organization_id, person_id) is None:
             raise AuthorizationError("organization membership required")
-        agents = [dict(row) for row in self.conn.execute("SELECT * FROM agents WHERE organization_id=? ORDER BY name", (organization_id,)).fetchall()]
-        runs = [dict(row) for row in self.conn.execute("SELECT * FROM agent_runs WHERE organization_id=? ORDER BY started_at DESC LIMIT 25", (organization_id,)).fetchall()]
+        visible = self.visible_workspace_ids(organization_id, person_id)
+        agents = [self._redacted_agent(row, visible) for row in self.conn.execute("SELECT * FROM agents WHERE organization_id=? ORDER BY name", (organization_id,)).fetchall()]
+        clause, scope_values = self._visible_workspace_clause("workspace_id", visible)
+        runs = [dict(row) for row in self.conn.execute(
+            f"SELECT * FROM agent_runs WHERE organization_id=? AND {clause} ORDER BY started_at DESC LIMIT 25",
+            (organization_id, *scope_values),
+        ).fetchall()]
         return {
             "agents": agents,
             "recent_runs": runs,
@@ -404,11 +445,7 @@ class AgentOperations:
     ) -> list[dict[str, Any]]:
         if self.company.org_membership(organization_id, person_id) is None:
             raise AuthorizationError("organization membership required")
-        visible = {
-            row[0] for row in self.conn.execute(
-                "SELECT workspace_id FROM workspace_memberships WHERE person_id=?", (person_id,)
-            ).fetchall()
-        }
+        visible = self.visible_workspace_ids(organization_id, person_id)
         if workspace_id is not None and workspace_id not in visible:
             raise AuthorizationError("workspace membership required")
         where = ["organization_id=?"]

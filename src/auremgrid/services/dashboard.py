@@ -24,7 +24,7 @@ class _ExistingDashboardService:
         overdue=count("work_items","status!='shipped' AND needed_by IS NOT NULL AND needed_by < date('now')")
         review=count("reviews","status='open'"); risks=count("risks","status='open'")
         active_workflows=count("workflow_runs","status NOT IN ('completed','cancelled')")
-        agents=self._agent_dashboard_rows(organization_id)
+        agents=self._agent_dashboard_rows(organization_id, person_id)
         automation_count=self.conn.execute("SELECT COUNT(*) FROM automation_runs ar JOIN automations a ON a.id=ar.automation_id WHERE a.organization_id=? AND ar.started_at>=date('now')",(organization_id,)).fetchone()[0]
         finance=self.os.agency_ops.finance_status(organization_id,person_id)
         attention=[{**item,"client":None,"severity":"ranked","evidence":item["reason"],"owner":person_id,"next_action":"Open source record"}
@@ -145,8 +145,10 @@ class _ExistingDashboardService:
             "used_quantity": used_quantity if included_quantity else None,
         }
 
-    def _agent_dashboard_rows(self, organization_id: str) -> list[dict[str, Any]]:
-        agents = [dict(row) for row in self.conn.execute(
+    def _agent_dashboard_rows(self, organization_id: str, person_id: str) -> list[dict[str, Any]]:
+        visible = self.os.agent_ops.visible_workspace_ids(organization_id, person_id)
+        scope_clause, scope_values = self.os.agent_ops._visible_workspace_clause("workspace_id", visible)
+        agents = [self.os.agent_ops._redacted_agent(row, visible) for row in self.conn.execute(
             "SELECT * FROM agents WHERE organization_id=? ORDER BY name,id", (organization_id,)
         ).fetchall()]
         for agent in agents:
@@ -155,8 +157,8 @@ class _ExistingDashboardService:
                 """SELECT COUNT(*) AS total,
                           SUM(CASE WHEN status IN ('queued','pending') THEN 1 ELSE 0 END) AS queued,
                           SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed
-                   FROM agent_tasks WHERE organization_id=? AND agent_id=?""",
-                (organization_id, agent_id),
+                   FROM agent_tasks WHERE organization_id=? AND agent_id=? AND """ + scope_clause,
+                (organization_id, agent_id, *scope_values),
             ).fetchone()
             runs = self.conn.execute(
                 """SELECT COUNT(*) AS total,
@@ -166,8 +168,8 @@ class _ExistingDashboardService:
                           SUM(input_tokens+output_tokens) AS tokens,
                           AVG(runtime_ms) AS average_runtime_ms,
                           MAX(started_at) AS last_run_at
-                   FROM agent_runs WHERE organization_id=? AND agent_id=?""",
-                (organization_id, agent_id),
+                   FROM agent_runs WHERE organization_id=? AND agent_id=? AND """ + scope_clause,
+                (organization_id, agent_id, *scope_values),
             ).fetchone()
             total_runs = int(runs["total"] or 0)
             completed_runs = int(runs["completed"] or 0)
@@ -585,6 +587,7 @@ class _ExistingDashboardService:
         ).fetchall()
         ids = [row["id"] for row in workspace_rows]
         names = {row["id"]: row["name"] for row in workspace_rows}
+        roles = {row["id"]: row["role"] for row in workspace_rows}
         if not ids:
             return {
                 "waiting_for_me": [], "waiting_for_team": [], "waiting_for_client": [],
@@ -611,6 +614,19 @@ class _ExistingDashboardService:
             if deliverable and not source_locator:
                 source_row = self.conn.execute("SELECT url FROM deliverable_files WHERE deliverable_id=? ORDER BY version DESC,created_at DESC LIMIT 1", (deliverable.id,)).fetchone()
                 source_locator = source_row[0] if source_row else None
+            allowed_actions = [{"action": "add_annotation", "method": "POST", "route": "/reviews/annotations",
+                                "payload": {"review_id": row["id"]}, "required_fields": ["annotation_type", "body"]}]
+            can_decide = row["status"] == "open" and (
+                not row["reviewer_person_id"] or row["reviewer_person_id"] == person_id or roles.get(row["workspace_id"]) == "admin"
+            )
+            if can_decide:
+                for decision in ("approved", "revision_requested", "rejected"):
+                    allowed_actions.append({
+                        "action": f"review_{decision}", "label": decision.replace("_", " ").title(),
+                        "method": "POST", "route": "/reviews/decide",
+                        "payload": {"workspace_id": row["workspace_id"], "review_id": row["id"], "decision": decision},
+                        "required_fields": [],
+                    })
             return {
                 "id": row["id"], "workspace_id": row["workspace_id"], "client": names.get(row["workspace_id"]),
                 "deliverable_id": row["deliverable_id"], "deliverable_title": row["deliverable_title"],
@@ -619,8 +635,7 @@ class _ExistingDashboardService:
                 "opened_at": row["opened_at"], "closed_at": row["closed_at"], "decision": row["decision"],
                 "annotation_capabilities": annotation_capabilities,
                 "source_locator": source_locator,
-                "allowed_actions": [{"action": "add_annotation", "method": "POST", "route": "/reviews/annotations",
-                                     "payload": {"review_id": row["id"]}, "required_fields": ["annotation_type", "body"]}],
+                "allowed_actions": allowed_actions,
             }
 
         waiting_for_me: list[dict[str, Any]] = []
@@ -1194,14 +1209,34 @@ class DashboardService(_ExistingDashboardService):
 
     def agent_detail(self, organization_id: str, person_id: str, agent_id: str) -> dict[str, Any]:
         if self.os.company.org_membership(organization_id, person_id) is None: raise AuthorizationError("organization membership required")
+        visible = self.os.agent_ops.visible_workspace_ids(organization_id, person_id)
         agent = self.conn.execute("SELECT * FROM agents WHERE organization_id=? AND id=?", (organization_id, agent_id)).fetchone()
         if agent is None: raise NotFoundError("agent not found")
+        try:
+            allowed = [str(item) for item in _json_list(agent["allowed_workspace_ids"])]
+        except (TypeError, ValueError):
+            allowed = []
+        # An agent explicitly scoped only to workspaces the viewer cannot access is
+        # indistinguishable from a missing agent; do not leak its existence or metadata.
+        if allowed and not (set(allowed) & visible):
+            raise NotFoundError("agent not found")
         role = self.conn.execute("SELECT * FROM agent_roles WHERE id=? AND organization_id=?", (agent["role_id"], organization_id)).fetchone()
-        tasks = [dict(row) for row in self.conn.execute("SELECT * FROM agent_tasks WHERE organization_id=? AND agent_id=? ORDER BY created_at DESC LIMIT 25", (organization_id, agent_id)).fetchall()]
-        queue = [dict(row) for row in self.conn.execute("SELECT * FROM agent_queue_items WHERE organization_id=? AND agent_id=? ORDER BY enqueued_at DESC LIMIT 25", (organization_id, agent_id)).fetchall()]
-        runs = [dict(row) for row in self.conn.execute("SELECT * FROM agent_runs WHERE organization_id=? AND agent_id=? ORDER BY started_at DESC LIMIT 25", (organization_id, agent_id)).fetchall()]
+        scope_clause, scope_values = self.os.agent_ops._visible_workspace_clause("workspace_id", visible)
+        tasks = [dict(row) for row in self.conn.execute(
+            f"SELECT * FROM agent_tasks WHERE organization_id=? AND agent_id=? AND {scope_clause} ORDER BY created_at DESC LIMIT 25",
+            (organization_id, agent_id, *scope_values),
+        ).fetchall()]
+        # Queue items carry their scope through the task, so filter via the task join.
+        queue = [dict(row) for row in self.conn.execute(
+            f"SELECT q.* FROM agent_queue_items q JOIN agent_tasks t ON t.id=q.task_id WHERE q.organization_id=? AND q.agent_id=? AND {scope_clause.replace('workspace_id', 't.workspace_id')} ORDER BY q.enqueued_at DESC LIMIT 25",
+            (organization_id, agent_id, *scope_values),
+        ).fetchall()]
+        runs = [dict(row) for row in self.conn.execute(
+            f"SELECT * FROM agent_runs WHERE organization_id=? AND agent_id=? AND {scope_clause} ORDER BY started_at DESC LIMIT 25",
+            (organization_id, agent_id, *scope_values),
+        ).fetchall()]
         completed = sum(row.get("status") == "completed" for row in runs); failed = sum(row.get("status") == "failed" for row in runs); finished = completed + failed
-        return {"agent": {**dict(agent), "capability": {"role": role["name"] if role else "Unknown", "description": role["description"] if role else "Unknown"}, "tools": _json_list(agent["tools"]), "write_permissions": _json_list(agent["write_permissions"]), "allowed_workspace_ids": _json_list(agent["allowed_workspace_ids"])}, "current_task": next((row for row in tasks if row.get("status") in {"running", "queued"}), None), "tasks": tasks, "queue": queue, "runs": runs, "quality": {"completed": completed, "failed": failed, "success_rate": completed / finished if finished else None}, "cost": {"total": sum(float(row.get("cost") or 0) for row in runs), "currency": "USD", "status": "sourced" if runs else "unknown"}, "budget": {"status": "not_configured", "amount": None, "currency": "USD"}}
+        return {"agent": {**self.os.agent_ops._redacted_agent(agent, visible), "capability": {"role": role["name"] if role else "Unknown", "description": role["description"] if role else "Unknown"}, "tools": _json_list(agent["tools"]), "write_permissions": _json_list(agent["write_permissions"]), "allowed_workspace_ids": [item for item in allowed if item in visible]}, "current_task": next((row for row in tasks if row.get("status") in {"running", "queued"}), None), "tasks": tasks, "queue": queue, "runs": runs, "quality": {"completed": completed, "failed": failed, "success_rate": completed / finished if finished else None}, "cost": {"total": sum(float(row.get("cost") or 0) for row in runs), "currency": "USD", "status": "sourced" if runs else "unknown"}, "budget": {"status": "not_configured", "amount": None, "currency": "USD"}}
 
     def performance_surface(self, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any]:
         self.os._require_person_access(organization_id, workspace_id, person_id)
