@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -21,9 +22,72 @@ def _normalize_key(raw: str) -> str:
     return k[:200] if len(k) > 200 else k
 
 
+_SEMANTIC_CONCEPTS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("natural-human-texture", frozenset({
+        "ai", "artificial", "generated", "human", "natural", "person", "face", "skin",
+        "polished", "retouched", "smooth", "smoothed", "synthetic", "texture",
+    })),
+    ("concise-copy", frozenset({
+        "brief", "concise", "short", "shorten", "shorter", "tight", "wordy", "verbose",
+    })),
+)
+
+
+def _semantic_key(category: str, raw: str) -> str:
+    """Return a conservative concept key while preserving unknown feedback literally.
+
+    This is intentionally deterministic and auditable.  It captures only
+    established agency preference concepts; ambiguous feedback stays on the
+    literal path instead of being over-clustered by an opaque similarity score.
+    """
+    literal = _normalize_key(raw)
+    tokens = frozenset("".join(char if char.isalnum() else " " for char in literal).split())
+    for concept, vocabulary in _SEMANTIC_CONCEPTS:
+        if concept == "natural-human-texture":
+            artificial_markers = {"ai", "artificial", "generated", "polished", "retouched", "smooth", "smoothed", "synthetic"}
+            appearance_markers = {"face", "human", "person", "skin", "texture"}
+            matched = bool(tokens & artificial_markers) or ("natural" in tokens and bool(tokens & appearance_markers))
+        else:
+            matched = bool(tokens & vocabulary)
+        if matched:
+            if concept == "natural-human-texture" and category != "design":
+                continue
+            if concept == "concise-copy" and category != "copy":
+                continue
+            return f"semantic:{concept}"
+    return literal
+
+
 class FeedbackOperations:
-    def __init__(self, conn: Any, new_id: Callable[[str], str], authorize: Callable[..., Any]) -> None:
-        self.conn, self.new_id, self.authorize = conn, new_id, authorize
+    def __init__(self, conn: Any, new_id: Callable[[str], str], authorize: Callable[..., Any], embedding_provider: Any | None = None) -> None:
+        self.conn, self.new_id, self.authorize, self.embedding_provider = conn, new_id, authorize, embedding_provider
+
+    @staticmethod
+    def _cosine(left: list[float], right: list[float]) -> float:
+        dot = sum(a * b for a, b in zip(left, right))
+        scale = math.sqrt(sum(value * value for value in left)) * math.sqrt(sum(value * value for value in right))
+        return dot / scale if scale else 0.0
+
+    def _semantic_existing(self, organization_id: str, workspace_id: str, category: str, raw_feedback: str) -> Any | None:
+        if self.embedding_provider is None:
+            return None
+        rows = self.conn.execute(
+            "SELECT id,pattern_key,occurrence_count,sample_evidence,preference_status FROM feedback_patterns "
+            "WHERE organization_id=? AND workspace_id=? AND category=?",
+            (organization_id, workspace_id, category),
+        ).fetchall()
+        if not rows:
+            return None
+        representatives = [json.loads(row["sample_evidence"])[-1] for row in rows]
+        try:
+            vectors = self.embedding_provider.embed([raw_feedback, *representatives])
+        except Exception:
+            return None
+        if len(vectors) != len(rows) + 1:
+            return None
+        scored = [(self._cosine(list(vectors[0]), list(vector)), row) for vector, row in zip(vectors[1:], rows)]
+        score, row = max(scored, key=lambda item: item[0])
+        return row if score >= 0.84 else None
 
     def record_feedback(self, organization_id: str, workspace_id: str, person_id: str,
         category: str, raw_feedback: str, source_type: str, source_id: str | None = None) -> dict[str, Any]:
@@ -31,13 +95,17 @@ class FeedbackOperations:
         if category not in VALID_CATEGORIES:
             raise ValidationError(f"invalid category: {category}")
         now = _now().isoformat()
-        pattern_key = _normalize_key(raw_feedback)
+        if not raw_feedback.strip():
+            raise ValidationError("raw feedback is required")
+        pattern_key = _semantic_key(category, raw_feedback)
         existing = self.conn.execute(
-            "SELECT id, occurrence_count, sample_evidence, preference_status FROM feedback_patterns WHERE organization_id=? AND workspace_id=? AND category=? AND pattern_key=?",
+            "SELECT id, pattern_key, occurrence_count, sample_evidence, preference_status FROM feedback_patterns WHERE organization_id=? AND workspace_id=? AND category=? AND pattern_key=?",
             (organization_id, workspace_id, category, pattern_key),
         ).fetchone()
+        existing = existing or self._semantic_existing(organization_id, workspace_id, category, raw_feedback)
         if existing:
             pid = existing["id"]
+            pattern_key = existing["pattern_key"]
             count = existing["occurrence_count"] + 1
             evidence = json.loads(existing["sample_evidence"])
             evidence.append(raw_feedback[:300])

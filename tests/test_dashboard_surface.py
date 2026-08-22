@@ -144,7 +144,7 @@ class DashboardSurfaceTests(unittest.TestCase):
 
     def test_cosmo_queue_is_backend_sourced_and_navigates_to_canonical_surfaces(self) -> None:
         for marker in (
-            "Cosmo command", "Cosmo queue", "state.cosmo", "data-cosmo-surface",
+            "Company command", "Intelligence queue", "state.cosmo", "data-cosmo-surface",
             "Ask Cosmo", "writes_require_canonical_routes",
         ):
             self.assertIn(marker, self.html if marker != "writes_require_canonical_routes" else Path(__file__).parents[1].joinpath("src", "auremgrid", "services", "dashboard.py").read_text(encoding="utf-8"))
@@ -155,7 +155,8 @@ class DashboardSurfaceTests(unittest.TestCase):
         paths = (
             "/auth/me", "/health/detailed", "/dashboard/data", "/dashboard/client",
             "/dashboard/module", "/dashboard/settings", "/dashboard/review-center",
-            "/dashboard/brain", "/dashboard/workflows", "/people", "/work/detail",
+            "/dashboard/brain", "/dashboard/workflows", "/dashboard/intelligence",
+            "/dashboard/intelligence/executive", "/people", "/work/detail",
             "/work/capture", "/search", "/entity/candidates", "/tools/call", "/finance",
             "/campaigns", "/content", "/creative",
             "/brain/promote", "/brain/conflicts/resolve", "/workflows/stages/start",
@@ -180,6 +181,16 @@ class DashboardSurfaceTests(unittest.TestCase):
             self.assertIn(route, self.html)
         self.assertIn("['admin','operator']", self.html)
 
+    def test_intelligence_is_a_permanent_contextual_backend_surface(self) -> None:
+        for marker in (
+            'class="intelligence-rail"', 'id="intelligence-findings"',
+            "loadIntelligence", "renderIntelligence", "/dashboard/intelligence?",
+            "intelligenceConfidence", "intelligenceEvidence", "data-intelligence-surface",
+        ):
+            self.assertIn(marker, self.html)
+        self.assertIn("grid-template-columns:248px minmax(0,1fr) 372px", self.html)
+        self.assertIn("There is not enough permitted evidence", self.html)
+
     def test_every_visible_static_dashboard_control_is_wired(self) -> None:
         handlers = {
             "command-form": '$("command-form").onsubmit',
@@ -190,10 +201,68 @@ class DashboardSurfaceTests(unittest.TestCase):
             "list-view": '$("list-view").onclick',
             "clear-work-filters": '$("clear-work-filters").onclick',
             "close-work-detail": '$("close-work-detail").onclick',
+            "intelligence-toggle": "$('intelligence-toggle').onclick",
+            "intelligence-close": "$('intelligence-close').onclick",
+            "intelligence-form": "$('intelligence-form').onsubmit",
         }
         for element_id, handler in handlers.items():
             self.assertIn(f'id="{element_id}"', self.html)
             self.assertIn(handler, self.html, f"visible control {element_id} has no handler")
+
+    def test_407_shell_completion_surface_markers_are_present(self) -> None:
+        for marker in (
+            "dashboard-407-surface",
+            "nav-section",
+            "nav-toggle",
+            "data-overview-action-cards",
+            "overview-action",
+            "client-portfolio-table",
+            "people-capacity-table",
+            "agents-ops-grid",
+            "agent-worker-card",
+            "campaign-evidence",
+            "side-inspector",
+            "work-side-inspector",
+            "ensureWorkSideInspector",
+            "executive-brief",
+            "loadExecutiveBrief407",
+            "intelligenceDetail407",
+        ):
+            self.assertIn(marker, self.html)
+
+    def test_407_honest_states_and_backend_sources_are_explicit(self) -> None:
+        for marker in (
+            "honestState",
+            "No connected or permitted finance source",
+            "Unknown values stay unknown",
+            "No revenue or margin numbers are shown",
+            "Fetching /dashboard/client",
+            "Operational worker from /dashboard/data",
+            "Records above are loaded through /dashboard/module",
+            "Sourced capacity",
+            "permission",
+            "disconnected",
+            "degraded",
+        ):
+            self.assertIn(marker, self.html)
+
+    def test_407_rich_surfaces_remain_backend_wired(self) -> None:
+        for marker in (
+            "renderOverview407",
+            "renderClientTab407",
+            "renderPeople407",
+            "renderAgents407",
+            "renderMarketingModule=async function",
+            "renderIntelligence=function",
+            "/people?organization_id=",
+            "people.capacity",
+            "/dashboard/client?organization_id=",
+            "/dashboard/module?organization_id=",
+            "/dashboard/intelligence/executive?organization_id=",
+            "data-overview-surface",
+            "data-cosmo-surface",
+        ):
+            self.assertIn(marker, self.html)
 
 
 if __name__ == "__main__":

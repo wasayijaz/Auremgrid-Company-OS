@@ -43,6 +43,7 @@ class ServiceTests(unittest.TestCase):
         def new_id(prefix):
             self.n += 1
             return f"{prefix}_{self.n}_{uuid.uuid4().hex[:6]}"
+        self.new_id = new_id
         self.feedback = FeedbackOperations(self.conn, new_id, lambda *a, **k: None)
         self.performance = PerformanceOperations(self.conn, new_id, lambda *a, **k: None)
         self.forecast = ForecastOperations(self.conn, new_id, lambda *a, **k: None)
@@ -58,6 +59,29 @@ class ServiceTests(unittest.TestCase):
     def test_record_feedback_accumulates(self):
         for _ in range(3): out = self.feedback.record_feedback(self.org, self.ws, self.person, "copy", "Shorter", "review")
         self.assertEqual(out["occurrence_count"], 3); self.assertEqual(out["preference_status"], "proposed")
+
+    def test_semantically_equivalent_design_feedback_converges(self):
+        samples = (
+            "too polished",
+            "this looks AI generated",
+            "do not smooth the skin this much",
+        )
+        results = [self.feedback.record_feedback(self.org, self.ws, self.person, "design", text, "review") for text in samples]
+        self.assertEqual({item["pattern_id"] for item in results}, {results[0]["pattern_id"]})
+        self.assertEqual(results[-1]["pattern_key"], "semantic:natural-human-texture")
+        self.assertEqual(results[-1]["occurrence_count"], 3)
+        self.assertEqual(results[-1]["preference_status"], "proposed")
+
+    def test_embedding_provider_clusters_non_literal_paraphrases(self):
+        class Provider:
+            def embed(self, texts):
+                return [[1.0, 0.0] if "headline" in text or "title" in text else [0.0, 1.0] for text in texts]
+
+        feedback = FeedbackOperations(self.conn, self.new_id, lambda *a, **k: None, Provider())
+        first = feedback.record_feedback(self.org, self.ws, self.person, "copy", "Make the headline punchier", "review")
+        second = feedback.record_feedback(self.org, self.ws, self.person, "copy", "Give the title more energy", "review")
+        self.assertEqual(first["pattern_id"], second["pattern_id"])
+        self.assertEqual(second["occurrence_count"], 2)
 
     def test_list_patterns_filters_by_category(self):
         self.feedback.record_feedback(self.org, self.ws, self.person, "design", "A", "x")

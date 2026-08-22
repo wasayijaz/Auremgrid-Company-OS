@@ -34,7 +34,7 @@ def _route_capability(path: str, method: str) -> str:
         if path.startswith("/workflows"): return "workspace_read"
         if path == "/entity/candidates": return "brain_propose"
         if path in {"/knowledge-health", "/memory-proposals", "/search", "/entity", "/history", "/neighbors", "/sources", "/recent", "/brief"}: return "brain_read"
-        if path == "/dashboard/brain": return "brain_read"
+        if path == "/dashboard/brain" or path.startswith("/dashboard/intelligence"): return "brain_read"
         if path == "/dashboard/settings": return "workspace_read"
         return "workspace_read"
     if path in {"/approvals/decide", "/workflows/approvals/decide"}: return "approval_decide"
@@ -270,6 +270,32 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 assert identity is not None
                 organization_id, workspace_id, person_id = _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
                 self._json(200, self.os.dashboard.brain(identity, organization_id, workspace_id, person_id, _optional_dt(params.get("as_of")))); return
+            if parsed.path == "/dashboard/intelligence":
+                assert identity is not None
+                organization_id, workspace_id, person_id = _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                if scoped.organization_id != organization_id or scoped.person_id != person_id:
+                    raise AuthorizationError("identity scope mismatch")
+                actor_id = None
+                try:
+                    actor_id = self.os.auth.actor_for_identity(scoped, workspace_id)
+                except AuthorizationError:
+                    # Canonical operational findings remain available when a
+                    # principal has not yet been bound to a brain actor.
+                    actor_id = None
+                self._json(200, self.os.intelligence.workspace(
+                    organization_id, workspace_id, person_id, actor_id,
+                    _optional_dt(params.get("as_of")), params.get("query"),
+                )); return
+            if parsed.path in {"/dashboard/intelligence/portfolio", "/dashboard/intelligence/executive"}:
+                assert identity is not None
+                organization_id, person_id = _need(params, "organization_id"), _need(params, "person_id")
+                if identity.organization_id != organization_id or identity.person_id != person_id:
+                    raise AuthorizationError("identity scope mismatch")
+                method = self.os.intelligence.executive_brief if parsed.path.endswith("/executive") else self.os.intelligence.portfolio
+                self._json(200, method(
+                    organization_id, person_id, as_of=_optional_dt(params.get("as_of")),
+                )); return
             if parsed.path == "/dashboard/workflows":
                 assert identity is not None
                 organization_id, workspace_id, person_id = _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
