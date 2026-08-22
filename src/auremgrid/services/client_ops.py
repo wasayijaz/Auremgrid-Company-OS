@@ -440,6 +440,8 @@ class ClientOperations:
         severity: str, probability: float, impact: str, evidence: str, recommended_action: str,
         project_id: str | None = None) -> Risk:
         self.authorize(organization_id, workspace_id, person_id, write=True)
+        if project_id and not self.conn.execute("SELECT id FROM projects WHERE organization_id=? AND workspace_id=? AND id=?", (organization_id, workspace_id, project_id)).fetchone():
+            raise NotFoundError("project not found")
         if type not in {"churn","delivery","financial","relationship","performance","scope","team","security","compliance"}:
             raise ValidationError("unsupported risk type")
         if severity not in {"low","medium","high","critical"} or not 0 <= probability <= 1:
@@ -481,7 +483,7 @@ class ClientOperations:
         service_category: str, period: str, included_quantity: float | None = None,
         included_hours: float | None = None, revision_limit: int | None = None) -> dict[str, Any]:
         self.authorize(organization_id,workspace_id,person_id,write=True)
-        contract=self.conn.execute("SELECT id FROM contracts WHERE workspace_id=? AND id=?",(workspace_id,contract_id)).fetchone()
+        contract=self.conn.execute("SELECT id FROM contracts WHERE organization_id=? AND workspace_id=? AND id=?",(organization_id,workspace_id,contract_id)).fetchone()
         if not contract: raise NotFoundError("contract not found")
         item={"id":self.new_id("allowance"),"contract_id":contract_id,"service_category":service_category,"period":period,
             "included_quantity":included_quantity,"included_hours":included_hours,"revision_limit":revision_limit}
@@ -491,7 +493,9 @@ class ClientOperations:
         allowance_id: str, period_start: str, delivered: float, in_review: float = 0, requested: float = 0,
         used_hours: float = 0) -> dict[str, Any]:
         self.authorize(organization_id,workspace_id,person_id,write=True)
-        allowance=self.conn.execute("SELECT * FROM scope_allowances WHERE contract_id=? AND id=?",(contract_id,allowance_id)).fetchone()
+        allowance=self.conn.execute("""SELECT a.*,c.organization_id,c.workspace_id FROM scope_allowances a
+            JOIN contracts c ON c.id=a.contract_id
+            WHERE a.contract_id=? AND a.id=? AND c.organization_id=? AND c.workspace_id=?""",(contract_id,allowance_id,organization_id,workspace_id)).fetchone()
         if allowance is None: raise NotFoundError("scope allowance not found")
         item={"id":self.new_id("usage"),"organization_id":organization_id,"workspace_id":workspace_id,"contract_id":contract_id,
             "allowance_id":allowance_id,"period_start":period_start,"delivered_quantity":delivered,"in_review_quantity":in_review,
@@ -536,7 +540,12 @@ class ClientOperations:
         if not self.conn.execute("SELECT id FROM meetings WHERE workspace_id=? AND id=?",(workspace_id,meeting_id)).fetchone(): raise NotFoundError("meeting not found")
         if participant_type not in {"person","contact"}: raise ValidationError("participant type must be person or contact")
         table="people" if participant_type=="person" else "contacts"
-        if not self.conn.execute(f"SELECT id FROM {table} WHERE id=?",(participant_id,)).fetchone(): raise NotFoundError("participant not found")
+        if participant_type == "person":
+            participant = self.conn.execute("""SELECT p.id FROM people p JOIN workspace_memberships wm ON wm.person_id=p.id
+                WHERE p.organization_id=? AND p.id=? AND wm.workspace_id=?""", (organization_id, participant_id, workspace_id)).fetchone()
+        else:
+            participant = self.conn.execute("SELECT id FROM contacts WHERE organization_id=? AND workspace_id=? AND id=?", (organization_id, workspace_id, participant_id)).fetchone()
+        if participant is None: raise NotFoundError("participant not found in workspace")
         self.conn.execute("INSERT OR IGNORE INTO meeting_participants VALUES (?,?,?)",(meeting_id,participant_type,participant_id));self.conn.commit()
 
     def create_conversation(self, organization_id: str, workspace_id: str, person_id: str, source: str,
@@ -565,6 +574,14 @@ class ClientOperations:
         conversation_id: str, participant_type: str, participant_id: str, role: str) -> None:
         self.authorize(organization_id,workspace_id,person_id,write=True)
         if not self.conn.execute("SELECT id FROM conversations WHERE workspace_id=? AND id=?",(workspace_id,conversation_id)).fetchone(): raise NotFoundError("conversation not found")
+        if participant_type == "person":
+            exists = self.conn.execute("""SELECT p.id FROM people p JOIN workspace_memberships wm ON wm.person_id=p.id
+                WHERE p.organization_id=? AND p.id=? AND wm.workspace_id=?""", (organization_id, participant_id, workspace_id)).fetchone()
+        elif participant_type == "contact":
+            exists = self.conn.execute("SELECT id FROM contacts WHERE organization_id=? AND workspace_id=? AND id=?", (organization_id, workspace_id, participant_id)).fetchone()
+        else:
+            raise ValidationError("participant type must be person or contact")
+        if exists is None: raise NotFoundError("participant not found in workspace")
         self.conn.execute("INSERT OR IGNORE INTO communication_participants VALUES (?,?,?,?)",(conversation_id,participant_type,participant_id,role));self.conn.commit()
 
     def reply_to_message(self, organization_id: str, workspace_id: str, person_id: str, message_id: str,

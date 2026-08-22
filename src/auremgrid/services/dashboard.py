@@ -48,6 +48,22 @@ class _ExistingDashboardService:
                 "source_id":row["id"],"client":row["client"],"severity":"medium","evidence":f"Opened {row['opened_at']}",
                 "owner":None,"next_action":"Assign a reviewer or close the review"} for row in stalled)
         attention=sorted(attention,key=lambda item:item["priority"],reverse=True)[:3]
+        surface_by_source = {
+            "work_item": "Work",
+            "review": "Review",
+            "risk": "Review",
+            "approval": "Review",
+            "workflow": "Workflows",
+            "proposal": "Brain",
+        }
+        cosmo_queue = [
+            {
+                **item,
+                "surface": surface_by_source.get(str(item.get("source_type")), "Command"),
+                "action_kind": "open_surface",
+            }
+            for item in attention
+        ]
         clients=[]
         for ws in workspaces:
             if ws["kind"]!="client":continue
@@ -68,6 +84,12 @@ class _ExistingDashboardService:
             "identity": self._identity_view(organization_id, person_id),
             "ledger_health": self._ledger_health(organization_id, person_id),
             "capability_summary": self._capability_summary(organization_id, person_id),
+            "cosmo": {
+                "name": "Cosmo",
+                "mode": "evidence_grounded",
+                "queue": cosmo_queue,
+                "writes_require_canonical_routes": True,
+            },
             "modules": self._capability_modules(organization_id, person_id, ids),}
 
     def _identity_view(self, organization_id: str, person_id: str) -> dict[str, Any]:

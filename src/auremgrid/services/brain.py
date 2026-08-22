@@ -516,6 +516,10 @@ class CompanyOS:
             raise NotFoundError("deliverable not found")
         if kind not in {"internal", "client"}:
             raise ValidationError("review kind must be internal or client")
+        if reviewer_person_id is not None:
+            reviewer_membership = self.company.workspace_membership(workspace_id, reviewer_person_id)
+            if reviewer_membership is None:
+                raise ValidationError("reviewer must be a workspace member")
         return self.company.save_review(Review(new_id("review"),organization_id,workspace_id,deliverable_id,
             deliverable.current_version,kind,"open",reviewer_person_id,utcnow(),None,None))
 
@@ -531,12 +535,14 @@ class CompanyOS:
         return self.company.update_deliverable(updated)
 
     def decide_review(self, organization_id: str, workspace_id: str, person_id: str, review_id: str, decision: str) -> Review:
-        self._require_person_access(organization_id, workspace_id, person_id, write=True)
+        membership = self._require_person_access(organization_id, workspace_id, person_id, write=True)
         review = self.company.get_review(workspace_id, review_id)
         if review is None:
             raise NotFoundError("review not found")
         if review.status != "open" or decision not in {"approved", "revision_requested", "rejected"}:
             raise ValidationError("open review and valid decision are required")
+        if review.reviewer_person_id and review.reviewer_person_id != person_id and membership.role != "admin":
+            raise AuthorizationError("only the assigned reviewer or workspace admin may decide this review")
         status = "approved" if decision == "approved" else decision
         updated=self.company.update_review(Review(**{**review.__dict__, "status": status, "decision": decision, "closed_at": utcnow()}))
         deliverable=self.company.get_deliverable(workspace_id,review.deliverable_id)
@@ -560,6 +566,14 @@ class CompanyOS:
             raise AuthorizationError("person is not an organization member")
         if workspace_id:
             self._require_person_access(organization_id, workspace_id, person_id, write=True)
+            if project_id and self.company.get_project(workspace_id, project_id) is None:
+                raise NotFoundError("project not found")
+            if source_id and not self.store.conn.execute(
+                "SELECT id FROM sources WHERE workspace_id=? AND id=?", (workspace_id, source_id)
+            ).fetchone():
+                raise NotFoundError("source not found")
+        elif project_id:
+            raise ValidationError("project_id requires workspace_id")
         if not statement.strip() or not rationale.strip():
             raise ValidationError("decision statement and rationale are required")
         now = utcnow()

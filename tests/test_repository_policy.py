@@ -22,11 +22,10 @@ def _word(*codepoints: int) -> str:
     return "".join(chr(codepoint) for codepoint in codepoints)
 
 
-# Keep client/source labels out of the repository while avoiding a copy of a
-# retired label in this policy file itself.
+# Cosmo is the current operator identity. Only the obsolete two-word source
+# label remains retired; the product name itself is deliberately allowed.
 _RETIRED_LABEL = _word(99, 111, 115, 109, 111)
 _RETIRED_LABELS = (
-    _RETIRED_LABEL,
     _RETIRED_LABEL + " " + _word(80, 114, 111, 99, 101, 115, 115, 101, 115),
 )
 

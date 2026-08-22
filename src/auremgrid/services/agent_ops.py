@@ -147,8 +147,14 @@ class AgentOperations:
         ).fetchone()
         if agent is None:
             raise NotFoundError("agent not found")
+        if workspace_id and (self.company.workspace_scope(workspace_id) is None or self.company.workspace_scope(workspace_id)["organization_id"] != organization_id):
+            raise NotFoundError("workspace not found in organization")
         if workspace_id and workspace_id not in json.loads(agent["allowed_workspace_ids"]):
             raise AuthorizationError("agent cannot access workspace")
+        if not title.strip() or not instructions.strip():
+            raise ValidationError("agent task title and instructions are required")
+        if priority < 0:
+            raise ValidationError("agent task priority cannot be negative")
 
         tags = self.validate_capability_tags(intent_tags or ("execute",))
         recommended = self.resolve_level(tags)
@@ -495,6 +501,9 @@ class AgentOperations:
         return dict(self.conn.execute("SELECT * FROM automations WHERE id=?", (automation_id,)).fetchone())
 
     def execute_approved_automation_run(self, organization_id: str, person_id: str, run_id: str) -> dict[str, Any]:
+        membership = self.company.org_membership(organization_id, person_id)
+        if membership is None or membership.role not in {"owner", "admin"}:
+            raise AuthorizationError("organization admin required")
         run = self.conn.execute(
             """SELECT ar.*,a.created_by_person_id,a.organization_id
             FROM automation_runs ar JOIN automations a ON a.id=ar.automation_id

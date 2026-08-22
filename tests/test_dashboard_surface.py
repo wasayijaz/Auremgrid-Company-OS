@@ -142,6 +142,59 @@ class DashboardSurfaceTests(unittest.TestCase):
         self.assertNotIn("mock", command_slice.lower())
         self.assertNotIn("demo", command_slice.lower())
 
+    def test_cosmo_queue_is_backend_sourced_and_navigates_to_canonical_surfaces(self) -> None:
+        for marker in (
+            "Cosmo command", "Cosmo queue", "state.cosmo", "data-cosmo-surface",
+            "Ask Cosmo", "writes_require_canonical_routes",
+        ):
+            self.assertIn(marker, self.html if marker != "writes_require_canonical_routes" else Path(__file__).parents[1].joinpath("src", "auremgrid", "services", "dashboard.py").read_text(encoding="utf-8"))
+        self.assertIn("button.onclick=()=>show(button.dataset.cosmoSurface)", self.html)
+
+    def test_every_dashboard_backend_reference_has_a_real_http_handler(self) -> None:
+        http = Path(__file__).parents[1].joinpath("src", "auremgrid", "api", "http.py").read_text(encoding="utf-8")
+        paths = (
+            "/auth/me", "/health/detailed", "/dashboard/data", "/dashboard/client",
+            "/dashboard/module", "/dashboard/settings", "/dashboard/review-center",
+            "/dashboard/brain", "/dashboard/workflows", "/people", "/work/detail",
+            "/work/capture", "/search", "/entity/candidates", "/tools/call", "/finance",
+            "/campaigns", "/content", "/creative",
+            "/brain/promote", "/brain/conflicts/resolve", "/workflows/stages/start",
+            "/workflows/evidence", "/workflows/approvals/request",
+            "/workflows/approvals/decide", "/workflows/handoffs/acknowledge",
+            "/workflows/stages/complete", "/insights/performance/generate",
+            "/forecasts/generate",
+        )
+        for path in paths:
+            self.assertIn(path, self.html, f"dashboard does not reference {path}")
+            self.assertIn(path, http, f"backend does not implement {path}")
+
+    def test_finance_page_is_backend_rendered_and_honest_when_disconnected(self) -> None:
+        for marker in ("id=\"finance-body\"", "renderFinanceSurface", "/finance?", "recognized_revenue", "outstanding_revenue"):
+            self.assertIn(marker, self.html)
+        self.assertNotIn('<div class="card"><span class="state off">Not connected</span>', self.html)
+
+    def test_marketing_surfaces_have_permission_aware_backend_create_flows(self) -> None:
+        for marker in ("marketingFlows", "canOperateWorkspace", "renderMarketingModule", "openMarketingCreate"):
+            self.assertIn(marker, self.html)
+        for route in ("route:'/campaigns'", "route:'/content'", "route:'/creative'"):
+            self.assertIn(route, self.html)
+        self.assertIn("['admin','operator']", self.html)
+
+    def test_every_visible_static_dashboard_control_is_wired(self) -> None:
+        handlers = {
+            "command-form": '$("command-form").onsubmit',
+            "capture": '$("capture").onclick',
+            "cancel-capture": '$("cancel-capture").onclick',
+            "capture-form": '$("capture-form").onsubmit',
+            "board-view": '$("board-view").onclick',
+            "list-view": '$("list-view").onclick',
+            "clear-work-filters": '$("clear-work-filters").onclick',
+            "close-work-detail": '$("close-work-detail").onclick',
+        }
+        for element_id, handler in handlers.items():
+            self.assertIn(f'id="{element_id}"', self.html)
+            self.assertIn(handler, self.html, f"visible control {element_id} has no handler")
+
 
 if __name__ == "__main__":
     unittest.main()

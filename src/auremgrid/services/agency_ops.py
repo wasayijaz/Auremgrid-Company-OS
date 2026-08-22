@@ -23,6 +23,8 @@ class AgencyOperations:
         currency: str = "USD", start_date: str | None = None, end_date: str | None = None) -> dict[str, Any]:
         self.authorize(organization_id,workspace_id,person_id,write=True)
         if project_id and self.company.get_project(workspace_id,project_id) is None: raise NotFoundError("project not found")
+        if not name.strip() or not objective.strip() or not platform.strip(): raise ValidationError("campaign name, objective, and platform are required")
+        if budget is not None and budget < 0: raise ValidationError("campaign budget cannot be negative")
         now=_now().isoformat(); item={"id":self.new_id("campaign"),"organization_id":organization_id,"workspace_id":workspace_id,
             "project_id":project_id,"name":name,"objective":objective,"platform":platform,"budget":budget,"currency":currency,
             "start_date":start_date,"end_date":end_date,"status":"draft","owner_person_id":person_id,"created_at":now,"updated_at":now}
@@ -32,7 +34,8 @@ class AgencyOperations:
         source: str, spend: float | None = None, revenue: float | None = None, leads: float | None = None,
         impressions: float | None = None, clicks: float | None = None) -> dict[str, Any]:
         self.authorize(organization_id,workspace_id,person_id,write=True)
-        if not self.conn.execute("SELECT id FROM campaigns WHERE workspace_id=? AND id=?",(workspace_id,campaign_id)).fetchone(): raise NotFoundError("campaign not found")
+        if not self.conn.execute("SELECT id FROM campaigns WHERE organization_id=? AND workspace_id=? AND id=?",(organization_id,workspace_id,campaign_id)).fetchone(): raise NotFoundError("campaign not found")
+        if any(value is not None and value < 0 for value in (spend, revenue, leads, impressions, clicks)): raise ValidationError("campaign metrics cannot be negative")
         def ratio(a: float | None,b: float | None,m: float=1.0) -> float | None: return round(a/b*m,4) if a is not None and b else None
         item={"id":self.new_id("metric"),"organization_id":organization_id,"workspace_id":workspace_id,"campaign_id":campaign_id,
             "captured_at":_now().isoformat(),"spend":spend,"revenue":revenue,"leads":leads,"impressions":impressions,"clicks":clicks,
@@ -41,7 +44,7 @@ class AgencyOperations:
 
     def campaign_performance(self, organization_id: str, workspace_id: str, person_id: str, campaign_id: str) -> dict[str, Any]:
         self.authorize(organization_id,workspace_id,person_id)
-        campaign=self.conn.execute("SELECT * FROM campaigns WHERE workspace_id=? AND id=?",(workspace_id,campaign_id)).fetchone()
+        campaign=self.conn.execute("SELECT * FROM campaigns WHERE organization_id=? AND workspace_id=? AND id=?",(organization_id,workspace_id,campaign_id)).fetchone()
         if campaign is None: raise NotFoundError("campaign not found")
         metric=self.conn.execute("SELECT * FROM campaign_metric_snapshots WHERE campaign_id=? ORDER BY captured_at DESC LIMIT 1",(campaign_id,)).fetchone()
         return {"campaign":dict(campaign),"metrics":dict(metric) if metric else {"status":"not_connected"}}
@@ -50,6 +53,9 @@ class AgencyOperations:
         format: str, project_id: str | None = None, campaign_id: str | None = None, platform: str | None = None,
         dimensions: str | None = None, style_tags: list[str] | None = None, source_url: str | None = None) -> dict[str, Any]:
         self.authorize(organization_id,workspace_id,person_id,write=True)
+        if project_id and self.company.get_project(workspace_id, project_id) is None: raise NotFoundError("project not found")
+        if campaign_id and not self.conn.execute("SELECT id FROM campaigns WHERE organization_id=? AND workspace_id=? AND id=?", (organization_id, workspace_id, campaign_id)).fetchone(): raise NotFoundError("campaign not found")
+        if not title.strip() or not format.strip(): raise ValidationError("creative title and format are required")
         item={"id":self.new_id("creative"),"organization_id":organization_id,"workspace_id":workspace_id,"project_id":project_id,
             "campaign_id":campaign_id,"title":title,"platform":platform,"format":format,"dimensions":dimensions,"creator_person_id":person_id,
             "reviewer_person_id":None,"approval_state":"draft","source_url":source_url,"final_url":None,"thumbnail_url":None,
@@ -58,7 +64,7 @@ class AgencyOperations:
 
     def search_creative(self, organization_id: str, workspace_id: str, person_id: str, query: str = "",
         approval_state: str | None = None, campaign_id: str | None = None) -> list[dict[str, Any]]:
-        self.authorize(organization_id,workspace_id,person_id); sql="SELECT * FROM creative_assets WHERE workspace_id=?"; values=[workspace_id]
+        self.authorize(organization_id,workspace_id,person_id); sql="SELECT * FROM creative_assets WHERE organization_id=? AND workspace_id=?"; values=[organization_id,workspace_id]
         if query: sql+=" AND (lower(title) LIKE ? OR lower(style_tags) LIKE ?)"; values.extend([f"%{query.lower()}%"]*2)
         if approval_state: sql+=" AND approval_state=?"; values.append(approval_state)
         if campaign_id: sql+=" AND campaign_id=?"; values.append(campaign_id)
@@ -69,7 +75,9 @@ class AgencyOperations:
         clicks: float | None = None, conversions: float | None = None, spend: float | None = None,
         revenue: float | None = None) -> dict[str,Any]:
         self.authorize(organization_id,workspace_id,person_id,write=True)
-        if not self.conn.execute("SELECT id FROM creative_assets WHERE workspace_id=? AND id=?",(workspace_id,asset_id)).fetchone():raise NotFoundError("creative asset not found")
+        if not self.conn.execute("SELECT id FROM creative_assets WHERE organization_id=? AND workspace_id=? AND id=?",(organization_id,workspace_id,asset_id)).fetchone():raise NotFoundError("creative asset not found")
+        if campaign_id and not self.conn.execute("SELECT id FROM campaigns WHERE organization_id=? AND workspace_id=? AND id=?", (organization_id, workspace_id, campaign_id)).fetchone(): raise NotFoundError("campaign not found")
+        if any(value is not None and value < 0 for value in (impressions, clicks, conversions, spend, revenue)): raise ValidationError("creative metrics cannot be negative")
         ratio=lambda a,b,m=1:round(a/b*m,4) if a is not None and b else None
         item={"id":self.new_id("creativeperf"),"asset_id":asset_id,"campaign_id":campaign_id,"captured_at":_now().isoformat(),
             "impressions":impressions,"clicks":clicks,"conversions":conversions,"spend":spend,"revenue":revenue,
@@ -79,7 +87,11 @@ class AgencyOperations:
     def create_content(self, organization_id: str, workspace_id: str, person_id: str, title: str,
         objective: str, audience: str, hook: str = "", copy: str = "", project_id: str | None = None,
         channel_id: str | None = None, references: list[str] | None = None, brain_context: str = "") -> dict[str, Any]:
-        self.authorize(organization_id,workspace_id,person_id,write=True); now=_now().isoformat()
+        self.authorize(organization_id,workspace_id,person_id,write=True)
+        if project_id and self.company.get_project(workspace_id, project_id) is None: raise NotFoundError("project not found")
+        if channel_id and not self.conn.execute("SELECT id FROM content_channels WHERE organization_id=? AND workspace_id=? AND id=?", (organization_id, workspace_id, channel_id)).fetchone(): raise NotFoundError("content channel not found")
+        if not title.strip() or not objective.strip() or not audience.strip(): raise ValidationError("content title, objective, and audience are required")
+        now=_now().isoformat()
         item={"id":self.new_id("content"),"organization_id":organization_id,"workspace_id":workspace_id,"project_id":project_id,
             "channel_id":channel_id,"title":title,"stage":"idea","objective":objective,"audience":audience,"hook":hook,"copy":copy,
             "creative_asset_id":None,"references_json":json.dumps(references or []),"brain_context":brain_context,"publish_at":None,
@@ -88,7 +100,7 @@ class AgencyOperations:
 
     def advance_content(self, organization_id: str, workspace_id: str, person_id: str, content_id: str, to_stage: str) -> dict[str, Any]:
         self.authorize(organization_id,workspace_id,person_id,write=True)
-        row=self.conn.execute("SELECT * FROM content_items WHERE workspace_id=? AND id=?",(workspace_id,content_id)).fetchone()
+        row=self.conn.execute("SELECT * FROM content_items WHERE organization_id=? AND workspace_id=? AND id=?",(organization_id,workspace_id,content_id)).fetchone()
         if row is None: raise NotFoundError("content item not found")
         current=CONTENT_STAGES.index(row["stage"])
         if to_stage not in CONTENT_STAGES or CONTENT_STAGES.index(to_stage)!=current+1: raise ValidationError("content must advance one stage at a time")
@@ -194,6 +206,14 @@ class AgencyOperations:
         workspace_id: str | None = None, approver_person_id: str | None = None) -> dict[str, Any]:
         if policy not in {"auto","human","admin_only"}: raise ValidationError("invalid approval policy")
         if policy != "auto" and not approver_person_id: raise ValidationError("human approval requires an approver")
+        requester = self.company.get_person(organization_id, requested_by_id) if requested_by_type == "person" else None
+        if requested_by_type == "person" and requester is None: raise NotFoundError("requesting person not found")
+        if approver_person_id is not None:
+            approver = self.company.org_membership(organization_id, approver_person_id)
+            if approver is None or approver.role not in {"owner", "admin"}: raise AuthorizationError("approver must be an organization admin")
+        if workspace_id:
+            scope = self.company.workspace_scope(workspace_id)
+            if scope is None or scope["organization_id"] != organization_id: raise NotFoundError("workspace not found")
         now=_now().isoformat(); status="approved" if policy=="auto" else "pending"
         item={"id":self.new_id("approval"),"organization_id":organization_id,"workspace_id":workspace_id,
             "requested_by_type":requested_by_type,"requested_by_id":requested_by_id,"requested_for":requested_for,
@@ -203,6 +223,8 @@ class AgencyOperations:
         self.conn.execute("INSERT INTO approval_requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",tuple(item.values())); self.conn.commit(); return item
 
     def decide_approval(self, organization_id: str, approver_person_id: str, approval_id: str, approved: bool, comments: str = "") -> dict[str, Any]:
+        approver = self.company.org_membership(organization_id, approver_person_id)
+        if approver is None or approver.role not in {"owner", "admin"}: raise AuthorizationError("organization admin required")
         row=self.conn.execute("SELECT * FROM approval_requests WHERE organization_id=? AND id=?",(organization_id,approval_id)).fetchone()
         if row is None: raise NotFoundError("approval not found")
         if row["status"]!="pending" or row["approver_person_id"]!=approver_person_id: raise AuthorizationError("approval cannot be decided by this person")

@@ -354,6 +354,22 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertNotIn("Auremgrid Demo", repr(result))
         self.assertNotIn("Demo Owner", repr(result))
 
+    def test_cosmo_queue_is_derived_from_canonical_attention_and_routes_to_real_surfaces(self) -> None:
+        work = self.os.work_ops.create(
+            self.org.id, self.ws.id, self.owner.id,
+            "Recover overdue launch", "Replan the overdue launch work", "Owner",
+            deadline="2020-01-01",
+        )
+
+        result = self.dashboard.command(self.org.id, self.owner.id)
+        self.assertEqual(result["cosmo"]["name"], "Cosmo")
+        self.assertEqual(result["cosmo"]["mode"], "evidence_grounded")
+        self.assertTrue(result["cosmo"]["writes_require_canonical_routes"])
+        queued = next(item for item in result["cosmo"]["queue"] if item["source_id"] == work.id)
+        self.assertEqual(queued["source_type"], "work_item")
+        self.assertEqual(queued["surface"], "Work")
+        self.assertEqual(queued["action_kind"], "open_surface")
+
     def test_settings_read_model_is_authenticated_and_backend_sourced(self) -> None:
         settings = self.dashboard.settings(self.owner_identity, self.org.id, self.ws.id)
         self.assertEqual(settings["identity"]["organization"]["id"], self.org.id)
