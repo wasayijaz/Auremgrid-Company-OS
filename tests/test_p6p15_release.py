@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from tests.dashboard_bundle import read_dashboard_bundle
+
 
 ROOT = Path(__file__).parents[1]
 
@@ -11,7 +13,7 @@ class P6P15ReleaseEvidenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.doc = ROOT.joinpath("docs", "release-verification.md").read_text(encoding="utf-8")
         self.http = ROOT.joinpath("src", "auremgrid", "api", "http.py").read_text(encoding="utf-8")
-        self.dashboard = ROOT.joinpath("src", "auremgrid", "api", "dashboard.html").read_text(encoding="utf-8")
+        self.dashboard = read_dashboard_bundle(ROOT)
         self.readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
         self.preview = ROOT.joinpath("docs", "assets", "dashboard-showcase.svg").read_text(encoding="utf-8")
 

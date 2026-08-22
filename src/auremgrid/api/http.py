@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -75,7 +76,7 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
         params = {key: values[0] for key, values in parse_qs(parsed.query).items()}
         try:
             identity = None
-            if parsed.path not in {"/", "/dashboard", "/health", "/metrics", "/health/detailed"}:
+            if parsed.path not in {"/", "/dashboard", "/health", "/metrics", "/health/detailed"} and not parsed.path.startswith("/dashboard-assets/"):
                 identity = self._authenticate_request(parsed.path, "GET", params)
             if parsed.path == "/health":
                 self._json(200, {"ok": True, "schema_version": self.os.store.schema_version})
@@ -100,6 +101,10 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200, identity.to_dict()); return
             if parsed.path in {"/", "/dashboard"}:
                 self._html(200, _dashboard_html())
+                return
+            if parsed.path.startswith("/dashboard-assets/"):
+                relative_path = parsed.path.removeprefix("/dashboard-assets/")
+                self._dashboard_asset(relative_path)
                 return
             if parsed.path == "/search":
                 bundle = self.os.search(
@@ -286,6 +291,9 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200, self.os.intelligence.workspace(
                     organization_id, workspace_id, person_id, actor_id,
                     _optional_dt(params.get("as_of")), params.get("query"),
+                    what_if=_what_if_params(params),
+                    context_type=_optional_str(params.get("context_type")),
+                    context_id=_optional_str(params.get("context_id")),
                 )); return
             if parsed.path in {"/dashboard/intelligence/portfolio", "/dashboard/intelligence/executive"}:
                 assert identity is not None
@@ -929,6 +937,24 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _dashboard_asset(self, relative_path: str) -> None:
+        root = Path(__file__).with_name("dashboard").resolve()
+        candidate = (root / relative_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise NotFoundError("dashboard asset not found") from exc
+        if not candidate.is_file():
+            raise NotFoundError("dashboard asset not found")
+        content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+        payload = candidate.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", f"{content_type}; charset=utf-8" if content_type.startswith(("text/", "application/javascript")) else content_type)
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def _handle_error(self, exc: Exception) -> None:
         if isinstance(exc, AuthenticationError):
             self._json(401, {"error": "authentication_error", "message": "authentication failed"})
@@ -1002,6 +1028,26 @@ def _optional_dt(value: Any) -> Any:
         raise ValidationError("as_of must include a timezone")
     return result
 
+def _what_if_params(params: dict[str, str]) -> dict[str, float] | None:
+    allowed = {
+        "capacity_hours_delta",
+        "work_hours_delta",
+        "scope_usage_delta",
+        "finance_amount_delta",
+        "client_health_delta",
+        "deadline_days_delta",
+    }
+    result: dict[str, float] = {}
+    for key in allowed:
+        raw = params.get(f"what_if_{key}")
+        if raw is None:
+            continue
+        try:
+            result[key] = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(f"what_if_{key} must be numeric") from exc
+    return result or None
+
 def _required_dt(value: Any, key: str) -> Any:
     if not value: raise ValidationError(f"{key} is required")
     result=_optional_dt(value)
@@ -1020,5 +1066,5 @@ def serve(os: CompanyOS, host: str = "127.0.0.1", port: int = 8787) -> HTTPServe
 
 
 def _dashboard_html() -> str:
-    path = Path(__file__).with_name("dashboard.html")
+    path = Path(__file__).with_name("dashboard") / "index.html"
     return path.read_text(encoding="utf-8")

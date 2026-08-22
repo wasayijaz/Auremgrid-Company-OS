@@ -6,6 +6,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection
 from pathlib import Path
+
+from tests.dashboard_bundle import read_dashboard_bundle
 from urllib.parse import urlencode
 
 from auremgrid.api.http import serve
@@ -194,9 +196,7 @@ class BrainTruthSurfaceTests(unittest.TestCase):
             server.server_close()
 
     def test_final_brain_renderer_shows_fact_state_and_provider_health(self) -> None:
-        html = Path(__file__).parents[1].joinpath(
-            "src", "auremgrid", "api", "dashboard.html"
-        ).read_text(encoding="utf-8")
+        html = read_dashboard_bundle(Path(__file__).parents[1])
         tail = html[html.rfind("loadBrainSurface=async function"):]
         for marker in (
             "data-brain-health", "semantic.fallback_used", "semantic.provider",

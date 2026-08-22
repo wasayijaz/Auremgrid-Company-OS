@@ -1,0 +1,15 @@
+/* Zero-build dashboard additions. Loaded directly by the Python static server. */
+.agency-map{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:9px;margin-top:10px}
+.agency-node{border:1px solid var(--line);border-radius:9px;background:var(--surface-2);padding:11px;min-height:88px}
+.agency-node strong{display:block;font-size:12px}.agency-node small{display:block;color:var(--muted);font-size:10px;margin-top:5px;line-height:1.45}
+.agency-node .state{display:inline-block;margin-top:8px}
+.trend-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(95px,1fr));gap:7px;margin-top:10px}
+.trend-cell{padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
+.trend-cell b{display:block;font-size:15px}.trend-cell span{display:block;color:var(--muted);font-size:10px;margin-top:4px}
+.overview-action-table{width:100%;border-collapse:collapse;margin-top:10px;font-size:11px}.overview-action-table th,.overview-action-table td{padding:8px 7px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}.overview-action-table th{color:var(--muted);font-size:10px;font-weight:650}
+.client-portfolio-table th,.client-portfolio-table td{white-space:nowrap}.client-portfolio-table td:nth-child(1){white-space:normal}
+.client-insight-grid,.work-enrichment-grid,.scenario-grid,.agent-telemetry{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:10px}
+.insight-tile,.work-enrichment,.scenario-card,.agent-telemetry>div{border:1px solid var(--line);border-radius:8px;background:var(--surface-2);padding:10px}.insight-tile b,.work-enrichment b,.scenario-card b,.agent-telemetry b{display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}.insight-tile span,.work-enrichment span,.scenario-card span,.agent-telemetry span{display:block;margin-top:5px;font-size:12px;line-height:1.4}
+.annotation-ia{margin-top:12px}.annotation-lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}.annotation-lane{border:1px dashed var(--line-strong);border-radius:8px;padding:10px;min-height:70px}.annotation-lane h3{font-size:11px;margin:0 0 5px}.annotation-lane p{font-size:10.5px;color:var(--muted);margin:0;line-height:1.45}
+.scenario-card{background:var(--surface)}.scenario-card header{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.scenario-card h3{font-size:12px;margin:0}.scenario-card ul{padding-left:17px;margin:8px 0 0;color:var(--text-2);font-size:10.5px;line-height:1.5}.scenario-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.scenario-actions button{font-size:10px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+@media(max-width:620px){.overview-action-table{display:block;overflow:auto}.agency-map,.trend-strip{grid-template-columns:1fr 1fr}}

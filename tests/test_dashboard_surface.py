@@ -6,7 +6,11 @@ from pathlib import Path
 
 class DashboardSurfaceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.html = Path(__file__).parents[1].joinpath("src", "auremgrid", "api", "dashboard.html").read_text(encoding="utf-8")
+        self.root = Path(__file__).parents[1].joinpath("src", "auremgrid", "api")
+        dashboard = self.root.joinpath("dashboard")
+        assets = [dashboard.joinpath("index.html"), *sorted(dashboard.joinpath("css").glob("*.css")),
+                  *sorted(dashboard.joinpath("js").glob("*.js")), dashboard.joinpath("dashboard.css"), dashboard.joinpath("dashboard.js")]
+        self.html = "\n".join(path.read_text(encoding="utf-8") for path in assets)
 
     def test_existing_shell_smoke_markers_are_preserved(self) -> None:
         for marker in ("id=\"page-command\"", "id=\"page-brain\"", "id=\"page-work\"", "id=\"command-form\"", "id=\"work-board\"", "id=\"capture-modal\""):
@@ -263,6 +267,26 @@ class DashboardSurfaceTests(unittest.TestCase):
             "data-cosmo-surface",
         ):
             self.assertIn(marker, self.html)
+
+    def test_dashboard_live_shell_is_modular_static_assets(self) -> None:
+        shell = self.root.joinpath("dashboard", "index.html").read_text(encoding="utf-8")
+        self.assertIn('/dashboard-assets/css/03-dashboard-v2.css', shell)
+        self.assertIn('/dashboard-assets/js/04-agency-dashboard-contract.js', shell)
+        self.assertEqual(0, shell.count("<style"))
+        self.assertEqual(0, shell.count("<script>"))
+        css = self.root.joinpath("dashboard", "css", "03-dashboard-v2.css").read_text(encoding="utf-8")
+        js = self.root.joinpath("dashboard", "js", "04-agency-dashboard-contract.js").read_text(encoding="utf-8")
+        for marker in ("agency-map", "trend-strip"):
+            self.assertIn(marker, css)
+        for marker in (
+            "renderAgencyMap407",
+            "renderTrendStrip407",
+            "scopeLabel407",
+            "revenueLabel407",
+            "Sol / Terra / Luna deliberation",
+            "Decision → workflow → outcome → learning",
+        ):
+            self.assertIn(marker, js)
 
 
 if __name__ == "__main__":

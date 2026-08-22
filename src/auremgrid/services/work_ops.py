@@ -94,6 +94,33 @@ class WorkOperations:
         result["watchers"]=[r[0] for r in self.conn.execute("SELECT person_id FROM work_watchers WHERE work_item_id=?",(work_item_id,)).fetchall()]
         result["dependencies"]=[dict(r) for r in self.conn.execute("SELECT * FROM work_dependencies WHERE work_item_id=?",(work_item_id,)).fetchall()]
         result["subtasks"]=[w.to_dict() for w in self.store.list_work_items(workspace_id) if w.parent_id==work_item_id]
+        result["deliverables"]=[dict(r) for r in self.conn.execute(
+            "SELECT * FROM deliverables WHERE organization_id=? AND workspace_id=? AND work_item_id=? ORDER BY created_at,id",
+            (organization_id,workspace_id,work_item_id),
+        ).fetchall()]
+        deliverable_ids=[row["id"] for row in result["deliverables"]]
+        if deliverable_ids:
+            marks=",".join("?" for _ in deliverable_ids)
+            result["reviews"]=[dict(r) for r in self.conn.execute(
+                f"SELECT * FROM reviews WHERE organization_id=? AND workspace_id=? AND deliverable_id IN ({marks}) ORDER BY opened_at,id",
+                (organization_id,workspace_id,*deliverable_ids),
+            ).fetchall()]
+        else:
+            result["reviews"]=[]
+        review_ids=[row["id"] for row in result["reviews"]]
+        if review_ids:
+            marks=",".join("?" for _ in review_ids)
+            result["review_comments"]=[dict(r) for r in self.conn.execute(
+                f"SELECT * FROM review_comments WHERE review_id IN ({marks}) ORDER BY created_at,id", review_ids
+            ).fetchall()]
+        else:
+            result["review_comments"]=[]
+        result["annotation_capabilities"]={
+            "text_comments":{"status":"ready","route":"/reviews/comment"},
+            "video_timestamps":{"status":"ready","route":"/reviews/comment","field":"timestamp_seconds"},
+            "image_points":{"status":"not_available"},
+            "document_pages":{"status":"not_available"},
+        }
         return result
 
     def snapshot(self,item:WorkItem,actor_type:str,actor_id:str)->None:

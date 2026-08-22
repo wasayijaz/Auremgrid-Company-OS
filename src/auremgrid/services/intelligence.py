@@ -12,7 +12,7 @@ import math
 import re
 from typing import Any
 
-from auremgrid.domain.errors import AuthorizationError
+from auremgrid.domain.errors import AuthorizationError, ValidationError
 
 
 def _now() -> datetime:
@@ -57,7 +57,10 @@ class IntelligenceService:
 
     def workspace(self, organization_id: str, workspace_id: str, person_id: str,
                   actor_id: str | None = None, as_of: datetime | None = None,
-                  query: str | None = None) -> dict[str, Any]:
+                  query: str | None = None,
+                  what_if: dict[str, Any] | None = None,
+                  context_type: str | None = None,
+                  context_id: str | None = None) -> dict[str, Any]:
         """Return a stable intelligence contract for one authorized workspace.
 
         ``as_of`` is a read watermark.  Current canonical operational rows are
@@ -86,7 +89,7 @@ class IntelligenceService:
             (organization_id, workspace_id, cutoff),
         )
         work = self._rows(
-            "SELECT id,title,request,status,needed_by,deadline,blocking_reason,priority,updated_at "
+            "SELECT id,title,request,status,needed_by,deadline,blocking_reason,priority,project_id,campaign_id,owner_person_id,assignee_person_id,reviewer_person_id,estimate_hours,actual_effort_hours,updated_at "
             "FROM work_items WHERE workspace_id=? AND status!='shipped' AND updated_at<=? ORDER BY updated_at DESC,id",
             (workspace_id, cutoff),
         )
@@ -112,6 +115,11 @@ class IntelligenceService:
         # workspace join where the legacy table has no organization column).
         domains = self._domain_snapshot(
             organization_id, workspace_id, cutoff, moment, work, risks, decisions, signals,
+        )
+        scenario_inputs = self._scenario_inputs(domains, what_if)
+        scope_contract = self._context_contract(organization_id, workspace_id, person_id, cutoff, domains)
+        scope_contract["current"] = self._selected_context(
+            organization_id, workspace_id, person_id, context_type, context_id,
         )
         domain_evidence = self._domain_evidence(domains)
         relationships = self._cross_domain_relationships(domains, domain_evidence)
@@ -148,7 +156,7 @@ class IntelligenceService:
         for finding in findings:
             self._enrich_finding(
                 finding, domains, relationships, analogues, decision_links,
-                domain_evidence, moment,
+                domain_evidence, moment, scenario_inputs,
             )
         if as_of is not None or not can_write:
             # Historical intelligence is a read-only explanation; never offer
@@ -176,8 +184,13 @@ class IntelligenceService:
         else:
             status = "ready"
             degraded_reason = None
+        pipeline = [
+            "evidence", "situation", "changes", "hypotheses", "historical_analogues",
+            "scenarios", "impact", "recommendation", "deliberation", "decision",
+            "workflow", "outcome", "learning",
+        ]
         context = {
-            "pipeline": ["evidence", "situation", "changes", "hypotheses", "scenarios", "impact", "recommendation"],
+            "pipeline": pipeline,
             "evidence_count": len(evidence),
             "canonical_record_count": canonical_count,
             "open_risk_count": len(risks),
@@ -186,13 +199,26 @@ class IntelligenceService:
             "historical": as_of is not None,
             "query": query,
             "domains": sorted(domains),
+            "scope_contract": scope_contract,
+            "scenario_inputs": scenario_inputs,
             "cross_domain_relationship_count": len(relationships),
             "historical_analogue_count": len(analogues),
             "decision_link_count": len(decision_links),
         }
+        recommended_plan = self._cross_wing_plan(
+            organization_id, workspace_id, person_id, domains, relationships, findings, scenario_inputs, moment,
+        )
+        recommendation_evaluation = self._recommendation_evaluation(findings, decision_links, analogues)
+        deliberation = self._deliberation(findings, relationships, analogues, decision_links, recommended_plan)
+        for finding in findings:
+            finding["deliberation"] = self._deliberation(
+                [finding], relationships, finding.get("historical_analogues", analogues),
+                finding.get("decision_action_outcome_learning", decision_links), recommended_plan,
+            )
         return {
             "scope": scope,
             "context": context,
+            "scope_contract": scope_contract,
             "status": status,
             "degraded_reason": degraded_reason,
             "uncertainty": {
@@ -208,6 +234,9 @@ class IntelligenceService:
             "cross_domain_relationships": relationships,
             "historical_analogues": analogues,
             "decision_action_outcome_learning": decision_links,
+            "recommended_plan": recommended_plan,
+            "recommendation_evaluation": recommendation_evaluation,
+            "deliberation": deliberation,
             "findings": findings,
             "generated_at": _now().isoformat(),
         }
@@ -447,6 +476,191 @@ class IntelligenceService:
             "signals": {"items": signals, "open_count": sum(1 for row in signals if row.get("status") not in {"resolved", "closed"})},
         }
 
+    def _context_contract(
+        self,
+        organization_id: str,
+        workspace_id: str,
+        person_id: str,
+        cutoff: str,
+        domains: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Expose exactly which operating context this read is allowed to use."""
+        workspace = self.os.store.get_workspace(workspace_id)
+        projects = self._optional_rows(
+            """SELECT id,name,owner_person_id,status FROM projects
+               WHERE organization_id=? AND workspace_id=?
+               ORDER BY name,id LIMIT 50""",
+            (organization_id, workspace_id),
+        )
+        work_items = domains["work"]["items"]
+        project_ids = sorted({str(item.get("project_id")) for item in work_items if item.get("project_id")})
+        campaign_ids = sorted({str(row.get("id")) for row in domains["campaign_metrics"]["items"] if row.get("id")})
+        campaign_ids.extend(str(item.get("campaign_id")) for item in work_items if item.get("campaign_id") and str(item.get("campaign_id")) not in campaign_ids)
+        person_ids = sorted({
+            str(value)
+            for item in work_items
+            for value in (item.get("owner_person_id"), item.get("assignee_person_id"), item.get("reviewer_person_id"))
+            if value
+        })
+        people: list[dict[str, Any]] = []
+        if person_ids:
+            marks = ",".join("?" for _ in person_ids)
+            people = self._optional_rows(
+                f"""SELECT id,name,title,department,status FROM people
+                    WHERE organization_id=? AND id IN ({marks})
+                    ORDER BY name,id""",
+                (organization_id, *person_ids),
+            )
+        client_roster = self._optional_rows(
+            """SELECT rr.role_key,rr.wing,rr.person_id,r.version,r.effective_at
+                 FROM client_account_rosters r
+                 JOIN client_account_roster_roles rr ON rr.roster_id=r.id
+                WHERE r.organization_id=? AND r.workspace_id=? AND r.effective_at<=?
+                ORDER BY r.effective_at DESC,r.version DESC,rr.role_key,rr.wing LIMIT 24""",
+            (organization_id, workspace_id, cutoff),
+        )
+        return {
+            "organization_id": organization_id,
+            "workspace": {
+                "id": workspace_id,
+                "name": workspace.name if workspace else None,
+                "kind": self._workspace_kind(organization_id, workspace_id),
+            },
+            "reader": {"person_id": person_id},
+            "client": {
+                "workspace_id": workspace_id if self._workspace_kind(organization_id, workspace_id) == "client" else None,
+                "roster": client_roster,
+                "health_snapshot_id": (domains.get("client_health") or {}).get("id") if domains.get("client_health") else None,
+            },
+            "projects": [{"id": row.get("id"), "name": row.get("name"), "owner_person_id": row.get("owner_person_id"), "status": row.get("status")} for row in projects if not project_ids or str(row.get("id")) in project_ids],
+            "campaigns": [
+                {"id": row.get("id"), "name": row.get("name"), "platform": row.get("platform"), "status": row.get("status"), "metric_id": row.get("metric_id")}
+                for row in domains["campaign_metrics"]["items"]
+                if str(row.get("id")) in campaign_ids
+            ],
+            "people": people,
+            "visibility": {
+                "source": "membership_and_actor_acl",
+                "bounded_to_workspace": True,
+                "cross_workspace_rows": False,
+                "external_provider_values": "explicit_null_unless_connected",
+            },
+        }
+
+    def _selected_context(
+        self,
+        organization_id: str,
+        workspace_id: str,
+        person_id: str,
+        context_type: str | None,
+        context_id: str | None,
+    ) -> dict[str, Any]:
+        kind = str(context_type or "workspace").strip().lower()
+        identifier = str(context_id or workspace_id).strip()
+        if kind not in {"workspace", "client", "project", "campaign", "person", "work"}:
+            raise ValidationError("context_type must be workspace, client, project, campaign, person, or work")
+        if kind in {"workspace", "client"}:
+            if identifier != workspace_id:
+                raise AuthorizationError("selected context is not visible")
+            row = self._optional_row(
+                """SELECT w.id,w.name,wo.kind FROM workspaces w JOIN workspace_organization wo ON wo.workspace_id=w.id
+                   JOIN workspace_memberships wm ON wm.workspace_id=w.id
+                   WHERE wo.organization_id=? AND w.id=? AND wm.person_id=?""",
+                (organization_id, identifier, person_id),
+            )
+            if row is None or (kind == "client" and row.get("kind") != "client"):
+                raise AuthorizationError("selected context is not visible")
+            return {"type": kind, "id": row["id"], "label": row["name"], "workspace_id": row["id"]}
+        definitions = {
+            "project": ("projects", "id", "name", "organization_id=? AND workspace_id=? AND id=?"),
+            "campaign": ("campaigns", "id", "name", "organization_id=? AND workspace_id=? AND id=?"),
+            "work": ("work_items", "id", "title", "workspace_id=? AND id=?"),
+        }
+        if kind == "person":
+            row = self._optional_row(
+                """SELECT p.id,p.name FROM people p JOIN workspace_memberships wm ON wm.person_id=p.id
+                   WHERE p.organization_id=? AND wm.workspace_id=? AND p.id=?""",
+                (organization_id, workspace_id, identifier),
+            )
+        else:
+            table, id_column, label_column, clause = definitions[kind]
+            args: tuple[Any, ...] = (
+                (organization_id, workspace_id, identifier)
+                if kind in {"project", "campaign"} else (workspace_id, identifier)
+            )
+            row = self._optional_row(
+                f"SELECT {id_column} AS id,{label_column} AS name FROM {table} WHERE {clause}", args,
+            )
+        if row is None:
+            raise AuthorizationError("selected context is not visible")
+        return {"type": kind, "id": row["id"], "label": row["name"], "workspace_id": workspace_id}
+
+    def _workspace_kind(self, organization_id: str, workspace_id: str) -> str | None:
+        row = self._optional_row(
+            "SELECT kind FROM workspace_organization WHERE organization_id=? AND workspace_id=?",
+            (organization_id, workspace_id),
+        )
+        return str(row["kind"]) if row and row.get("kind") is not None else None
+
+    @staticmethod
+    def _scenario_inputs(domains: dict[str, Any], what_if: dict[str, Any] | None) -> dict[str, Any]:
+        raw = what_if if isinstance(what_if, dict) else {}
+        def number(key: str, default: float) -> float:
+            try:
+                return round(float(raw.get(key, default)), 3)
+            except (TypeError, ValueError):
+                return round(default, 3)
+        base_remaining = sum(float(row.get("remaining_hours") or 0.0) for row in domains["capacity"]["snapshots"])
+        base_demand = float(domains["capacity"].get("demand_hours") or domains["work"].get("estimated_hours") or 0.0)
+        included_scope = sum(float(row.get("included_hours") or row.get("included_quantity") or 0.0) for row in domains["scope"]["usage"])
+        used_scope = sum(float(row.get("used_hours") or row.get("delivered_quantity") or 0.0) for row in domains["scope"]["usage"])
+        health = domains.get("client_health") or {}
+        finance = domains.get("finance") or {}
+        retained = {
+            "capacity_hours_delta": number("capacity_hours_delta", 0.0),
+            "work_hours_delta": number("work_hours_delta", 0.0),
+            "scope_usage_delta": number("scope_usage_delta", 0.0),
+            "finance_amount_delta": number("finance_amount_delta", 0.0),
+            "client_health_delta": number("client_health_delta", 0.0),
+            "deadline_days_delta": number("deadline_days_delta", 0.0),
+        }
+        projected_scope_used = used_scope + retained["scope_usage_delta"]
+        projected_scope_ratio = None
+        if included_scope > 0:
+            projected_scope_ratio = round(projected_scope_used / included_scope, 3)
+        projected_health = None
+        if health.get("overall") is not None:
+            projected_health = round(max(0.0, min(1.0, float(health["overall"]) + retained["client_health_delta"])), 3)
+        projected_finance = None
+        if finance.get("status") == "connected" and finance.get("recognized_revenue") is not None:
+            projected_finance = round(float(finance.get("recognized_revenue") or 0.0) + retained["finance_amount_delta"], 3)
+        return {
+            "retained_inputs": retained,
+            "baseline": {
+                "capacity_remaining_hours": round(base_remaining, 3),
+                "work_demand_hours": round(base_demand, 3),
+                "scope_used": round(used_scope, 3),
+                "scope_included": round(included_scope, 3),
+                "client_health": health.get("overall"),
+                "recognized_revenue": finance.get("recognized_revenue"),
+                "finance_status": finance.get("status"),
+            },
+            "projection": {
+                "capacity_remaining_hours": round(base_remaining + retained["capacity_hours_delta"] - retained["work_hours_delta"], 3),
+                "work_demand_hours": round(base_demand + retained["work_hours_delta"], 3),
+                "scope_used": round(projected_scope_used, 3),
+                "scope_ratio": projected_scope_ratio,
+                "client_health": projected_health,
+                "recognized_revenue": projected_finance,
+                "deadline_days_delta": retained["deadline_days_delta"],
+            },
+            "constraints": [
+                "Inputs are read-time scenario parameters and are not written to the ledger.",
+                "Finance projection remains null unless finance is connected.",
+                "Unprovided inputs default to zero change.",
+            ],
+        }
+
     def _domain_evidence(self, domains: dict[str, Any]) -> list[dict[str, Any]]:
         evidence: list[dict[str, Any]] = []
         for risk in domains["risks"]["items"]:
@@ -574,6 +788,12 @@ class IntelligenceService:
                     "summary": f"Prior {row.get('type')} pattern with {overlap} overlapping signal term(s).",
                     "resolution": row.get("resolution"),
                     "resolved": bool(row.get("resolved_at") or row.get("status") == "resolved"),
+                    "outcome_stats": {
+                        "matched_events": 1,
+                        "resolved_count": 1 if row.get("resolved_at") or row.get("status") == "resolved" else 0,
+                        "resolution_rate": 1.0 if row.get("resolved_at") or row.get("status") == "resolved" else 0.0,
+                        "median_days_to_resolution": self._days_between(row.get("detected_at"), row.get("resolved_at")),
+                    },
                     "evidence": [self._ref("risks", row["id"])],
                     "confidence": _confidence(min(0.9, 0.48 + overlap * 0.12)),
                 })
@@ -593,10 +813,24 @@ class IntelligenceService:
                     "summary": f"Prior delivery event shares {overlap} signal term(s).",
                     "resolution": row.get("detail"),
                     "resolved": False,
+                    "outcome_stats": {
+                        "matched_events": 1,
+                        "resolved_count": 1 if row.get("action") in {"complete", "ship", "approve"} else 0,
+                        "resolution_rate": 1.0 if row.get("action") in {"complete", "ship", "approve"} else 0.0,
+                        "median_days_to_resolution": None,
+                    },
                     "evidence": [self._ref("work_events", row["id"])],
                     "confidence": _confidence(min(0.82, 0.42 + overlap * 0.1)),
                 })
         return analogues[:8]
+
+    @staticmethod
+    def _days_between(start: Any, end: Any) -> float | None:
+        start_at = _parse_time(start)
+        end_at = _parse_time(end)
+        if start_at is None or end_at is None:
+            return None
+        return round(max(0.0, (end_at - start_at).total_seconds() / 86400), 3)
 
     def _decision_action_outcome_learning(
         self,
@@ -649,16 +883,148 @@ class IntelligenceService:
             elif learning_refs:
                 learning = "A feedback or performance learning record exists, but no linked terminal outcome is visible yet."
                 confidence = 0.52
+            workflow_chain = self._workflow_chain(workspace_id, str(decision.get("effective_from") or "0001-01-01T00:00:00+00:00"), cutoff, statement_terms)
             links.append({
                 "decision": self._ref("decisions", decision["id"]),
+                "workflow": workflow_chain,
                 "actions": [self._ref("work_events", row["id"]) for row in matched],
                 "outcomes": [self._ref("work_events", row["id"]) if row.get("work_item_id") else self._ref("signals", row["id"]) for row in outcomes],
                 "learnings": learning_refs,
                 "learning": learning,
+                "evaluation": {
+                    "status": "validated" if outcomes else "pending_outcome",
+                    "outcome_count": len(outcomes),
+                    "learning_count": len(learning_refs),
+                    "matched_action_count": len(matched),
+                    "calibration_delta": round((0.08 if outcomes else -0.05) + (0.04 if learning_refs else 0), 3),
+                },
                 "confidence": _confidence(confidence),
                 "evidence": [self._ref("decisions", decision["id"]), *[self._ref("work_events", row["id"]) for row in matched[:4]], *learning_refs[:4]],
             })
         return links
+
+    def _deliberation(
+        self,
+        findings: list[dict[str, Any]],
+        relationships: list[dict[str, Any]],
+        analogues: list[dict[str, Any]],
+        decision_links: list[dict[str, Any]],
+        recommended_plan: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Expose Sol/Terra/Luna as deterministic review roles, not hidden autonomy."""
+        evidence_count = sum(len(finding.get("evidence", [])) for finding in findings)
+        scenario_count = sum(len(finding.get("scenarios", [])) for finding in findings)
+        action_count = sum(len(finding.get("action_descriptors", [])) for finding in findings)
+        validated_count = sum(
+            1 for link in decision_links
+            if (link.get("evaluation") or {}).get("status") == "validated"
+        )
+        pending_count = sum(
+            1 for link in decision_links
+            if (link.get("evaluation") or {}).get("status") == "pending_outcome"
+        )
+        plan_steps = len((recommended_plan or {}).get("steps", [])) if isinstance(recommended_plan, dict) else 0
+        consensus_score = min(0.95, 0.42 + evidence_count * 0.03 + len(relationships) * 0.04 + validated_count * 0.08)
+        if pending_count and not validated_count:
+            consensus_score = max(0.2, consensus_score - 0.08)
+        reviews = [
+            {
+                "agent": "Sol",
+                "role": "strategic_reviewer",
+                "level": "L3_REASON",
+                "stance": "support" if evidence_count and analogues else "challenge",
+                "summary": (
+                    "Evidence and historical analogues support a bounded recommendation."
+                    if evidence_count and analogues else
+                    "Recommendation should stay provisional until stronger evidence or analogues are visible."
+                ),
+                "checks": {
+                    "evidence_count": evidence_count,
+                    "historical_analogue_count": len(analogues),
+                    "relationship_count": len(relationships),
+                },
+            },
+            {
+                "agent": "Terra",
+                "role": "builder",
+                "level": "L2_BUILD",
+                "stance": "support" if plan_steps or action_count else "hold",
+                "summary": (
+                    "The recommendation can be translated into scoped workflow or work actions."
+                    if plan_steps or action_count else
+                    "No executable workflow is offered until a permitted action descriptor exists."
+                ),
+                "checks": {
+                    "plan_steps": plan_steps,
+                    "action_descriptor_count": action_count,
+                    "approval_required": bool(action_count),
+                },
+            },
+            {
+                "agent": "Luna",
+                "role": "operator",
+                "level": "L1_OPERATE",
+                "stance": "support" if scenario_count else "hold",
+                "summary": (
+                    "Operational scenario assumptions and mitigations are visible for follow-through."
+                    if scenario_count else
+                    "Operational follow-through needs a scenario with assumptions, constraints, and mitigation."
+                ),
+                "checks": {
+                    "scenario_count": scenario_count,
+                    "validated_outcome_count": validated_count,
+                    "pending_outcome_count": pending_count,
+                },
+            },
+        ]
+        challenges = [
+            review["summary"] for review in reviews
+            if review["stance"] in {"challenge", "hold"}
+        ]
+        return {
+            "mode": "deterministic_evidence_review",
+            "agents": reviews,
+            "consensus": {
+                "status": "ready" if consensus_score >= 0.55 and not challenges else "needs_more_evidence",
+                "confidence": _confidence(consensus_score),
+                "challenge_count": len(challenges),
+                "challenges": challenges,
+            },
+            "execution_boundary": {
+                "can_execute_without_approval": False,
+                "reason": "Intelligence proposes canonical actions; execution still goes through approval/workflow routes.",
+            },
+        }
+
+    def _workflow_chain(self, workspace_id: str, start: str, cutoff: str, terms: set[str]) -> list[dict[str, Any]]:
+        rows = self._optional_rows(
+            """SELECT r.id AS run_id,r.definition_key,r.definition_name,r.status AS run_status,
+                      s.id AS stage_id,s.stage_key,s.name AS stage_name,s.status AS stage_status,
+                      s.assignee_wing,s.assignee_role,s.assignee_person_id,s.due_at,
+                      h.id AS history_id,h.action,h.to_status,h.reason,h.created_at
+                 FROM workflow_runs r
+                 LEFT JOIN workflow_stage_runs s ON s.run_id=r.id
+                 LEFT JOIN workflow_transition_history h ON h.run_id=r.id AND (h.stage_run_id=s.id OR h.stage_run_id IS NULL)
+                WHERE r.workspace_id=? AND r.created_at>=? AND r.created_at<=?
+                ORDER BY r.created_at,s.sequence,h.created_at LIMIT 80""",
+            (workspace_id, start, cutoff),
+        )
+        result: list[dict[str, Any]] = []
+        seen: set[tuple[str, str | None, str | None]] = set()
+        for row in rows:
+            text = f"{row.get('definition_key')} {row.get('definition_name')} {row.get('stage_name')} {row.get('action')} {row.get('reason')}"
+            if terms and not (terms & _tokens(text)):
+                continue
+            key = (str(row.get("run_id")), _iso(row.get("stage_id")), _iso(row.get("history_id")))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({
+                "run": {"type": "workflow_run", "id": str(row.get("run_id")), "status": row.get("run_status"), "definition_key": row.get("definition_key")},
+                "stage": {"type": "workflow_stage", "id": row.get("stage_id"), "key": row.get("stage_key"), "status": row.get("stage_status"), "owner_wing": row.get("assignee_wing"), "owner_role": row.get("assignee_role"), "person_id": row.get("assignee_person_id"), "due_at": row.get("due_at")},
+                "event": {"type": "workflow_transition", "id": row.get("history_id"), "action": row.get("action"), "to_status": row.get("to_status"), "created_at": row.get("created_at")},
+            })
+        return result[:12]
 
     @staticmethod
     def _calibration(supporting: list[dict[str, Any]], opposing: list[dict[str, Any]], *, status: str) -> dict[str, Any]:
@@ -697,36 +1063,72 @@ class IntelligenceService:
             "situation": {"state": "cross_domain_signal", "domains": sorted(domains)},
             "changes": [],
             "hypotheses": [{"text": link["explanation"], "confidence": link["confidence"]} for link in relationships],
-            "scenarios": self._scenarios(domains, relationships, evidence),
+            "scenarios": self._scenarios(domains, relationships, evidence, self._scenario_inputs(domains, None)),
             "impact": {"level": "medium", "summary": "Potential delivery, client, scope, capacity, and financial impact; magnitude is not estimated where source metrics are absent."},
             "recommendation": {"summary": recommendation, "rationale": "The engine exposes relationships and uncertainty rather than fabricating a single causal conclusion."},
             "actions": self._action(organization_id, person_id, actor_id, workspace_id, "Review cross-domain signal", recommendation, "Review cross-domain signal", recommendation),
             "action_descriptors": self._action(organization_id, person_id, actor_id, workspace_id, "Review cross-domain signal", recommendation, "Review cross-domain signal", recommendation),
         }
 
-    def _scenarios(self, domains: dict[str, Any], relationships: list[dict[str, Any]], evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _scenarios(self, domains: dict[str, Any], relationships: list[dict[str, Any]], evidence: list[dict[str, Any]], scenario_inputs: dict[str, Any]) -> list[dict[str, Any]]:
         overloaded = any(float(row.get("remaining_hours") or 0) < 0 for row in domains["capacity"]["snapshots"])
         scope_pressure = any(float(row.get("used_hours") or row.get("delivered_quantity") or 0) > float(row.get("included_hours") or row.get("included_quantity") or math.inf) for row in domains["scope"]["usage"])
         risk_count = domains["risks"]["open_count"]
+        projection = scenario_inputs.get("projection", {})
+        projected_overload = float(projection.get("capacity_remaining_hours") or 0) < 0
+        projected_scope_pressure = (projection.get("scope_ratio") is not None and float(projection["scope_ratio"]) > 1)
+        projected_health = projection.get("client_health")
+        projected_finance = projection.get("recognized_revenue")
         scenarios = [
             {
                 "name": "stabilize",
+                "retained_inputs": scenario_inputs["retained_inputs"],
                 "assumptions": ["Visible owners act on open blockers", "No unobserved external shock"],
-                "domain_impacts": {"work": "fewer blocked items", "capacity": "demand is rebalanced", "client_health": "may stabilize"},
-                "constraints": ["No capacity or outcome data is fabricated"],
+                "domain_impacts": {
+                    "work": f"projected demand {projection.get('work_demand_hours')}h",
+                    "capacity": f"projected remaining capacity {projection.get('capacity_remaining_hours')}h",
+                    "scope": "scope pressure remains" if projected_scope_pressure else "scope pressure may ease or remain unknown",
+                    "finance": f"recognized revenue projects to {projected_finance}" if projected_finance is not None else "finance impact unknown",
+                    "client_health": f"projected health {projected_health}" if projected_health is not None else "client health impact unknown",
+                },
+                "constraints": ["No capacity or outcome data is fabricated", *scenario_inputs["constraints"]],
                 "mitigations": ["Assign an owner", "recheck after the next canonical event"],
                 "downside": "Stabilization may defer lower-priority work.",
-                "confidence": _confidence(0.62 if relationships else 0.35),
+                "confidence": _confidence((0.68 if relationships else 0.4) - (0.08 if projected_overload else 0)),
                 "evidence": evidence[:6],
             },
             {
                 "name": "defer",
+                "retained_inputs": scenario_inputs["retained_inputs"],
                 "assumptions": ["Open risks or blockers remain unresolved"],
-                "domain_impacts": {"work": "delivery pressure increases", "scope": "usage may exceed allowance" if scope_pressure else "unknown", "finance": "impact unknown"},
-                "constraints": ["Finance is not connected" if domains["finance"]["status"] != "connected" else "Finance values are limited to recorded rows"],
+                "domain_impacts": {
+                    "work": "delivery pressure increases",
+                    "capacity": "overload likely persists" if overloaded or projected_overload else "capacity impact unknown",
+                    "scope": "usage may exceed allowance" if scope_pressure or projected_scope_pressure else "unknown",
+                    "finance": "impact unknown" if projected_finance is None else f"visible revenue remains bounded at {projected_finance}",
+                    "client_health": "risk of decline" if projected_health is None or float(projected_health) < 0.65 else "current score may cushion impact",
+                },
+                "constraints": ["Finance is not connected" if domains["finance"]["status"] != "connected" else "Finance values are limited to recorded rows", *scenario_inputs["constraints"]],
                 "mitigations": ["Set an explicit review date", "Record an outcome when action is taken"],
                 "downside": "Deferral can compound delivery or client risk.",
-                "confidence": _confidence(0.68 if risk_count or overloaded or scope_pressure else 0.4),
+                "confidence": _confidence(0.72 if risk_count or overloaded or scope_pressure or projected_overload or projected_scope_pressure else 0.4),
+                "evidence": evidence[:6],
+            },
+            {
+                "name": "parameterized_what_if",
+                "retained_inputs": scenario_inputs["retained_inputs"],
+                "assumptions": ["The provided deltas are hypothetical read-time inputs", "Current canonical records remain otherwise unchanged"],
+                "domain_impacts": {
+                    "work": f"demand changes to {projection.get('work_demand_hours')}h",
+                    "capacity": f"remaining capacity changes to {projection.get('capacity_remaining_hours')}h",
+                    "scope": f"scope ratio changes to {projection.get('scope_ratio')}",
+                    "finance": f"recognized revenue changes to {projected_finance}" if projected_finance is not None else "finance projection unavailable",
+                    "client_health": f"health changes to {projected_health}" if projected_health is not None else "health projection unavailable",
+                },
+                "constraints": scenario_inputs["constraints"],
+                "mitigations": ["Convert the chosen scenario into canonical work before acting", "Compare the next outcome with this retained input set"],
+                "downside": "The projection is directional because no hidden provider or market data is inferred.",
+                "confidence": _confidence(0.58 if any(float(value or 0) for value in scenario_inputs["retained_inputs"].values()) else 0.35),
                 "evidence": evidence[:6],
             },
         ]
@@ -741,6 +1143,7 @@ class IntelligenceService:
         decision_links: list[dict[str, Any]],
         domain_evidence: list[dict[str, Any]],
         moment: datetime,
+        scenario_inputs: dict[str, Any],
     ) -> None:
         supporting = list(finding.get("evidence", []))
         opposing: list[dict[str, Any]] = []
@@ -772,10 +1175,17 @@ class IntelligenceService:
             "assumptions": ["The opposing record is current at the read watermark"],
         } for item in opposing)
         finding["hypotheses"] = hypotheses
-        scenarios = finding.get("scenarios") or self._scenarios(domains, relationships, domain_evidence)
+        scenarios = list(finding.get("scenarios") or self._scenarios(domains, relationships, domain_evidence, scenario_inputs))
+        if not any(scenario.get("name") == "parameterized_what_if" for scenario in scenarios):
+            parameterized = next(
+                scenario for scenario in self._scenarios(domains, relationships, domain_evidence, scenario_inputs)
+                if scenario["name"] == "parameterized_what_if"
+            )
+            scenarios.append(parameterized)
         normalized_scenarios: list[dict[str, Any]] = []
         for scenario in scenarios:
             normalized = dict(scenario)
+            normalized.setdefault("retained_inputs", scenario_inputs["retained_inputs"])
             normalized.setdefault("assumptions", ["Only visible canonical records are used", "No unobserved external shock"])
             normalized.setdefault("domain_impacts", {"work": "impact not quantified", "client_health": "impact not quantified", "finance": "impact not quantified"})
             normalized.setdefault("constraints", ["Provider and source gaps remain explicit", "No disconnected value is inferred"])
@@ -787,7 +1197,119 @@ class IntelligenceService:
         finding["scenarios"] = normalized_scenarios
         finding["historical_analogues"] = analogues
         finding["decision_action_outcome_learning"] = decision_links
+        finding["recommendation_evaluation"] = self._recommendation_evaluation([finding], decision_links, analogues)
         finding["uncertainty"] = self._calibration(supporting, opposing, status="ready")
+
+    def _cross_wing_plan(
+        self,
+        organization_id: str,
+        workspace_id: str,
+        person_id: str,
+        domains: dict[str, Any],
+        relationships: list[dict[str, Any]],
+        findings: list[dict[str, Any]],
+        scenario_inputs: dict[str, Any],
+        moment: datetime,
+    ) -> dict[str, Any]:
+        """Create a reversible plan descriptor; it does not create workflow runs."""
+        active_wings = sorted({
+            str(row.get("assignee_wing"))
+            for row in self._optional_rows(
+                """SELECT DISTINCT s.assignee_wing
+                     FROM workflow_runs r JOIN workflow_stage_runs s ON s.run_id=r.id
+                    WHERE r.organization_id=? AND r.workspace_id=? AND r.status NOT IN ('completed','cancelled')
+                      AND s.assignee_wing IS NOT NULL
+                    ORDER BY s.assignee_wing""",
+                (organization_id, workspace_id),
+            )
+            if row.get("assignee_wing")
+        })
+        if not active_wings:
+            active_wings = ["Client Success", "Operations", "Strategy"]
+        dependency_refs = [link.get("evidence", []) for link in relationships[:4]]
+        flattened_dependencies = [ref for group in dependency_refs for ref in group]
+        lead_finding = findings[0] if findings else None
+        work_hours = float(scenario_inputs["projection"].get("work_demand_hours") or 0)
+        capacity_remaining = float(scenario_inputs["projection"].get("capacity_remaining_hours") or 0)
+        deadline_shift = float(scenario_inputs["retained_inputs"].get("deadline_days_delta") or 0)
+        deadline = (moment.replace(microsecond=0) + self._days(max(1, min(30, 7 + deadline_shift)))).isoformat()
+        steps = [
+            {
+                "id": "plan-triage",
+                "wing": active_wings[0],
+                "title": "Triage cited operating signal",
+                "depends_on": [],
+                "resources": {"person_id": person_id, "estimated_hours": 1.0},
+                "deadline": deadline,
+                "risks": ["Wrong prioritization if cited evidence is stale"],
+                "evidence": (lead_finding or {}).get("evidence", [])[:3],
+            },
+            {
+                "id": "plan-unblock",
+                "wing": active_wings[min(1, len(active_wings) - 1)],
+                "title": "Resolve blocker or record explicit deferral",
+                "depends_on": ["plan-triage"],
+                "resources": {"capacity_remaining_hours": capacity_remaining, "projected_work_hours": work_hours},
+                "deadline": deadline,
+                "risks": ["Capacity remains negative after the intervention"] if capacity_remaining < 0 else ["Outcome not measured after action"],
+                "evidence": flattened_dependencies[:4],
+            },
+            {
+                "id": "plan-learn",
+                "wing": active_wings[-1],
+                "title": "Record outcome and update confidence",
+                "depends_on": ["plan-unblock"],
+                "resources": {"requires_canonical_outcome": True},
+                "deadline": deadline,
+                "risks": ["No learning loop if outcome is not linked to the decision or workflow"],
+                "evidence": [],
+            },
+        ]
+        return {
+            "goal": "Turn the highest-confidence visible intelligence signal into a reversible cross-wing operating plan.",
+            "status": "proposed_read_only",
+            "steps": steps,
+            "dependencies": flattened_dependencies[:12],
+            "constraints": ["Plan descriptors are not executed by the Intelligence service", *scenario_inputs["constraints"]],
+            "confidence": _confidence(0.66 if findings else 0.34),
+            "action_boundary": "requires_canonical_route_before_write",
+        }
+
+    @staticmethod
+    def _days(value: float) -> Any:
+        from datetime import timedelta
+        return timedelta(days=value)
+
+    def _recommendation_evaluation(
+        self,
+        findings: list[dict[str, Any]],
+        decision_links: list[dict[str, Any]],
+        analogues: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        outcome_count = sum(int((link.get("evaluation") or {}).get("outcome_count") or 0) for link in decision_links)
+        learning_count = sum(int((link.get("evaluation") or {}).get("learning_count") or 0) for link in decision_links)
+        validated_links = sum(1 for link in decision_links if (link.get("evaluation") or {}).get("status") == "validated")
+        analogue_rates = [
+            float((item.get("outcome_stats") or {}).get("resolution_rate"))
+            for item in analogues
+            if (item.get("outcome_stats") or {}).get("resolution_rate") is not None
+        ]
+        analogue_rate = round(sum(analogue_rates) / len(analogue_rates), 3) if analogue_rates else None
+        confidence_scores = [float((finding.get("confidence") or {}).get("score") or 0.0) for finding in findings]
+        base_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.0
+        calibration_delta = (0.06 * validated_links) + (0.03 * learning_count) - (0.04 if findings and outcome_count == 0 else 0.0)
+        calibrated = max(0.0, min(1.0, base_confidence + calibration_delta))
+        return {
+            "status": "outcome_backed" if outcome_count else "pending_outcome",
+            "outcome_count": outcome_count,
+            "learning_count": learning_count,
+            "validated_decision_link_count": validated_links,
+            "historical_resolution_rate": analogue_rate,
+            "base_confidence": _confidence(base_confidence),
+            "calibrated_confidence": _confidence(calibrated),
+            "calibration_delta": round(calibration_delta, 3),
+            "next_measurement": "Record a linked work, workflow, signal, feedback, or performance outcome after acting.",
+        }
 
     def _brain_evidence(self, workspace_id: str, actor_id: str | None, as_of: datetime,
                         query: str | None = None) -> list[dict[str, Any]]:

@@ -3,12 +3,12 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from tests.dashboard_bundle import read_dashboard_bundle
+
 
 class ClientHQSurfaceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.html = Path(__file__).parents[1].joinpath(
-            "src", "auremgrid", "api", "dashboard.html"
-        ).read_text(encoding="utf-8")
+        self.html = read_dashboard_bundle(Path(__file__).parents[1])
 
     def test_overview_renders_accountability_and_operational_contract(self) -> None:
         for marker in (
