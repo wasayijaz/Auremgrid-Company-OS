@@ -39,9 +39,29 @@ class RealisticAgencyDemoTests(unittest.TestCase):
         self.assertGreaterEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM documents WHERE workspace_id LIKE 'ws_%' AND source_id IN (SELECT id FROM sources WHERE source_key LIKE 'realistic_fixture_%')").fetchone()[0], 3)
         self.assertEqual(self.os.agency_ops.finance_status(ORG_ID, "person_realistic_owner")["status"], "not_connected")
 
+    def test_seed_exposes_realistic_operating_depth_without_external_side_effects(self) -> None:
+        result = seed_realistic_agency_demo(self.os)
+        conn = self.os.store.conn
+        scoped_tables = ("meetings", "conversations", "signals", "opportunities", "agents", "agent_tasks", "agent_runs",
+                         "automations", "report_runs", "feedback_patterns", "forecasts", "retention_policies",
+                         "integrations", "client_intake_requests")
+        for table in scoped_tables:
+            self.assertGreaterEqual(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE organization_id=?", (ORG_ID,)).fetchone()[0], 1, table)
+        for table in ("messages", "touchpoints", "automation_runs"):
+            self.assertGreaterEqual(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 1, table)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM agents WHERE organization_id=?", (ORG_ID,)).fetchone()[0], 3)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM agent_runs WHERE organization_id=? AND status='completed'", (ORG_ID,)).fetchone()[0], 3)
+        self.assertEqual(conn.execute("SELECT DISTINCT status FROM automations WHERE organization_id=?", (ORG_ID,)).fetchone()[0], "training")
+        self.assertEqual(conn.execute("SELECT DISTINCT status FROM automation_runs WHERE automation_id IN (SELECT id FROM automations WHERE organization_id=?)", (ORG_ID,)).fetchone()[0], "waiting_approval")
+        self.assertTrue(conn.execute("SELECT 1 FROM feedback_patterns WHERE organization_id=? AND preference_status='proposed'", (ORG_ID,)).fetchone())
+        self.assertTrue(conn.execute("SELECT 1 FROM forecasts WHERE organization_id=? AND forecast_type='capacity'", (ORG_ID,)).fetchone())
+        self.assertEqual(conn.execute("SELECT status FROM integrations WHERE organization_id=? AND source='clickup'", (ORG_ID,)).fetchone()[0], "not_connected")
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM finance_connections WHERE organization_id=?", (ORG_ID,)).fetchone()[0], 0)
+        self.assertEqual(result["operating_depth"]["agents"], 3)
+
     def test_seed_is_idempotent(self) -> None:
         seed_realistic_agency_demo(self.os)
-        before = {table: self.os.store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ("projects", "work_items", "deliverables", "reviews", "risks", "decisions", "campaigns", "creative_assets", "content_items", "performance_insights")}
+        before = {table: self.os.store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ("projects", "work_items", "deliverables", "reviews", "risks", "decisions", "campaigns", "creative_assets", "content_items", "performance_insights", "meetings", "conversations", "messages", "touchpoints", "signals", "opportunities", "agents", "agent_tasks", "agent_runs", "automations", "automation_runs", "report_runs", "feedback_patterns", "forecasts", "retention_policies", "integrations", "client_intake_requests")}
         seed_realistic_agency_demo(self.os)
         after = {table: self.os.store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in before}
         self.assertEqual(before, after)

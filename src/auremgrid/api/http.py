@@ -20,7 +20,7 @@ LEGACY_ACTOR_PATHS = {
     "/work/submit-review", "/work/submit_review", "/work/close-review", "/work/close_review",
     "/work/ship", "/work/ship_work",
 }
-JOB_TYPES = {"report.generate", "projection.rebuild", "agent.run", "automation.execute", "outbox.dispatch", "backup.create"}
+JOB_TYPES = {"report.generate", "projection.rebuild", "agent.run", "automation.execute", "outbox.dispatch", "backup.create", "proactive_intelligence.refresh"}
 
 
 def _route_capability(path: str, method: str) -> str:
@@ -42,6 +42,7 @@ def _route_capability(path: str, method: str) -> str:
     if path in {"/approvals/decide", "/workflows/approvals/decide"}: return "approval_decide"
     if path.startswith("/jobs"): return "job_manage"
     if path in {"/auth/sessions/rotate", "/auth/revoke"}: return "workspace_read"
+    if path in {"/dashboard/intelligence/refresh"}: return "brain_read"
     if path.startswith("/auth/"): return "auth_manage"
     if path.startswith("/workflows/stages") or path == "/workflows/evidence": return "workflow_run"
     if path.startswith("/workflows/approvals/request") or path.startswith("/workflows/handoffs"): return "workflow_gate"
@@ -317,6 +318,26 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200, method(
                     organization_id, person_id, as_of=_optional_dt(params.get("as_of")),
                 )); return
+            if parsed.path == "/dashboard/intelligence/snapshots":
+                assert identity is not None
+                organization_id, person_id = _need(params, "organization_id"), _need(params, "person_id")
+                workspace_id = _optional_str(params.get("workspace_id"))
+                self.os.proactive_intelligence.authorize_read(identity, organization_id, person_id, workspace_id)
+                snapshot = self.os.proactive_intelligence.require_latest_snapshot(
+                    organization_id,
+                    person_id,
+                    str(params.get("snapshot_type") or ("workspace" if workspace_id else "executive")),
+                    workspace_id,
+                )
+                self._json(200, {"snapshot": snapshot}); return
+            if parsed.path == "/dashboard/intelligence/attention":
+                assert identity is not None
+                organization_id, person_id = _need(params, "organization_id"), _need(params, "person_id")
+                workspace_id = _optional_str(params.get("workspace_id"))
+                self.os.proactive_intelligence.authorize_read(identity, organization_id, person_id, workspace_id)
+                self._json(200, {"attention": self.os.proactive_intelligence.attention_queue(
+                    organization_id, person_id, workspace_id, _int(params.get("limit", "20"), "limit")
+                )}); return
             if parsed.path == "/dashboard/workflows":
                 assert identity is not None
                 organization_id, workspace_id, person_id = _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
@@ -477,6 +498,15 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                     _need(payload,"reason"),identity.principal_id,_optional_int(payload.get("expected_version")))
                 if item["type"]=="connector.sync": self.os.integrations.release_job_stream(item["id"])
                 self._json(200,item); return
+            if parsed.path == "/dashboard/intelligence/refresh":
+                item = self.os.proactive_intelligence.enqueue_refresh(
+                    identity,
+                    str(payload.get("snapshot_type") or ("workspace" if payload.get("workspace_id") else "executive")),
+                    _optional_str(payload.get("workspace_id")),
+                    _optional_str(payload.get("idempotency_key")),
+                    int(payload.get("priority", 0)),
+                )
+                self._json(202, {"job": item}); return
             if parsed.path == "/search":
                 bundle = self.os.search(
                     _need(payload, "workspace_id"),
@@ -1070,17 +1100,24 @@ def _optional_dt(value: Any) -> Any:
         raise ValidationError("as_of must include a timezone")
     return result
 
-def _what_if_params(params: dict[str, str]) -> dict[str, float] | None:
-    allowed = {
+def _what_if_params(params: dict[str, str]) -> dict[str, float | str] | None:
+    numeric = {
         "capacity_hours_delta",
         "work_hours_delta",
         "scope_usage_delta",
         "finance_amount_delta",
         "client_health_delta",
         "deadline_days_delta",
+        "additional_clients",
+        "hours_per_new_client",
+        "leave_hours_delta",
+        "hiring_hours_delta",
+        "client_revenue_delta",
+        "client_cost_delta",
+        "client_hours_delta",
     }
-    result: dict[str, float] = {}
-    for key in allowed:
+    result: dict[str, float | str] = {}
+    for key in numeric:
         raw = params.get(f"what_if_{key}")
         if raw is None:
             continue
@@ -1088,6 +1125,12 @@ def _what_if_params(params: dict[str, str]) -> dict[str, float] | None:
             result[key] = float(raw)
         except (TypeError, ValueError) as exc:
             raise ValidationError(f"what_if_{key} must be numeric") from exc
+    client_action = params.get("what_if_client_action")
+    if client_action is not None:
+        normalized = client_action.strip().lower()
+        if normalized not in {"keep", "drop"}:
+            raise ValidationError("what_if_client_action must be keep or drop")
+        result["client_action"] = normalized
     return result or None
 
 def _required_dt(value: Any, key: str) -> Any:

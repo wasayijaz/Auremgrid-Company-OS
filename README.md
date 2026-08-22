@@ -128,7 +128,9 @@ The interface specifies Gellix as its UI family and resolves it from the local m
 
 The dashboard currently includes Command, Clients, Client HQ, Work board/list, Review Center, Campaigns, Content, Creative, Brain, Meetings, People/Capacity, Finance, Agents, Automations, Reports, Integrations, and Settings surfaces. Those screens call authenticated backend endpoints and preserve honest empty, disconnected, degraded, and permission-denied states. Visible actions either invoke a canonical authenticated route or are disabled with the backend-reported reason; the UI does not imply unsupported mutations. Unknown finance, campaign, or connector values remain unknown until sourced.
 
-The Intelligence rail calls `GET /dashboard/intelligence`; the Command overview also calls `GET /dashboard/intelligence/executive`. The engine composes permitted evidence and canonical operating records into findings with situation, changes, hypotheses, supporting/opposing evidence, scenarios, impact, recommendation, confidence, uncertainty, historical analogues, and decision-to-workflow-outcome-learning links where available. These are read projections. An explicitly injected strategic-reasoning provider may add validated hypotheses, options, scenarios, recommendation, confidence, and dissent; it receives only the already ACL-scoped context, stores only hashed/redacted run metadata, and falls back to deterministic review on provider failure or malformed output. Suggested operations are returned as descriptors for canonical routes such as work capture, decision creation, and approval request; they require the caller's normal capability checks and, where applicable, explicit human approval.
+The Intelligence rail calls `GET /dashboard/intelligence`; the Command overview also calls `GET /dashboard/intelligence/executive`. The engine composes permitted evidence and canonical operating records into findings with situation, changes, hypotheses, supporting/opposing evidence, scenarios, impact, recommendation, confidence, uncertainty, historical analogues, and decision-to-workflow-outcome-learning links where available. Expanded scenarios retain explicit new-client, staffing, leave, client economics, and keep/drop inputs without inventing missing values. Portfolio reads add ACL-scoped cross-workspace analogues and the executive brief ranks a sourced top-three narrative.
+
+These are read projections. A capability-gated refresh request can enqueue a durable `proactive_intelligence.refresh` job; the worker persists an immutable, per-person snapshot and attention queue for the dashboard. Manual refreshes create a fresh job, callers can supply an explicit idempotency key when they need request deduplication, unchanged projections do not append records, and later changed projections create a new version. Persisted refreshes use deterministic local reasoning and write no external action. Live reads may use an explicitly injected strategic-reasoning provider to add validated hypotheses, options, scenarios, recommendation, confidence, and dissent; it receives only the already ACL-scoped context, stores only hashed/redacted run metadata, and falls back to deterministic review on provider failure or malformed output. Suggested operations are returned as descriptors for canonical routes such as work capture, decision creation, and approval request; they require the caller's normal capability checks and, where applicable, explicit human approval.
 
 For a concrete JSON model endpoint outside tests, set `AUREMGRID_REASONING_ENDPOINT` and optionally `AUREMGRID_REASONING_MODEL`, `AUREMGRID_REASONING_VERSION`, `AUREMGRID_REASONING_API_KEY_ENV`, and `AUREMGRID_REASONING_TIMEOUT`. An absent endpoint keeps the deterministic offline path; an explicitly present but invalid configuration fails startup rather than silently pretending the provider is offline.
 
@@ -239,6 +241,38 @@ cd Auremgrid-Company-OS
 python scripts/auremgrid.py --help
 ```
 
+### Activate a real agency in one command
+
+Use a new database for the agency's first setup. This command creates the
+agency, its first workspace, the owner account and permissions, the legacy
+Brain actor binding, and a seven-day dashboard session together:
+
+```text
+python scripts/auremgrid.py setup-agency --db "C:\data\agency.sqlite" --agency "Northwind Studio" --admin-name "Nora Owner" --admin-email "nora@northwind.example"
+```
+
+The command prints a setup receipt. Copy `session.token` immediately: it is a
+temporary login key proving who the browser is and what it may access. Auremgrid
+stores only a one-way digest, so the original token cannot be recovered later.
+It is not an API key for an AI provider and it is not shared across the agency.
+
+Then start Auremgrid with the same database:
+
+```text
+python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\agency.sqlite"
+```
+
+Open `http://127.0.0.1:8791/`, choose **Connect to Auremgrid**, and paste the
+token. The browser keeps it only in that browser profile. Use **Sign out** before
+leaving a shared device. If it expires or is revoked, an administrator issues a
+new session; the old plaintext value is never recoverable from the database.
+
+For a real team, create a separate person/principal/session for every operator.
+Never share the owner's token. Keep the service on localhost or a private
+network until it is behind HTTPS, a trusted reverse proxy, backups, a secret
+manager, and an explicit access policy. API tokens are for scoped integrations;
+human operators should use sessions.
+
 ## Dashboard preview
 
 ![SAMPLE DATA dashboard preview](docs/assets/dashboard-showcase.svg)
@@ -273,9 +307,13 @@ python scripts/auremgrid.py demo-agency --db "auremgrid-demo.sqlite" --organizat
 ```
 
 The scenario currently contains 6 projects, 12 mixed-state work items, 9
-reviews, 9 risks, 3 campaigns, 6 creatives, and 3 measured content items.
-Running the command again upgrades missing fixture evidence without duplicating
-the operating records.
+reviews, 9 risks, 3 campaigns, 6 creatives, and 3 measured content items. It
+also includes meetings, conversations, messages, touchpoints, signals,
+opportunities, proposed feedback preferences, client intake, Sol/Terra/Luna
+agent runs, a training-mode automation, a weekly report, a capacity forecast,
+retention policy, and an intentionally disconnected ClickUp configuration.
+Finance and provider connectivity remain explicitly disconnected. Running the
+command again upgrades missing fixture evidence without duplicating records.
 
 The launcher is the zero-install path: it runs directly from this trusted
 checkout, does not change directory, install packages, or contact a network.
@@ -311,13 +349,13 @@ python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\aur
 
 The server prints `listening on http://127.0.0.1:8791`. Open `http://127.0.0.1:8791/` or `http://127.0.0.1:8791/dashboard`; both serve the same dashboard shell. The shell and `/dashboard-assets/*` load without a token, but all JSON data routes except `/health`, `/metrics`, and `/health/detailed` require bearer authentication.
 
-The bootstrap command prints the session token once. The dashboard opens an in-page **Connect to Auremgrid** dialog where you enter that token; it then calls `/auth/me`, `/dashboard/data`, `/dashboard/settings`, `/dashboard/brain`, `/dashboard/intelligence`, and the other permitted module endpoints with `Authorization: Bearer <token>`. For a real organization database, create or import the organization and person records first, then bootstrap the first principal:
+The bootstrap command prints the session token once. The dashboard opens an in-page **Connect to Auremgrid** dialog where you enter that token; it then calls `/auth/me`, `/dashboard/data`, `/dashboard/settings`, `/dashboard/brain`, `/dashboard/intelligence`, and the other permitted module endpoints with `Authorization: Bearer <token>`. `setup-agency` is the recommended first-run path. Use `bootstrap-auth` only when the organization, person, membership, workspace, and actor binding targets already exist:
 
 ```text
 python scripts/auremgrid.py bootstrap-auth --db "C:\data\agency.sqlite" --organization <organization-id> --person <person-id> --email owner@example.invalid --workspace <workspace-id> --actor <legacy-actor-id>
 ```
 
-The token is not recoverable from the database. The dashboard stores the supplied value in browser `localStorage`, so use it only on a trusted machine and browser profile. Do not use a shared/public computer or expose the dashboard through public hosting; clear the site’s local storage when finished. API clients can keep the token in an environment variable. Run one durable job in a separate process:
+The token is not recoverable from the database. The dashboard stores the supplied value in browser `localStorage`, so use it only on a trusted machine and browser profile. Do not put it in screenshots, chat, tickets, source control, URLs, or shared documents. Use the dashboard's **Sign out** control when finished. API clients can keep a scoped API token in a secret manager or environment variable. Run one durable job in a separate process:
 
 ```text
 python scripts/auremgrid.py worker-once --db "C:\data\agency.sqlite" --organization <organization-id> --workspace <workspace-id> --worker-id local-worker-1
@@ -336,7 +374,7 @@ Restore is intentionally an explicit offline operation and requires the verified
 
 1. **Minutes 0–5 — Start the seeded system.** Run `demo`, `bootstrap-auth`, and `serve` as shown above; open the dashboard and inspect the internal workspace plus two synthetic client workspaces.
 2. **Minutes 5–10 — Read the brain.** Use the search box and client brief to inspect a cited result, its source, and the distinction between known and unknown information.
-3. **Minutes 10–15 — Inspect delivery control.** Open a project and its work/review records in the dashboard. Use the authenticated REST/MCP work endpoints for assignment, checklist, and review transitions; the dashboard currently presents those records but does not expose every mutation control.
+3. **Minutes 10–15 — Inspect delivery control.** Open a project and its work/review records in the dashboard. Available controls are capability-gated and call the same authenticated backend routes; unsupported or read-only states remain explicit.
 4. **Minutes 15–20 — Inspect a workflow.** Use the workflow REST/MCP endpoints to list the neutral templates, create a `landing_page` or `campaign_launch` run, start a ready stage, attach evidence, and then return to the dashboard to see the canonical stage board. Brain shows pending proposals, unresolved conflicts, current truths, and semantic/graph health. Where the authenticated row exposes `allowed_actions`, the dashboard offers capability-gated confirmation actions with idempotent descriptors; historical rows expose no controls.
 5. **Minutes 20–25 — Inspect control surfaces.** Visit people/capacity, finance, integrations, jobs, and activity. `not_connected` and unknown values are intentional when no source is configured.
 6. **Minutes 25–30 — Exercise recovery.** Run `backup` and `verify-backup`, inspect the manifest, and review [jobs and recovery](docs/jobs-and-recovery.md) before connecting any external provider.

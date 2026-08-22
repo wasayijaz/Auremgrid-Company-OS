@@ -65,6 +65,7 @@ from auremgrid.services.performance_ops import PerformanceOperations
 from auremgrid.services.forecast_ops import ForecastOperations
 from auremgrid.services.retention_ops import RetentionOperations
 from auremgrid.services.intelligence import IntelligenceService
+from auremgrid.services.proactive_intelligence import ProactiveIntelligenceService
 from auremgrid.adapters.semantic import (
     DeterministicFallbackEmbeddingProvider,
     EmbeddingProvider,
@@ -159,6 +160,7 @@ class CompanyOS:
         self.forecasts = ForecastOperations(self.store.conn, new_id, self._require_scope_access)
         self.retention = RetentionOperations(self.store.conn, new_id, self._require_scope_access)
         self.intelligence = IntelligenceService(self)
+        self.proactive_intelligence = ProactiveIntelligenceService(self)
         self.rebuild_projections(rebuild_graph=graph_projection is None)
         if graph_projection is not None:
             self._restore_durable_graph_generations()

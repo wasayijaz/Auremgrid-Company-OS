@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from os import environ
 
 from auremgrid.adapters.semantic import embedding_provider_from_config
@@ -43,6 +44,15 @@ def _company_os(args: argparse.Namespace) -> CompanyOS:
     return CompanyOS(args.db, embedding_provider=provider, graph_projection=graph)
 
 
+def _setup_id(prefix: str, value: str) -> str:
+    """Create a readable stable identifier for first-run agency setup."""
+
+    slug = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    if not slug:
+        raise ValueError(f"{prefix} identifier requires at least one letter or number")
+    return f"{prefix}_{slug}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="auremgrid")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -82,6 +92,23 @@ def main(argv: list[str] | None = None) -> int:
     onboard.add_argument("--source-dir")
     onboard.add_argument("--db", default="auremgrid.sqlite")
 
+    setup_agency = sub.add_parser(
+        "setup-agency",
+        help="create an agency, owner login, workspace, and first dashboard session in one step",
+    )
+    setup_agency.add_argument("--agency", required=True, help="agency or company name")
+    setup_agency.add_argument("--admin-name", required=True, help="first agency owner name")
+    setup_agency.add_argument("--admin-email", required=True, help="first agency owner email")
+    setup_agency.add_argument("--db", default="auremgrid.sqlite")
+    setup_agency.add_argument("--organization", help="optional organization id")
+    setup_agency.add_argument("--workspace", help="optional first workspace id")
+    setup_agency.add_argument("--person", help="optional owner person id")
+    setup_agency.add_argument("--operator", help="optional operator display name")
+    setup_agency.add_argument("--source-dir", help="optional folder of Markdown knowledge sources")
+    setup_agency.add_argument(
+        "--dashboard-url", default="http://127.0.0.1:8787/", help="dashboard address shown in next steps"
+    )
+
     backup = sub.add_parser("backup", help="create and verify an online SQLite backup")
     backup.add_argument("--db", required=True)
     backup.add_argument("--output", required=True)
@@ -118,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         help="run the offline Intelligence contract evaluation scenarios",
     )
 
-    for command in (demo, agency_demo, brief, serve_cmd, sync, onboard, backup, bootstrap_auth, worker):
+    for command in (demo, agency_demo, brief, serve_cmd, sync, onboard, setup_agency, backup, bootstrap_auth, worker):
         _add_semantic_options(command)
 
     args = parser.parse_args(argv)
@@ -174,6 +201,60 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(result, indent=2))
         os.close()
+        return 0
+    if args.command == "setup-agency":
+        organization_id = args.organization or _setup_id("org", args.agency)
+        workspace_id = args.workspace or _setup_id("ws", args.agency)
+        person_id = args.person or _setup_id("person", args.admin_email.split("@", 1)[0])
+        os = _company_os(args)
+        try:
+            if os.company.get_organization(organization_id) is not None:
+                parser.error(
+                    f"organization already exists: {organization_id}; use bootstrap-auth to issue a session for an existing person"
+                )
+            organization = os.create_organization(args.agency, organization_id)
+            onboarded = os.onboard_agency(
+                agency_name=args.agency,
+                workspace_id=workspace_id,
+                admin_name=args.admin_name,
+                operator_name=args.operator,
+                source_dir=args.source_dir,
+            )
+            os.create_organization_workspace(organization.id, args.agency, "internal", workspace_id)
+            owner = os.create_person(
+                organization.id,
+                args.admin_name,
+                args.admin_email,
+                title="Agency Owner",
+                role="owner",
+                person_id=person_id,
+            )
+            os.add_person_to_workspace(organization.id, workspace_id, owner.id, "admin")
+            principal = os.auth.create_principal(organization.id, owner.id, args.admin_email)
+            session = os.auth.create_session(principal["id"])
+            identity = os.auth.authenticate_session(session["token"])
+            binding = os.auth.bind_actor(identity, workspace_id, onboarded["admin"]["id"])
+            print(json.dumps({
+                "status": "ready",
+                "agency": {"id": organization.id, "name": organization.name},
+                "workspace": onboarded["workspace"],
+                "owner": {"id": owner.id, "name": owner.name, "email": owner.email, "role": "owner"},
+                "actor_binding": binding,
+                "session": {
+                    "token": session["token"],
+                    "expires_at": session["expires_at"],
+                    "shown_once": True,
+                },
+                "dashboard_url": args.dashboard_url,
+                "next_steps": [
+                    "Start the server with the same --db file.",
+                    "Open dashboard_url in a browser.",
+                    "Paste session.token into Connect to Auremgrid.",
+                    "Keep the token private; use Sign out on shared devices.",
+                ],
+            }, indent=2))
+        finally:
+            os.close()
         return 0
     if args.command == "backup":
         os = _company_os(args)

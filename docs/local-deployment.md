@@ -2,12 +2,31 @@
 
 Use Python 3.12 or later. The default path needs no third-party package, network service, Docker runtime, API key, or frontend build.
 
-Run tests with `.\tools\test.ps1`. Start the server with `PYTHONPATH` set to
-`src` and run `python -m auremgrid.cli serve --host 127.0.0.1 --port 8791 --db
-auremgrid-demo.sqlite --seed`. Use `bootstrap-auth` for an existing owner, then
-open `http://127.0.0.1:8791/`: the dashboard shows an in-page **Connect to Auremgrid** dialog for the one-time session token. JSON endpoints do not trust query/body person or actor identifiers.
+Run tests with `.\tools\test.ps1`. For a new agency, activate the database first:
 
-The dashboard keeps the supplied token in browser `localStorage`. Use it only on a trusted machine and browser profile; never use a shared/public computer or publicly host the dashboard. Clear the site’s local storage when finished.
+```text
+python scripts/auremgrid.py setup-agency --db C:\data\agency.sqlite --agency "Agency Name" --admin-name "Agency Owner" --admin-email owner@agency.example
+python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db C:\data\agency.sqlite
+```
+
+Copy the one-time `session.token` from the setup receipt, open
+`http://127.0.0.1:8791/`, and paste it into **Connect to Auremgrid**.
+Use `bootstrap-auth` only for an existing owner/person and actor binding. JSON
+endpoints do not trust query/body person or actor identifiers.
+
+The dashboard keeps the supplied token in browser `localStorage`. It is a
+temporary login credential, not an AI key or shared agency password. Use one
+session per person on a trusted browser profile; never paste it into chat,
+screenshots, URLs, tickets, or source control. Use **Sign out** to forget it on
+the current browser. An expired or revoked token must be replaced by an
+administrator-issued session.
+
+For a real-agency private deployment, bind the server to a private interface
+only after firewall review. Before any public exposure, require HTTPS, a trusted
+reverse proxy, durable backups and restore rehearsals, a secret manager,
+per-person provisioning, and documented revocation. Public multi-tenant login
+requires a dedicated identity provider; do not expose the local setup command
+or create an unauthenticated token-minting HTTP route.
 
 Keep the SQLite database on durable storage. Use the online `backup` and
 `verify-backup` commands before upgrades; do not copy a live WAL file. Run

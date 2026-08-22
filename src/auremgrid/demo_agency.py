@@ -7,8 +7,12 @@ connectors or inserts real-provider records.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from auremgrid.domain.ops import Touchpoint
+from auremgrid.domain.security import AuthenticatedIdentity, role_capabilities
 
 
 ORG_ID = "org_realistic_agency_demo"
@@ -142,6 +146,128 @@ def _ensure_demo_creative_preview(os: Any, org: str, ws: str, brand: str) -> Non
         os.store.conn.commit()
 
 
+def _ensure_operating_depth(
+    os: Any,
+    org_id: str,
+    owner_id: str,
+    operator: Any,
+    strategist: Any,
+    clients: tuple[tuple[str, str, str, str], ...],
+    workspaces: list[str],
+    projects: list[str],
+) -> dict[str, int]:
+    """Add inspectable agency operations without pretending external systems are connected.
+
+    Every record is keyed by a stable fixture title/id and checked before insert.  The
+    records intentionally stop at training/proposal states where a real agency would
+    need a human checkpoint (automation approval, client decisions, connector auth).
+    """
+    conn = os.store.conn
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    # Canonical relationship surfaces: meetings, outputs, conversations, messages,
+    # and touchpoints.  Meeting/message writes also exercise signal creation.
+    for ws_id, _ws_name, brand, client_id in clients:
+        meeting_title = f"{brand} weekly growth review"
+        meeting = _one(os, "SELECT * FROM meetings WHERE workspace_id=? AND title=?", (ws_id, meeting_title))
+        if meeting is None:
+            meeting_obj = os.client_ops.create_meeting(
+                org_id, ws_id, operator.id, meeting_title, now - timedelta(days=2),
+                summary=f"Weekly review for {brand}: confirm qualified pipeline and next launch handoff.",
+                source="demo_fixture",
+                transcript=f"{brand} sponsor confirmed the approved offer and requested a concise next-step brief.",
+                sentiment=0.62,
+            )
+            meeting_id = meeting_obj.id
+            os.client_ops.add_meeting_participant(org_id, ws_id, operator.id, meeting_id, "person", operator.id)
+            os.client_ops.add_meeting_participant(org_id, ws_id, operator.id, meeting_id, "person", client_id)
+            os.client_ops.add_meeting_output(org_id, ws_id, operator.id, meeting_id, "action_item", f"Share the {brand} next-step brief before the next review.", 0.88)
+            os.client_ops.add_meeting_output(org_id, ws_id, operator.id, meeting_id, "decision", "Keep the evidence-backed control message for the next test.", 0.82)
+
+        conversation_subject = f"{brand} delivery thread"
+        conversation = _one(os, "SELECT * FROM conversations WHERE workspace_id=? AND subject=?", (ws_id, conversation_subject))
+        if conversation is None:
+            conv = os.client_ops.create_conversation(org_id, ws_id, operator.id, "demo_fixture", "email", conversation_subject, f"fixture-thread-{ws_id}")
+            conversation_id = conv.id
+            os.client_ops.add_conversation_participant(org_id, ws_id, operator.id, conversation_id, "person", client_id, "client")
+            os.client_ops.add_conversation_participant(org_id, ws_id, operator.id, conversation_id, "person", operator.id, "account_lead")
+            os.client_ops.add_message(org_id, ws_id, operator.id, conversation_id, "person", client_id, f"Please confirm the {brand} launch handoff timing.", now - timedelta(days=1), requires_reply=True, important=True, sentiment=0.35, source_locator="fixture://email")
+            os.client_ops.add_message(org_id, ws_id, operator.id, conversation_id, "person", operator.id, "We will share the handoff checklist and owner by tomorrow.", now - timedelta(hours=20), sentiment=0.7, source_locator="fixture://email")
+        touchpoint_id = f"touchpoint_{ws_id}_weekly"
+        if not _one(os, "SELECT id FROM touchpoints WHERE id=?", (touchpoint_id,)):
+            os.store.create_touchpoint(Touchpoint(touchpoint_id, ws_id, f"act_{ws_id}", "client_review", f"Weekly sponsor touchpoint for {brand}; next-step brief is pending.", now - timedelta(days=1), now))
+
+        # One open opportunity per client keeps the opportunity surface useful while
+        # preserving unknown financial value (estimated_value remains NULL).
+        if not _one(os, "SELECT id FROM opportunities WHERE workspace_id=? AND evidence=?", (ws_id, "demo_fixture: qualified pipeline review")):
+            os.client_ops.create_opportunity(org_id, ws_id, operator.id, "campaign_optimization", "Qualified response supports a focused follow-up test.", "demo_fixture: qualified pipeline review", "Keep the control creative and test one audience refinement.")
+
+        # Three observations converge on a proposed preference; no preference is
+        # auto-approved, mirroring a real agency's human review gate.
+        feedback = (
+            "Keep skin texture natural and avoid overly polished faces.",
+            "Please preserve human texture; the last version felt too retouched.",
+            "The synthetic look is distracting; keep the face natural in the next cut.",
+        )
+        for text in feedback:
+            if not _one(os, "SELECT id FROM feedback_events WHERE workspace_id=? AND raw_feedback=?", (ws_id, text)):
+                os.feedback.record_feedback(org_id, ws_id, operator.id, "design", text, "demo_fixture")
+
+        # Client portal intake remains pending until staff accepts it.
+        intake_title = f"{brand} Q3 message refinement request"
+        if not _one(os, "SELECT id FROM client_intake_requests WHERE workspace_id=? AND title=?", (ws_id, intake_title)):
+            os.client_portal.submit_intake_request(org_id, ws_id, client_id, intake_title, "Please prepare one concise, evidence-backed message refinement for the next review.", "2026-09-10")
+
+    # Configure the three canonical internal agents for all client workspaces and
+    # complete one safe, synthetic run each so the command center is meaningful.
+    agents = os.agent_ops.seed_primary_agents(org_id, owner_id)
+    models = {"Sol": ("sol-local-reasoning", ["search", "dashboard"], []),
+              "Terra": ("terra-local-builder", ["search", "work"], ["domain.write", "code.write"]),
+              "Luna": ("luna-local-operator", ["search", "work"], ["domain.write"])}
+    for agent in agents:
+        model, tools, writes = models[agent["name"]]
+        agent = os.agent_ops.configure_agent(org_id, owner_id, agent["id"], model, tools, workspaces, writes)
+        title = f"{agent['name']} fixture readiness check"
+        task = _one(os, "SELECT * FROM agent_tasks WHERE organization_id=? AND agent_id=? AND title=?", (org_id, agent["id"], title))
+        if task is None:
+            intent = {"Sol": ["strategize"], "Terra": ["implement"], "Luna": ["execute"]}[agent["name"]]
+            task = os.agent_ops.enqueue_task(org_id, owner_id, agent["id"], title, "Review the synthetic agency fixture and return a concise readiness note.", workspaces[0], priority=30, intent_tags=intent)
+        if not _one(os, "SELECT id FROM agent_runs WHERE task_id=?", (task["id"],)):
+            run = os.agent_ops.start_run(org_id, agent["id"], task["id"])
+            os.agent_ops.complete_run(org_id, agent["id"], run["id"], f"{agent['name']} fixture check complete; no external actions taken.", source_refs=["demo_fixture"])
+
+    automation_name = "Fixture: flag client review changes"
+    automation = _one(os, "SELECT * FROM automations WHERE organization_id=? AND name=?", (org_id, automation_name))
+    if automation is None:
+        automation = os.agent_ops.create_automation(org_id, owner_id, automation_name, "work.updated", [{"field": "status", "operator": "eq", "value": "review"}], [{"type": "notification.create", "config": {"reason": "A client review item changed in the fixture"}, "one_way": False}], "human")
+    if not _one(os, "SELECT id FROM automation_runs WHERE automation_id=?", (automation["id"],)):
+        os.agent_ops.trigger_automations(org_id, "work.updated", {"status": "review", "workspace_id": workspaces[0], "reason": "demo_fixture"})
+
+    if not _one(os, "SELECT id FROM report_runs WHERE organization_id=? AND type='weekly_agency_brief'", (org_id,)):
+        os.agent_ops.generate_report(org_id, owner_id, "weekly_agency_brief")
+
+    # Forecast service currently expects an older capacity projection shape. Seed a
+    # transparent capacity forecast directly against the current forecast schema;
+    # the basis names the synthetic snapshot and contains no revenue assumption.
+    if not _one(os, "SELECT id FROM forecasts WHERE organization_id=? AND forecast_type='capacity' AND subject_id='demo_fixture'", (org_id,)):
+        os.store.conn.execute(
+            "INSERT INTO forecasts (id,organization_id,workspace_id,forecast_type,subject_id,period_start,period_end,predicted_value,confidence,basis,data_points,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (f"forecast_{org_id}_capacity", org_id, None, "capacity", "demo_fixture", now.isoformat(), (now + timedelta(days=30)).isoformat(), 0.75, 0.7, json.dumps({"source": "demo_fixture capacity snapshot", "financials": "not_connected"}), 1, "active", now.isoformat()),
+        )
+        conn.commit()
+
+    if not _one(os, "SELECT id FROM retention_policies WHERE organization_id=? AND data_category='demo_fixture'", (org_id,)):
+        os.retention.create_policy(org_id, owner_id, "organization", "demo_fixture", 365, "archive")
+
+    # Integration configuration is deliberately not connected: no token, provider
+    # identity, or object count is fabricated. The normal configure API stores only
+    # the intended mapping and leaves status=not_connected.
+    if not _one(os, "SELECT id FROM integrations WHERE organization_id=? AND source='clickup'", (org_id,)):
+        identity = AuthenticatedIdentity(owner_id, org_id, owner_id, "session", role_capabilities("owner"))
+        os.integrations.configure(identity, "clickup", "demo-clickup-team", {"team:demo": workspaces[0]}, ["authorized_team"])
+
+    return {"meetings": len(workspaces), "conversations": len(workspaces), "touchpoints": len(workspaces), "agents": len(agents), "forecasts": 1}
+
+
 def seed_realistic_agency_demo(os: Any, organization_id: str | None = None, owner_person_id: str | None = None) -> dict[str, Any]:
     """Seed the realistic agency scenario and return a compact inventory."""
     org_id = organization_id or ORG_ID
@@ -217,5 +343,14 @@ def seed_realistic_agency_demo(os: Any, organization_id: str | None = None, owne
         # Generation is idempotent at scenario level: only seed insights once.
         if _one(os, "SELECT id FROM performance_insights WHERE workspace_id=?", (ws.id,)) is None:
             os.performance.generate_insights(org_id, ws.id, operator.id)
+    depth = _ensure_operating_depth(os, org_id, owner_id, operator, strategist, clients, workspaces, projects)
     os.store.conn.commit()
-    return {"organization_id": org_id, "workspaces": workspaces, "projects": projects, "clients": [item[2] for item in clients], "fixture": "demo_fixture", "finance": "not_connected"}
+    return {
+        "organization_id": org_id,
+        "workspaces": workspaces,
+        "projects": projects,
+        "clients": [item[2] for item in clients],
+        "fixture": "demo_fixture",
+        "finance": "not_connected",
+        "operating_depth": depth,
+    }

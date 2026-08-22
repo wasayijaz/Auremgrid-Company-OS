@@ -27,7 +27,35 @@ derive `actor_id` through `principal_actor_bindings`. MCP transports must
 construct `McpToolRouter` with an already-authenticated identity; tool arguments
 cannot choose an identity.
 
-Initial session creation is local-only through `auremgrid bootstrap-auth`.
+Initial agency activation is local-only through `auremgrid setup-agency`. It
+creates the organization, first workspace, owner membership, Brain actor
+binding, principal, and first session as one operation. `bootstrap-auth` remains
+the lower-level command for an existing person whose organization, workspace
+membership, and actor already exist.
 Session rotation, revocation, API-token creation, and `/auth/me` are authenticated
 operations. The plaintext token is returned once and must be stored outside the
 database.
+
+## What the dashboard access token means
+
+The access token is a temporary bearer credential: possession of it proves the
+browser may act as one specific Auremgrid principal until the session expires
+or is revoked. It is not an AI-provider key, a database password, or a shared
+agency password. The dashboard stores it in that browser profile's
+`localStorage` and sends it as `Authorization: Bearer <token>` on authenticated
+requests.
+
+Treat a token like a temporary password:
+
+- issue one session per person and never share the owner's session;
+- copy it only from the one-time setup or rotation response;
+- never place it in URLs, screenshots, tickets, chat, logs, or source control;
+- use **Sign out** to remove it from a browser, especially on a shared device;
+- rotate or revoke it when a device is lost or access changes;
+- use a scoped API token, stored in a secret manager, for integrations.
+
+The local token flow is suitable for a controlled private deployment. Before
+internet exposure, put Auremgrid behind HTTPS and a trusted reverse proxy and
+define operator provisioning, device, revocation, backup, and incident-response
+policies. A public multi-tenant product should use a dedicated identity provider
+(for example OIDC/SSO or magic links) rather than expose a bootstrap endpoint.

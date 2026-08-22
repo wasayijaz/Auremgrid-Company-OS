@@ -18,6 +18,13 @@ runs in a separate process/connection, re-authorizes the snapshotted principal,
 executes one registered safe handler, and exits. This avoids an unbounded worker
 thread inside the web process.
 
+`proactive_intelligence.refresh` is a registered read-projection handler. It
+re-authorizes the requesting principal, builds an executive or workspace brief,
+and appends a per-person snapshot plus attention rows only when the full
+reader-facing projection changed. Manual refresh requests receive distinct jobs;
+an explicit caller-provided idempotency key deduplicates retries when required.
+It does not send notifications, mutate client work, or call external providers.
+
 ## Outbox
 
 Outbox records provide at-least-once leased publishing with payload hashes,

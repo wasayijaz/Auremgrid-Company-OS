@@ -90,6 +90,23 @@ class IntelligenceEngineTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(body["type"], "executive_brief")
             self.assertIn("portfolio", body)
+            conn = HTTPConnection(host, port, timeout=5)
+            conn.request(
+                "GET",
+                "/dashboard/intelligence?organization_id=org_demo&workspace_id=ws_alpha&person_id=person_demo_owner"
+                "&what_if_additional_clients=2&what_if_hours_per_new_client=18"
+                "&what_if_leave_hours_delta=8&what_if_hiring_hours_delta=12"
+                "&what_if_client_action=keep&what_if_client_revenue_delta=5000"
+                "&what_if_client_cost_delta=1700&what_if_client_hours_delta=24",
+                headers={"Authorization": f"Bearer {self.token}"},
+            )
+            response = conn.getresponse()
+            body = json.loads(response.read())
+            conn.close()
+            self.assertEqual(response.status, 200)
+            retained = body["context"]["scenario_inputs"]["retained_inputs"]
+            self.assertEqual(retained["additional_clients"], 2.0)
+            self.assertEqual(retained["client_action"], "keep")
         finally:
             server.shutdown()
             server.server_close()
@@ -303,6 +320,68 @@ class IntelligenceEngineTests(unittest.TestCase):
         self.assertEqual(brief["type"], "executive_brief")
         self.assertIn("attention", brief["sections"])
         self.assertIn("constraints", brief["sections"])
+
+    def test_expanded_growth_staffing_and_client_decision_scenarios_retain_inputs(self) -> None:
+        result = self.os.intelligence.workspace(
+            "org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin",
+            what_if={
+                "additional_clients": 2,
+                "hours_per_new_client": 18,
+                "leave_hours_delta": 8,
+                "hiring_hours_delta": 12,
+                "client_action": "keep",
+                "client_revenue_delta": 5000,
+                "client_cost_delta": 1700,
+                "client_hours_delta": 24,
+            },
+        )
+        scenarios = {item["name"]: item for finding in result["findings"] for item in finding["scenarios"]}
+        self.assertTrue({"growth_plus_clients", "keep_client", "drop_client"} <= set(scenarios))
+        retained = scenarios["growth_plus_clients"]["retained_inputs"]
+        self.assertEqual(retained["additional_clients"], 2.0)
+        self.assertEqual(retained["leave_hours_delta"], 8.0)
+        self.assertEqual(retained["hiring_hours_delta"], 12.0)
+        self.assertEqual(scenarios["keep_client"]["retained_inputs"]["client_action"], "keep")
+        self.assertIn("evidence", scenarios["growth_plus_clients"])
+        self.assertIn("constraints", scenarios["drop_client"])
+        self.assertEqual(result["context"]["scenario_inputs"]["projection"]["added_client_hours"], 36.0)
+        keep_finance = scenarios["keep_client"]["domain_impacts"]["finance"]
+        drop_finance = scenarios["drop_client"]["domain_impacts"]["finance"]
+        self.assertNotEqual(keep_finance, drop_finance)
+        self.assertIn("margin delta 3300.0", keep_finance)
+        self.assertIn("margin delta -3300.0", drop_finance)
+
+    def test_portfolio_analogues_are_cross_workspace_acl_scoped_and_executive_top_three_is_narrative(self) -> None:
+        visible = self.os.create_organization_workspace("org_demo", "Visible client", "client", "ws_visible_analogue")
+        self.os.add_person_to_workspace("org_demo", visible.id, "person_demo_owner", "admin")
+        self.os.create_actor(visible.id, "Visible actor", "admin", "act_visible_analogue")
+        risk = self.os.client_ops.create_risk(
+            "org_demo", visible.id, "person_demo_owner", "delivery", "high", 0.8,
+            "Launch blocker", "launch blocker repeated", "Resolve launch blocker",
+        )
+        self.os.store.conn.execute(
+            "UPDATE risks SET status='resolved',resolved_at=?,resolution=? WHERE id=?",
+            (datetime.now(timezone.utc).isoformat(), "Resolved through owner review", risk.id),
+        )
+        hidden = self.os.create_organization_workspace("org_demo", "Hidden client", "client", "ws_hidden_analogue")
+        self.os.store.conn.execute(
+            "INSERT INTO risks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "risk_hidden_analogue", "org_demo", hidden.id, None, "delivery", "critical", 0.95,
+                "launch blocker hidden", "person_demo_owner", datetime.now(timezone.utc).isoformat(),
+                "resolved", "launch blocker repeated hidden", "hidden", "2026-08-20T00:00:00+00:00", "Hidden",
+            ),
+        )
+        self.os.store.conn.commit()
+        portfolio = self.os.intelligence.portfolio("org_demo", "person_demo_owner")
+        analogues = portfolio["portfolio"]["historical_analogues"]
+        self.assertTrue(any(item["source"]["workspace_id"] == visible.id for item in analogues))
+        self.assertTrue(all(item["source"]["workspace_id"] != hidden.id for item in analogues))
+        self.assertTrue(all("outcome_stats" in item and "resolution_rate" in item["outcome_stats"] for item in analogues))
+        brief = self.os.intelligence.executive_brief("org_demo", "person_demo_owner")
+        self.assertIn("top_three", brief["sections"])
+        self.assertIn("narrative", brief["sections"])
+        self.assertLessEqual(len(brief["sections"]["top_three"]), 3)
 
 
 if __name__ == "__main__":

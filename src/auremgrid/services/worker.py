@@ -4,12 +4,14 @@ from typing import Any
 
 from auremgrid.services.brain import CompanyOS
 from auremgrid.connectors.http import ConnectorTransportError
+from auremgrid.domain.errors import AuthorizationError
 
 
 JOB_CAPABILITIES = {
     "report.generate": "workspace_write",
     "projection.rebuild": "brain_promote",
     "connector.sync": "integration_sync",
+    "proactive_intelligence.refresh": "brain_read",
 }
 
 
@@ -40,6 +42,29 @@ def run_one_job(
             )
         elif job["type"] == "projection.rebuild":
             result = os.rebuild_projections(workspace_id)
+        elif job["type"] == "proactive_intelligence.refresh":
+            actor_id = None
+            if workspace_id is not None:
+                try:
+                    actor_id = os.auth.actor_for_identity(identity, workspace_id)
+                except AuthorizationError:
+                    actor_id = None
+            snapshot = os.proactive_intelligence.refresh_snapshot(
+                organization_id,
+                identity.person_id,
+                str(payload.get("snapshot_type", "executive")),
+                workspace_id,
+                actor_id=actor_id,
+            )
+            result = {
+                "snapshot_id": snapshot["id"],
+                "snapshot_type": snapshot["snapshot_type"],
+                "version": snapshot["version"],
+                "status": snapshot["status"],
+                "generated_at": snapshot["generated_at"],
+                "attention_count": len(snapshot["attention"]),
+                "unchanged": bool(snapshot.get("unchanged")),
+            }
         elif job["type"] == "connector.sync":
             stream_lock=os.integrations.resume_job_stream(job["id"],worker_id,str(payload["mapping_hash"]))
             def connector_progress(value: float) -> None:

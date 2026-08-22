@@ -2513,6 +2513,70 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        31,
+        "proactive_intelligence_snapshots",
+        """
+        CREATE TABLE IF NOT EXISTS proactive_intelligence_snapshots (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            person_id TEXT NOT NULL,
+            snapshot_type TEXT NOT NULL CHECK(snapshot_type IN ('executive','workspace')),
+            version INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('ready','degraded','insufficient_evidence')),
+            degraded_reason TEXT,
+            projection_fingerprint TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            evidence_refs_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(person_id) REFERENCES people(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_proactive_intelligence_snapshot_version
+            ON proactive_intelligence_snapshots(organization_id, COALESCE(workspace_id, ''), person_id, snapshot_type, version);
+        CREATE INDEX IF NOT EXISTS idx_proactive_intelligence_latest
+            ON proactive_intelligence_snapshots(organization_id, COALESCE(workspace_id, ''), person_id, snapshot_type, generated_at DESC, version DESC);
+        CREATE INDEX IF NOT EXISTS idx_proactive_intelligence_status
+            ON proactive_intelligence_snapshots(organization_id, COALESCE(workspace_id, ''), person_id, snapshot_type, status, generated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_proactive_intelligence_fingerprint
+            ON proactive_intelligence_snapshots(organization_id, COALESCE(workspace_id, ''), person_id, snapshot_type, projection_fingerprint);
+        CREATE TABLE IF NOT EXISTS proactive_intelligence_attention_items (
+            id TEXT PRIMARY KEY,
+            snapshot_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            person_id TEXT NOT NULL,
+            rank INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            narrative TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('open','degraded','insufficient_evidence')),
+            evidence_refs_json TEXT NOT NULL DEFAULT '{}',
+            generated_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(snapshot_id) REFERENCES proactive_intelligence_snapshots(id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_proactive_intelligence_attention_latest
+            ON proactive_intelligence_attention_items(organization_id, COALESCE(workspace_id, ''), person_id, generated_at DESC, rank);
+        CREATE TRIGGER IF NOT EXISTS proactive_intelligence_snapshots_no_update BEFORE UPDATE ON proactive_intelligence_snapshots BEGIN
+            SELECT RAISE(ABORT, 'proactive intelligence snapshots are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS proactive_intelligence_snapshots_no_delete BEFORE DELETE ON proactive_intelligence_snapshots BEGIN
+            SELECT RAISE(ABORT, 'proactive intelligence snapshots are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS proactive_intelligence_attention_no_update BEFORE UPDATE ON proactive_intelligence_attention_items BEGIN
+            SELECT RAISE(ABORT, 'proactive intelligence attention is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS proactive_intelligence_attention_no_delete BEFORE DELETE ON proactive_intelligence_attention_items BEGIN
+            SELECT RAISE(ABORT, 'proactive intelligence attention is append-only');
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

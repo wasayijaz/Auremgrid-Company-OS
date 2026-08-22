@@ -65,7 +65,8 @@ class IntelligenceService:
                   query: str | None = None,
                   what_if: dict[str, Any] | None = None,
                   context_type: str | None = None,
-                  context_id: str | None = None) -> dict[str, Any]:
+                  context_id: str | None = None,
+                  use_reasoning_provider: bool = True) -> dict[str, Any]:
         """Return a stable intelligence contract for one authorized workspace.
 
         ``as_of`` is a read watermark.  Current canonical operational rows are
@@ -215,21 +216,35 @@ class IntelligenceService:
         )
         recommendation_evaluation = self._recommendation_evaluation(findings, decision_links, analogues)
         deliberation = self._deliberation(findings, relationships, analogues, decision_links, recommended_plan)
-        model_reasoning, reasoning_meta = self._model_reasoning(
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-            person_id=person_id,
-            actor_id=actor_id,
-            scope=scope,
-            context=context,
-            evidence=evidence,
-            findings=findings,
-            relationships=relationships,
-            analogues=analogues,
-            decision_links=decision_links,
-            recommended_plan=recommended_plan,
-            scenario_inputs=scenario_inputs,
-        )
+        if use_reasoning_provider:
+            model_reasoning, reasoning_meta = self._model_reasoning(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                person_id=person_id,
+                actor_id=actor_id,
+                scope=scope,
+                context=context,
+                evidence=evidence,
+                findings=findings,
+                relationships=relationships,
+                analogues=analogues,
+                decision_links=decision_links,
+                recommended_plan=recommended_plan,
+                scenario_inputs=scenario_inputs,
+            )
+        else:
+            model_reasoning = None
+            reasoning_meta = {
+                "status": "disabled",
+                "provider": None,
+                "model": None,
+                "version": None,
+                "evidence_count": len(evidence),
+                "evidence_refs": [item.get("object_ref") for item in evidence if item.get("object_ref")][:24],
+                "context_hash": None,
+                "output_hash": None,
+                "fallback_reason": None,
+            }
         if model_reasoning is not None:
             deliberation.update(model_reasoning)
             deliberation["mode"] = "model_backed"
@@ -275,6 +290,7 @@ class IntelligenceService:
         person_id: str,
         actor_id: str | None = None,
         as_of: datetime | None = None,
+        use_reasoning_provider: bool = True,
     ) -> dict[str, Any]:
         """Return an organization portfolio without crossing workspace ACLs."""
         membership = self.os.company.org_membership(organization_id, person_id)
@@ -291,6 +307,7 @@ class IntelligenceService:
         for row in rows:
             workspaces.append(self.workspace(
                 organization_id, row["id"], person_id, actor_id=actor_id, as_of=as_of,
+                use_reasoning_provider=use_reasoning_provider,
             ))
         # Cross-client portfolio aggregates use only the already ACL-filtered
         # workspace projections.  Missing provider values remain null.
@@ -309,8 +326,12 @@ class IntelligenceService:
                     "type": finding["type"],
                     "confidence": finding.get("confidence"),
                     "impact": finding.get("impact"),
+                    "summary": finding.get("summary"),
+                    "recommendation": finding.get("recommendation"),
+                    "evidence": finding.get("evidence", [])[:6],
                 })
         attention.sort(key=lambda item: float((item.get("confidence") or {}).get("score", 0.0)), reverse=True)
+        portfolio_analogues = self._portfolio_analogues(organization_id, rows, workspaces, (as_of.astimezone(timezone.utc) if as_of else _now()).isoformat())
         status = "ready"
         if any(item.get("status") == "insufficient_evidence" for item in workspaces):
             status = "degraded"
@@ -340,7 +361,9 @@ class IntelligenceService:
                 },
                 "client_health": health_rows,
                 "attention": attention[:20],
+                "historical_analogues": portfolio_analogues,
             },
+            "historical_analogues": portfolio_analogues,
             "generated_at": _now().isoformat(),
         }
 
@@ -350,15 +373,41 @@ class IntelligenceService:
         person_id: str,
         actor_id: str | None = None,
         as_of: datetime | None = None,
+        use_reasoning_provider: bool = True,
     ) -> dict[str, Any]:
         """Stable first-class executive output backed by the portfolio projection."""
-        result = self.portfolio(organization_id, person_id, actor_id=actor_id, as_of=as_of)
+        result = self.portfolio(
+            organization_id, person_id, actor_id=actor_id, as_of=as_of,
+            use_reasoning_provider=use_reasoning_provider,
+        )
+        attention = result["portfolio"].get("attention", [])[:3]
+        narrative_items = []
+        for rank, item in enumerate(attention, start=1):
+            confidence = item.get("confidence") or {}
+            impact = item.get("impact") or {}
+            recommendation = item.get("recommendation") or {}
+            narrative_items.append({
+                "rank": rank,
+                "workspace_id": item.get("workspace_id"),
+                "workspace_name": item.get("workspace_name"),
+                "title": item.get("title"),
+                "what_changed": item.get("summary") or item.get("title"),
+                "why_it_matters": impact.get("summary") or "Impact is not quantified in the visible records.",
+                "next_step": recommendation.get("summary") or "Review the cited records and choose a reversible next step.",
+                "confidence": confidence,
+                "evidence": item.get("evidence", [])[:6],
+            })
         return {
             **result,
             "type": "executive_brief",
             "headline": "Portfolio operating brief",
             "sections": {
                 "attention": result["portfolio"]["attention"],
+                "top_three": narrative_items,
+                "narrative": {
+                    "headline": "Three things need attention" if narrative_items else "No evidence-backed attention items",
+                    "items": narrative_items,
+                },
                 "client_health": [
                     {
                         "workspace_id": item["scope"]["workspace_id"],
@@ -638,6 +687,14 @@ class IntelligenceService:
                 return round(float(raw.get(key, default)), 3)
             except (TypeError, ValueError):
                 return round(default, 3)
+        def first_number(keys: tuple[str, ...], default: float = 0.0) -> float:
+            for key in keys:
+                if key in raw:
+                    return number(key, default)
+            return round(default, 3)
+        def action_value() -> str:
+            value = str(raw.get("client_action", raw.get("client_decision", raw.get("keep_drop", ""))) or "").strip().lower()
+            return value if value in {"keep", "drop"} else "unspecified"
         base_remaining = sum(float(row.get("remaining_hours") or 0.0) for row in domains["capacity"]["snapshots"])
         base_demand = float(domains["capacity"].get("demand_hours") or domains["work"].get("estimated_hours") or 0.0)
         included_scope = sum(float(row.get("included_hours") or row.get("included_quantity") or 0.0) for row in domains["scope"]["usage"])
@@ -651,7 +708,21 @@ class IntelligenceService:
             "finance_amount_delta": number("finance_amount_delta", 0.0),
             "client_health_delta": number("client_health_delta", 0.0),
             "deadline_days_delta": number("deadline_days_delta", 0.0),
+            # Growth and staffing inputs are intentionally explicit.  A zero
+            # default means the engine never invents a utilization rate.
+            "additional_clients": first_number(("additional_clients", "new_clients_delta", "new_clients")),
+            "hours_per_new_client": first_number(("hours_per_new_client", "new_client_hours", "hours_per_client")),
+            "leave_hours_delta": first_number(("leave_hours_delta", "leave_hours")),
+            "hiring_hours_delta": first_number(("hiring_hours_delta", "hiring_capacity_hours")),
+            "client_action": action_value(),
+            "client_revenue_delta": first_number(("client_revenue_delta", "retainer_revenue_delta")),
+            "client_cost_delta": first_number(("client_cost_delta", "delivery_cost_delta")),
+            "client_hours_delta": first_number(("client_hours_delta", "retainer_hours_delta")),
         }
+        added_client_hours = retained["additional_clients"] * retained["hours_per_new_client"]
+        client_action_sign = 1.0 if retained["client_action"] == "keep" else -1.0 if retained["client_action"] == "drop" else 0.0
+        client_margin_delta = client_action_sign * (retained["client_revenue_delta"] - retained["client_cost_delta"])
+        client_capacity_delta = client_action_sign * retained["client_hours_delta"]
         projected_scope_used = used_scope + retained["scope_usage_delta"]
         projected_scope_ratio = None
         if included_scope > 0:
@@ -674,18 +745,23 @@ class IntelligenceService:
                 "finance_status": finance.get("status"),
             },
             "projection": {
-                "capacity_remaining_hours": round(base_remaining + retained["capacity_hours_delta"] - retained["work_hours_delta"], 3),
-                "work_demand_hours": round(base_demand + retained["work_hours_delta"], 3),
+                "capacity_remaining_hours": round(base_remaining + retained["capacity_hours_delta"] + retained["hiring_hours_delta"] - retained["leave_hours_delta"] - retained["work_hours_delta"] - added_client_hours - client_capacity_delta, 3),
+                "work_demand_hours": round(base_demand + retained["work_hours_delta"] + added_client_hours + client_capacity_delta, 3),
                 "scope_used": round(projected_scope_used, 3),
                 "scope_ratio": projected_scope_ratio,
                 "client_health": projected_health,
-                "recognized_revenue": projected_finance,
+                # Revenue and margin are separate measures.  Costs affect
+                # margin only; never add them to recognized revenue.
+                "recognized_revenue": round(projected_finance + client_action_sign * retained["client_revenue_delta"], 3) if projected_finance is not None else None,
+                "client_margin_delta": round(client_margin_delta, 3),
+                "added_client_hours": round(added_client_hours, 3),
                 "deadline_days_delta": retained["deadline_days_delta"],
             },
             "constraints": [
                 "Inputs are read-time scenario parameters and are not written to the ledger.",
                 "Finance projection remains null unless finance is connected.",
                 "Unprovided inputs default to zero change.",
+                "New-client hours, leave, hiring, and keep/drop economics require explicit inputs; no agency averages are assumed.",
             ],
         }
 
@@ -746,8 +822,51 @@ class IntelligenceService:
                         "campaign_metrics", "work", "unknown",
                         "Campaign-linked work is visible, but metrics do not establish whether delivery caused performance movement.",
                         [self._ref("campaign_metric_snapshots", metric["metric_id"]), self._ref("work_items", item["id"])],
-                        0.42,
-                    ))
+                    0.42,
+                ))
+        # These are bounded hypotheses, not causal claims.  They make the
+        # operating picture richer when two independently sourced domains
+        # move together while preserving an explicit unknown relation.
+        if campaigns and health:
+            measured = [row for row in campaigns if row.get("metric_id")]
+            if measured:
+                latest = measured[0]
+                metric_summary = ", ".join(
+                    f"{name} {latest.get(name)}"
+                    for name in ("ctr", "cvr", "roas")
+                    if latest.get(name) is not None
+                ) or "campaign metrics are present"
+                links.append(self._causal_link(
+                    "campaign_metrics", "client_health", "unknown",
+                    f"Campaign performance ({metric_summary}) and client health are co-visible; performance may inform the relationship, but causation is unproven.",
+                    [self._ref("campaign_metric_snapshots", latest["metric_id"]), self._ref("client_health_snapshots", health["id"])],
+                    0.48,
+                ))
+        if domains["reviews"]["stalled"] and work:
+            review = domains["reviews"]["stalled"][0]
+            links.append(self._causal_link(
+                "reviews", "work", "supports",
+                "A stalled review can delay open work; this is a delivery-risk hypothesis until a linked transition confirms the effect.",
+                [self._ref("reviews", review["id"]), self._ref("work_items", work[0]["id"])],
+                0.63,
+            ))
+        if health and domains["finance"].get("status") == "connected":
+            finance = domains["finance"]
+            links.append(self._causal_link(
+                "client_health", "finance", "unknown",
+                "Client health and recorded revenue/cost are related operating signals; the ledger does not establish that one caused the other.",
+                [self._ref("client_health_snapshots", health["id"]), self._ref("finance", "workspace")],
+                0.44,
+            ))
+        if scope and work:
+            allowance = next((row for row in scope if (row.get("included_hours") or row.get("included_quantity")) is not None), None)
+            if allowance is not None:
+                links.append(self._causal_link(
+                    "scope", "work", "supports",
+                    "Recorded scope consumption changes the delivery context for open work; additional effort should be checked against the allowance.",
+                    [self._ref("scope_usage", allowance["id"]), self._ref("work_items", work[0]["id"])],
+                    0.59,
+                ))
         if health and risks:
             for risk in risks:
                 links.append(self._causal_link(
@@ -851,6 +970,87 @@ class IntelligenceService:
                     "confidence": _confidence(min(0.82, 0.42 + overlap * 0.1)),
                 })
         return analogues[:8]
+
+    def _portfolio_analogues(
+        self,
+        organization_id: str,
+        visible_workspaces: list[dict[str, Any]],
+        workspace_results: list[dict[str, Any]],
+        cutoff: str,
+    ) -> list[dict[str, Any]]:
+        """Find resolved patterns across only the reader's visible workspaces.
+
+        This is intentionally a bounded lexical baseline.  It supplies outcome
+        distributions to portfolio intelligence without allowing a candidate
+        from an unpermitted client workspace to influence the result.
+        """
+        visible_ids = [str(row.get("id")) for row in visible_workspaces if row.get("id")]
+        if len(visible_ids) < 2:
+            return []
+        names = {str(row.get("id")): str(row.get("name") or row.get("id")) for row in visible_workspaces}
+        current_terms: dict[str, set[str]] = {}
+        for result in workspace_results:
+            workspace_id = str(result.get("scope", {}).get("workspace_id") or "")
+            terms = _tokens(" ".join(
+                [str(item.get("title") or "") + " " + str(item.get("summary") or "") for item in result.get("findings", [])]
+                + [str(item.get("type") or "") + " " + str(item.get("evidence") or "") for item in (result.get("domains", {}).get("risks", {}).get("items", []) or [])]
+                + [str(item.get("title") or "") + " " + str(item.get("blocking_reason") or "") for item in (result.get("domains", {}).get("work", {}).get("items", []) or [])]
+            ))
+            if terms:
+                current_terms[workspace_id] = terms
+        if not current_terms:
+            return []
+        marks = ",".join("?" for _ in visible_ids)
+        risks = self._optional_rows(
+            f"""SELECT id,workspace_id,type,evidence,status,resolution,detected_at,resolved_at
+                  FROM risks WHERE organization_id=? AND workspace_id IN ({marks}) AND detected_at<=?
+                  ORDER BY detected_at DESC,id LIMIT 300""",
+            (organization_id, *visible_ids, cutoff),
+        )
+        events = self._optional_rows(
+            f"""SELECT id,workspace_id,work_item_id,action,detail,recorded_at
+                  FROM work_events WHERE workspace_id IN ({marks}) AND recorded_at<=?
+                  ORDER BY recorded_at DESC,id LIMIT 300""",
+            (*visible_ids, cutoff),
+        )
+        candidates: list[dict[str, Any]] = []
+        for kind, rows in (("risk_pattern", risks), ("delivery_pattern", events)):
+            for row in rows:
+                candidate_ws = str(row.get("workspace_id") or "")
+                text = f"{row.get('type')} {row.get('evidence')} {row.get('action')} {row.get('detail')}"
+                candidate_terms = _tokens(text)
+                matched_readers = [ws for ws, terms in current_terms.items() if ws != candidate_ws and terms.intersection(candidate_terms)]
+                if not matched_readers:
+                    continue
+                candidates.append({"kind": kind, "row": row, "matched_readers": matched_readers, "overlap": max(len(current_terms[ws].intersection(candidate_terms)) for ws in matched_readers)})
+        if not candidates:
+            return []
+        # The distribution is calculated over all matched, visible outcomes so
+        # each analogue reports how often this pattern resolved historically.
+        resolved_rows = [item for item in candidates if (
+            (item["kind"] == "risk_pattern" and (item["row"].get("resolved_at") or item["row"].get("status") == "resolved"))
+            or (item["kind"] == "delivery_pattern" and item["row"].get("action") in {"complete", "ship", "approve"})
+        )]
+        resolution_rate = round(len(resolved_rows) / len(candidates), 3) if candidates else 0.0
+        analogues: list[dict[str, Any]] = []
+        for item in sorted(candidates, key=lambda entry: (-int(entry["overlap"]), str(entry["row"].get("id"))))[:12]:
+            row = item["row"]
+            resolved = item in resolved_rows
+            analogues.append({
+                "kind": item["kind"],
+                "source": {"type": "risk" if item["kind"] == "risk_pattern" else "work_event", "id": str(row.get("id")), "workspace_id": str(row.get("workspace_id")), "workspace_name": names.get(str(row.get("workspace_id")), str(row.get("workspace_id")))},
+                "summary": f"Visible prior {item['kind'].replace('_', ' ')} overlaps the current portfolio signal across workspace boundaries.",
+                "resolved": resolved,
+                "outcome_stats": {
+                    "matched_events": len(candidates),
+                    "resolved_count": len(resolved_rows),
+                    "resolution_rate": resolution_rate,
+                    "visible_workspace_count": len({str(entry["row"].get("workspace_id")) for entry in candidates}),
+                },
+                "evidence": [self._ref("risks" if item["kind"] == "risk_pattern" else "work_events", str(row.get("id")))],
+                "confidence": _confidence(min(0.9, 0.48 + int(item["overlap"]) * 0.08)),
+            })
+        return analogues
 
     @staticmethod
     def _days_between(start: Any, end: Any) -> float | None:
@@ -1283,6 +1483,14 @@ class IntelligenceService:
         projected_scope_pressure = (projection.get("scope_ratio") is not None and float(projection["scope_ratio"]) > 1)
         projected_health = projection.get("client_health")
         projected_finance = projection.get("recognized_revenue")
+        retained_numeric = [
+            float(value or 0.0)
+            for key, value in scenario_inputs["retained_inputs"].items()
+            if key != "client_action"
+        ]
+        selected_action = str(scenario_inputs["retained_inputs"].get("client_action") or "unspecified")
+        selected_sign = 1.0 if selected_action == "keep" else -1.0 if selected_action == "drop" else 0.0
+        client_capacity_delta = selected_sign * float(scenario_inputs["retained_inputs"].get("client_hours_delta") or 0.0)
         scenarios = [
             {
                 "name": "stabilize",
@@ -1332,10 +1540,83 @@ class IntelligenceService:
                 "constraints": scenario_inputs["constraints"],
                 "mitigations": ["Convert the chosen scenario into canonical work before acting", "Compare the next outcome with this retained input set"],
                 "downside": "The projection is directional because no hidden provider or market data is inferred.",
-                "confidence": _confidence(0.58 if any(float(value or 0) for value in scenario_inputs["retained_inputs"].values()) else 0.35),
+                "confidence": _confidence(0.58 if any(retained_numeric) else 0.35),
                 "evidence": evidence[:6],
             },
         ]
+        growth_inputs = scenario_inputs["retained_inputs"]
+        growth_is_configured = bool(
+            growth_inputs.get("additional_clients")
+            or growth_inputs.get("hours_per_new_client")
+            or growth_inputs.get("leave_hours_delta")
+            or growth_inputs.get("hiring_hours_delta")
+        )
+        scenarios.append({
+            "name": "growth_plus_clients",
+            "retained_inputs": growth_inputs,
+            "assumptions": [
+                "Each additional client consumes the supplied hours_per_new_client value",
+                "Hiring adds the supplied capacity hours and leave removes the supplied capacity hours",
+                "No pipeline conversion probability or hidden client demand is inferred",
+            ],
+            "domain_impacts": {
+                "capacity": f"remaining capacity changes to {projection.get('capacity_remaining_hours')}h",
+                "work": f"demand changes to {projection.get('work_demand_hours')}h",
+                "finance": "margin impact is visible only when finance and client economics are supplied",
+                "client_health": "new-client relationship impact is unknown until delivery evidence exists",
+            },
+            "constraints": [
+                "Growth is a directional capacity check, not a hiring recommendation",
+                *scenario_inputs["constraints"],
+            ],
+            "mitigations": [
+                "Validate pipeline probability and retainer assumptions before committing",
+                "Assign an owner for onboarding and recheck capacity after staffing or leave changes",
+            ],
+            "downside": "Accepting new clients without explicit hours can hide a delivery bottleneck.",
+            "confidence": _confidence(0.58 if growth_is_configured else 0.3),
+            "evidence": evidence[:8],
+        })
+        action = str(growth_inputs.get("client_action") or "unspecified")
+        # Remove the selected keep/drop effect so each alternative below is
+        # calculated independently from the same canonical baseline.
+        base_client_capacity = float(projection.get("capacity_remaining_hours") or 0.0) + client_capacity_delta
+        base_client_work = float(projection.get("work_demand_hours") or 0.0) - client_capacity_delta
+        for name, sign, label in (("keep_client", 1.0, "Keeping"), ("drop_client", -1.0, "Dropping")):
+            revenue = growth_inputs.get("client_revenue_delta")
+            cost = growth_inputs.get("client_cost_delta")
+            hours = growth_inputs.get("client_hours_delta")
+            configured = bool(revenue or cost or hours or action == ("keep" if sign > 0 else "drop"))
+            alternative_capacity = round(base_client_capacity - sign * float(hours or 0.0), 3)
+            alternative_work = round(base_client_work + sign * float(hours or 0.0), 3)
+            alternative_revenue = round(float(projected_finance) + sign * float(revenue or 0.0), 3) if projected_finance is not None else None
+            alternative_margin = round(sign * (float(revenue or 0.0) - float(cost or 0.0)), 3)
+            scenarios.append({
+                "name": name,
+                "retained_inputs": growth_inputs,
+                "assumptions": [
+                    f"{label} is evaluated using the explicitly supplied client revenue, cost, and hours deltas",
+                    "A missing economic input remains unknown rather than being estimated",
+                ],
+                "domain_impacts": {
+                    "finance": f"recognized revenue projection {alternative_revenue}; margin delta {alternative_margin}" if alternative_revenue is not None else f"recognized revenue unknown; margin delta {alternative_margin}",
+                    "capacity": f"remaining capacity changes to {alternative_capacity}h" if hours else "capacity impact unknown",
+                    "work": f"work demand changes to {alternative_work}h" if hours else "work impact unknown",
+                    "client_health": "relationship health may improve through focus" if name == "drop_client" else "relationship continuity is preserved; delivery load remains",
+                    "scope": "scope obligations require explicit closeout or renewal evidence",
+                },
+                "constraints": [
+                    "Keep/drop is a decision aid and does not terminate a contract or create a write",
+                    *scenario_inputs["constraints"],
+                ],
+                "mitigations": [
+                    "Review contract, payment history, scope overage, and relationship evidence before deciding",
+                    "Record the approved decision and outcome so later recommendations can be evaluated",
+                ],
+                "downside": "The scenario is incomplete when client economics or capacity hours are not connected.",
+                "confidence": _confidence(0.56 if configured else 0.28),
+                "evidence": evidence[:8],
+            })
         return scenarios
 
     def _enrich_finding(
@@ -1370,6 +1651,31 @@ class IntelligenceService:
             item.setdefault("opposing_evidence", opposing)
             item.setdefault("assumptions", ["The cited records are representative of the visible state"])
             hypotheses.append(item)
+        # Attach relevant cross-domain links as competing hypotheses.  A link
+        # is deliberately phrased as a hypothesis and carries its own evidence
+        # and confidence rather than being promoted to an asserted cause.
+        finding_refs = {
+            (str(item.get("object_ref", {}).get("type")), str(item.get("object_ref", {}).get("id")))
+            for item in supporting
+            if isinstance(item, dict)
+        }
+        for link in relationships:
+            link_refs = {
+                (str(item.get("type")), str(item.get("id")))
+                for item in link.get("evidence", [])
+                if isinstance(item, dict)
+            }
+            if not finding_refs or not finding_refs.intersection(link_refs):
+                continue
+            hypotheses.append({
+                "text": f"Cross-domain hypothesis: {link.get('explanation')}",
+                "confidence": link.get("confidence") or _confidence(0.4),
+                "stance": "cross_domain",
+                "relation": link.get("relation", "unknown"),
+                "supporting_evidence": list(link.get("evidence", [])),
+                "opposing_evidence": opposing,
+                "assumptions": ["The linked records are comparable at the read watermark", "Co-occurrence is not proof of causation"],
+            })
         hypotheses.extend({
             "text": f"Competing explanation: {item['summary']}",
             "confidence": item["confidence"],
@@ -1380,12 +1686,12 @@ class IntelligenceService:
         } for item in opposing)
         finding["hypotheses"] = hypotheses
         scenarios = list(finding.get("scenarios") or self._scenarios(domains, relationships, domain_evidence, scenario_inputs))
-        if not any(scenario.get("name") == "parameterized_what_if" for scenario in scenarios):
-            parameterized = next(
-                scenario for scenario in self._scenarios(domains, relationships, domain_evidence, scenario_inputs)
-                if scenario["name"] == "parameterized_what_if"
-            )
-            scenarios.append(parameterized)
+        expanded = self._scenarios(domains, relationships, domain_evidence, scenario_inputs)
+        existing_names = {str(scenario.get("name")) for scenario in scenarios}
+        for candidate in expanded:
+            if candidate.get("name") not in existing_names:
+                scenarios.append(candidate)
+                existing_names.add(str(candidate.get("name")))
         normalized_scenarios: list[dict[str, Any]] = []
         for scenario in scenarios:
             normalized = dict(scenario)

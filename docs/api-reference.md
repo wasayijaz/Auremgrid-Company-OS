@@ -2,11 +2,22 @@
 
 All responses are JSON except the dashboard. Errors use error and message fields with 400 validation, 403 authorization, 404 not found, or 500 internal status.
 
-Read routes include /health, /search, /entity, /entity/candidates, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /reviews/annotations, /decisions, /people, /capacity, /clients/roster, /meetings/responsibilities, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /memory-proposals, /knowledge-health, /dashboard/data, /dashboard/client, /dashboard/brain, /dashboard/intelligence, /dashboard/intelligence/portfolio, /dashboard/intelligence/executive, and /dashboard/workflows.
+Read routes include /health, /search, /entity, /entity/candidates, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /reviews/annotations, /decisions, /people, /capacity, /clients/roster, /meetings/responsibilities, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /memory-proposals, /knowledge-health, /dashboard/data, /dashboard/client, /dashboard/brain, /dashboard/intelligence, /dashboard/intelligence/portfolio, /dashboard/intelligence/executive, /dashboard/intelligence/snapshots, /dashboard/intelligence/attention, and /dashboard/workflows.
 
 `GET /dashboard/intelligence` requires `organization_id`, `workspace_id`, and `person_id`, accepts optional `query` and timezone-aware `as_of`, and enforces the bearer identity's organization, workspace, person, capability, and source ACL. It returns a derived read model rather than new canonical truth. The response exposes status, degraded reason, evidence-backed findings, confidence, changes, hypotheses, scenarios, impact, recommendation, and proposed action descriptors. If `CompanyOS` is constructed with an injected strategic-reasoning provider, `deliberation` may additionally contain validated `hypotheses`, `options`, `scenarios`, `recommendation`, `confidence`, and `dissent`; `provider_metadata` contains only provider identity, evidence references/counts, hashes, and fallback status. Provider failures or malformed output retain deterministic deliberation. Unknown queries return `insufficient_evidence`; historical reads and read-only memberships return no mutation actions.
 
 `GET /dashboard/intelligence/portfolio` and `GET /dashboard/intelligence/executive` require `organization_id` and `person_id`. They aggregate only workspaces visible to that membership. The executive response adds attention, client-health, and downside-constraint sections. Finance remains explicitly `not_connected` with null values unless canonical connected finance evidence exists.
+
+`POST /dashboard/intelligence/refresh` enqueues a read-only durable refresh for
+an `executive` or workspace snapshot. `GET /dashboard/intelligence/snapshots`
+returns the latest immutable per-person snapshot; `GET
+/dashboard/intelligence/attention` returns its persisted top-three attention
+queue. Workspace reads require the same workspace membership as live
+Intelligence. Manual refreshes create a fresh job; callers may provide an
+explicit idempotency key when they need request deduplication. A refresh whose
+full reader-facing projection has not changed does not append another snapshot.
+Processing requires `worker-once`; none of these routes executes an external
+action.
 
 Brain reads preserve the authenticated source ACL and optional `as_of` fence. Fact objects returned by `/search`, `/entity`, and `/history` include their canonical `effective_state`; `/neighbors` also returns the effective read timestamp. `/entity/candidates` requires `brain_propose` and returns only deterministic, evidence-backed name/domain candidates whose sources are visible to the caller; it creates no alias, proposal, or merge. `/knowledge-health` is a read-only summary of fact counts plus sanitized semantic and graph provider health. It reports deterministic semantic fallback explicitly and reports a degraded graph even when the last verified generation remains available.
 
