@@ -23,6 +23,20 @@ class Dashboard407ContractTests(unittest.TestCase):
         self.assertIn("uniqueAttention(", self.bundle)
         self.assertIn("Build first snapshot", self.bundle)
 
+    def test_zero_build_shadcn_density_and_scroll_area_contract(self) -> None:
+        for marker in (
+            "04-shadcn-system.css",
+            "data-dashboard-module=\"shadcn-system\"",
+            "--control-h:36px",
+            "--scrollbar-size:5px",
+            "scrollbar-color:transparent transparent",
+            "::-webkit-scrollbar-thumb",
+            "focus-visible",
+            'font-family:"Gellix",sans-serif',
+            "@media(prefers-reduced-motion:reduce)",
+        ):
+            self.assertIn(marker, self.bundle)
+
     def test_portfolio_and_brain_provenance_contracts_are_rendered(self) -> None:
         for marker in ("Owner", "Scope", "Revenue", "Evidence span", "Validity", "Observed", "Affected decisions", "Related entities", "History"):
             self.assertIn(marker, self.bundle)
