@@ -172,17 +172,13 @@ class IntelligenceEngineTests(unittest.TestCase):
         self.assertIn("calibration_delta", evaluation)
 
     def test_selected_operating_context_is_validated_inside_the_workspace(self) -> None:
-        project = self.os.store.conn.execute(
-            "SELECT id,name FROM projects WHERE organization_id=? AND workspace_id=? ORDER BY id LIMIT 1",
-            ("org_demo", "ws_alpha"),
-        ).fetchone()
-        self.assertIsNotNone(project)
+        project = self.os.create_project("org_demo", "ws_alpha", "person_demo_owner", "Context project")
         result = self.os.intelligence.workspace(
             "org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin",
-            context_type="project", context_id=project["id"],
+            context_type="project", context_id=project.id,
         )
         self.assertEqual(result["scope_contract"]["current"]["type"], "project")
-        self.assertEqual(result["scope_contract"]["current"]["id"], project["id"])
+        self.assertEqual(result["scope_contract"]["current"]["id"], project.id)
         with self.assertRaises(AuthorizationError):
             self.os.intelligence.workspace(
                 "org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin",
