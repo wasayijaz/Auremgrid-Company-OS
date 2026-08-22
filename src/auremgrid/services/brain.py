@@ -482,8 +482,9 @@ class CompanyOS:
         name: str, description: str = "") -> dict[str,Any]:
         self._require_person_access(organization_id,workspace_id,person_id,write=True)
         if self.company.get_project(workspace_id,project_id) is None: raise NotFoundError("project not found")
+        if not name.strip(): raise ValidationError("initiative name is required")
         now=utcnow().isoformat();item={"id":new_id("initiative"),"organization_id":organization_id,"workspace_id":workspace_id,
-            "project_id":project_id,"name":name,"description":description,"status":"planned","owner_person_id":person_id,"created_at":now,"updated_at":now}
+            "project_id":project_id,"name":name.strip(),"description":description,"status":"planned","owner_person_id":person_id,"created_at":now,"updated_at":now}
         self.store.conn.execute("INSERT INTO initiatives VALUES (?,?,?,?,?,?,?,?,?,?)",tuple(item.values()));self.store.conn.commit();return item
 
     def list_projects(self, organization_id: str, workspace_id: str, person_id: str) -> list[Project]:
@@ -495,6 +496,12 @@ class CompanyOS:
         self._require_person_access(organization_id, workspace_id, person_id, write=True)
         if self.company.get_project(workspace_id, project_id) is None:
             raise NotFoundError("project not found")
+        if work_item_id:
+            work_item = self.store.get_work_item(workspace_id, work_item_id)
+            if work_item is None:
+                raise NotFoundError("work item not found")
+            if work_item.project_id and work_item.project_id != project_id:
+                raise ValidationError("work item belongs to a different project")
         allowed = {"design_asset","landing_page","ad_creative","video","report","copy","presentation","website","document","campaign_output"}
         if type not in allowed or not title.strip():
             raise ValidationError("valid deliverable title and type are required")

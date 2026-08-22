@@ -75,5 +75,18 @@ class ExpandedApiTests(unittest.TestCase):
         status,body=self.get(f"/campaigns?organization_id=org_demo&workspace_id=ws_beta&person_id={outsider.id}",outsider_token)
         self.assertEqual(status,403);self.assertEqual(body["error"],"authorization_error")
 
+    def test_initiative_http_endpoint_creates_project_child(self) -> None:
+        project=self.os.create_project("org_demo","ws_alpha","person_demo_owner","Initiative parent")
+        status,body=self.post("/initiatives",{
+            "organization_id":"org_demo",
+            "workspace_id":"ws_alpha",
+            "person_id":"person_demo_owner",
+            "project_id":project.id,
+            "name":"  Launch initiative  ",
+        })
+        self.assertEqual(status,201)
+        self.assertEqual(body["project_id"],project.id)
+        self.assertEqual(body["name"],"Launch initiative")
+
 
 if __name__=="__main__": unittest.main()

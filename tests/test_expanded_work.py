@@ -34,6 +34,13 @@ class ExpandedWorkTests(unittest.TestCase):
         self.os.work_ops.add_dependency(self.org.id,self.ws.id,self.owner.id,first.id,second.id)
         with self.assertRaises(ValidationError):self.os.work_ops.add_dependency(self.org.id,self.ws.id,self.owner.id,second.id,first.id)
 
+    def test_parent_work_item_must_stay_in_the_same_project(self)->None:
+        first_project=self.os.create_project(self.org.id,self.ws.id,self.owner.id,"First")
+        second_project=self.os.create_project(self.org.id,self.ws.id,self.owner.id,"Second")
+        parent=self.os.work_ops.create(self.org.id,self.ws.id,self.owner.id,"Parent","Parent","Lead",first_project.id)
+        with self.assertRaises(ValidationError):
+            self.os.work_ops.create(self.org.id,self.ws.id,self.owner.id,"Child","Child","Lead",second_project.id,parent_id=parent.id)
+
     def test_time_tracking_updates_actual_effort(self)->None:
         item=self.os.work_ops.create(self.org.id,self.ws.id,self.owner.id,"Edit","Edit video","Client",estimate_hours=3)
         start=datetime.now(timezone.utc);self.os.work_ops.log_time(self.org.id,self.ws.id,self.worker.id,item.id,start,start+timedelta(hours=2.5))

@@ -66,6 +66,25 @@ class OrganizationDeliveryTests(unittest.TestCase):
                 self.org.id, self.base.id, self.owner.id, project.id, "Leak", "document"
             )
 
+    def test_initiative_must_belong_to_a_workspace_project(self) -> None:
+        project = self.os.create_project(self.org.id, self.prime.id, self.owner.id, "Prime roadmap")
+        initiative = self.os.create_initiative(self.org.id, self.prime.id, self.owner.id, project.id, "  Launch ops  ")
+        self.assertEqual(initiative["project_id"], project.id)
+        self.assertEqual(initiative["name"], "Launch ops")
+        with self.assertRaises(NotFoundError):
+            self.os.create_initiative(self.org.id, self.base.id, self.owner.id, project.id, "Leak")
+        with self.assertRaises(ValidationError):
+            self.os.create_initiative(self.org.id, self.prime.id, self.owner.id, project.id, " ")
+
+    def test_deliverable_work_item_must_belong_to_its_project(self) -> None:
+        first_project = self.os.create_project(self.org.id, self.prime.id, self.owner.id, "First")
+        second_project = self.os.create_project(self.org.id, self.prime.id, self.owner.id, "Second")
+        item = self.os.work_ops.create(self.org.id, self.prime.id, self.owner.id, "First task", "Task", "Lead", first_project.id)
+        with self.assertRaises(ValidationError):
+            self.os.create_deliverable(
+                self.org.id, self.prime.id, self.owner.id, second_project.id, "Wrong link", "document", item.id
+            )
+
     def test_review_cannot_be_decided_twice(self) -> None:
         project = self.os.create_project(self.org.id, self.prime.id, self.owner.id, "Review rules")
         deliverable = self.os.create_deliverable(self.org.id, self.prime.id, self.owner.id, project.id, "Deck", "presentation")

@@ -25,7 +25,14 @@ class WorkOperations:
         if priority not in {"low","normal","high","urgent"}: raise ValidationError("invalid priority")
         if project_id and self.company.get_project(workspace_id,project_id) is None: raise NotFoundError("project not found")
         if campaign_id and not self.conn.execute("SELECT id FROM campaigns WHERE workspace_id=? AND id=?",(workspace_id,campaign_id)).fetchone(): raise NotFoundError("campaign not found")
-        if parent_id and self.store.get_work_item(workspace_id,parent_id) is None: raise NotFoundError("parent work item not found")
+        if parent_id:
+            parent = self.store.get_work_item(workspace_id, parent_id)
+            if parent is None:
+                raise NotFoundError("parent work item not found")
+            # A work hierarchy is project-scoped.  Do not let a child from one
+            # project silently appear beneath a parent belonging to another.
+            if project_id and parent.project_id and project_id != parent.project_id:
+                raise ValidationError("parent work item belongs to a different project")
         now=_now(); item=WorkItem(self.new_id("work"),workspace_id,title.strip(),request.strip(),requested_by.strip(),deadline,
             "captured",None,None,None,default_dod(),now,now,project_id,campaign_id,parent_id,person_id,None,None,priority,
             tuple(tags or ()),estimate_hours,0,None,deadline,None,brief,brain_context,financial_value)
