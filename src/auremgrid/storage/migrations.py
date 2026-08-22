@@ -2291,7 +2291,171 @@ MIGRATIONS = (
         CREATE INDEX IF NOT EXISTS idx_brain_mutation_audit_entity ON brain_mutation_audit(workspace_id, entity_type, entity_id, created_at);
         """
     ),
-
+    Migration(
+        28,
+        "secure_provider_integrations",
+        """
+        CREATE TABLE IF NOT EXISTS local_secret_vault (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            name TEXT NOT NULL,
+            reference TEXT,
+            ciphertext TEXT NOT NULL,
+            key_version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(organization_id, workspace_id, name),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE TABLE IF NOT EXISTS provider_installations (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            provider TEXT NOT NULL CHECK(provider IN ('google','slack','figma','github')),
+            account_id TEXT NOT NULL,
+            account_label TEXT,
+            client_id TEXT,
+            redirect_uri TEXT NOT NULL,
+            webhook_secret_reference TEXT,
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','disabled','revoked')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            UNIQUE(organization_id, workspace_id, provider, account_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_installations_scope
+            ON provider_installations(organization_id, workspace_id, provider, status);
+        CREATE TABLE IF NOT EXISTS oauth_states (
+            id TEXT PRIMARY KEY,
+            state_digest TEXT NOT NULL UNIQUE,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            installation_id TEXT,
+            provider TEXT NOT NULL,
+            client_id TEXT NOT NULL,
+            redirect_uri TEXT NOT NULL,
+            code_challenge TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(installation_id) REFERENCES provider_installations(id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_oauth_states_expiry ON oauth_states(expires_at, used_at);
+        CREATE TABLE IF NOT EXISTS webhook_events (
+            id TEXT PRIMARY KEY,
+            installation_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL,
+            event_digest TEXT NOT NULL,
+            signature_digest TEXT NOT NULL,
+            provider_event_id TEXT,
+            received_at TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('accepted','duplicate','rejected')),
+            FOREIGN KEY(installation_id) REFERENCES provider_installations(id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            UNIQUE(installation_id, event_digest)
+        );
+        CREATE INDEX IF NOT EXISTS idx_webhook_events_installation
+            ON webhook_events(installation_id, received_at);
+        CREATE TABLE IF NOT EXISTS outbound_send_intents (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            installation_id TEXT NOT NULL,
+            approval_request_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','sent','failed','blocked')),
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(installation_id) REFERENCES provider_installations(id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(approval_request_id) REFERENCES approval_requests(id),
+            UNIQUE(organization_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_outbound_send_intents_status
+            ON outbound_send_intents(organization_id, workspace_id, status, updated_at);
+        """,
+    ),
+    Migration(
+        29,
+        "asset_backup_recovery",
+        """
+        CREATE TABLE IF NOT EXISTS asset_registry (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            name TEXT NOT NULL,
+            asset_type TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+            sha256 TEXT NOT NULL,
+            locator TEXT NOT NULL,
+            retention_class TEXT NOT NULL CHECK(retention_class IN ('ephemeral','standard','critical','legal_hold')),
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','archived','deleted')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            UNIQUE(organization_id, workspace_id, sha256, locator)
+        );
+        CREATE INDEX IF NOT EXISTS idx_asset_registry_scope ON asset_registry(organization_id, workspace_id, retention_class, status);
+        CREATE TABLE IF NOT EXISTS backup_manifests (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            locator TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+            schema_version INTEGER NOT NULL,
+            integrity TEXT NOT NULL,
+            manifest_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'recorded' CHECK(status IN ('recorded','verified','failed','expired')),
+            created_at TEXT NOT NULL,
+            verified_at TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            UNIQUE(organization_id, sha256, locator)
+        );
+        CREATE INDEX IF NOT EXISTS idx_backup_manifests_org ON backup_manifests(organization_id, status, created_at);
+        CREATE TABLE IF NOT EXISTS recovery_plans (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            backup_manifest_id TEXT NOT NULL,
+            external_provider TEXT NOT NULL,
+            target_locator TEXT NOT NULL,
+            rpo_minutes INTEGER NOT NULL CHECK(rpo_minutes >= 0),
+            rto_minutes INTEGER NOT NULL CHECK(rto_minutes >= 0),
+            status TEXT NOT NULL CHECK(status IN ('planned','ready','executing','completed','failed','blocked')),
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(backup_manifest_id) REFERENCES backup_manifests(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_recovery_plans_scope ON recovery_plans(organization_id, workspace_id, status);
+        CREATE TABLE IF NOT EXISTS asset_recovery_audit (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            actor_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_asset_recovery_audit_entity ON asset_recovery_audit(organization_id, entity_type, entity_id, created_at);
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
