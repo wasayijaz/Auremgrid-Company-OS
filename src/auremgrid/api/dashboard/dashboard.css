@@ -14,3 +14,13 @@
 .scenario-card{background:var(--surface)}.scenario-card header{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.scenario-card h3{font-size:12px;margin:0}.scenario-card ul{padding-left:17px;margin:8px 0 0;color:var(--text-2);font-size:10.5px;line-height:1.5}.scenario-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.scenario-actions button{font-size:10px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
 .what-if-form{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:9px;background:var(--surface-2)}.what-if-form>b{display:block;font-size:11px;margin-bottom:9px}.what-if-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.what-if-grid label{font-size:9.5px;color:var(--muted)}.what-if-grid input{display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:6px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text)}.what-if-form button{margin-top:9px;padding:7px 9px;border:1px solid var(--line-strong);border-radius:6px;background:var(--surface);color:var(--text);font-size:10px}.what-if-form small{display:block;margin-top:7px;color:var(--muted);font-size:9.5px;line-height:1.4}.intelligence-completion{margin-top:10px}
 @media(max-width:620px){.overview-action-table{display:block;overflow:auto}.agency-map,.trend-strip{grid-template-columns:1fr 1fr}}
+
+/* Dashboard completion surfaces inherit the same reference-led, quiet density. */
+:root{--font:"Gellix",sans-serif}
+html,body,.shell,.shell *{font-family:var(--font)}
+.agency-node,.trend-cell,.insight-tile,.work-enrichment,.scenario-card,.agent-telemetry>div{border-color:var(--line);border-radius:10px;background:var(--surface)}
+.agency-node,.trend-cell{padding:12px}.agency-node strong{font-size:12px;font-weight:700}.agency-node small,.trend-cell span{font-size:10px;color:var(--muted)}
+.trend-cell b{font-size:16px;font-weight:700}.overview-action-table{font-size:11.5px}.overview-action-table th{font-size:9px;letter-spacing:.08em}.overview-action-table td{padding:10px 8px}
+.annotation-lane{border-color:var(--line-strong);border-radius:10px;background:var(--surface-2)}.what-if-form{border-color:var(--line);border-radius:11px;background:var(--surface-2)}
+.scenario-card{box-shadow:var(--shadow-1)}.scenario-card header{align-items:center}.scenario-card h3{font-weight:700}.scenario-actions button,.what-if-form button{border-radius:8px;background:var(--surface);font-weight:650}
+.honest-state{background:var(--surface-2)}

@@ -1,1 +1,5 @@
 *{box-sizing:border-box}body{margin:0}
+
+/* Gellix is the single intended UI family; the local source avoids a network font dependency. */
+@font-face{font-family:"Gellix";src:local("Gellix");font-style:normal;font-weight:100 900;font-display:swap}
+:root{--font:"Gellix",sans-serif;font-family:var(--font)}

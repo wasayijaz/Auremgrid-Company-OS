@@ -16,9 +16,9 @@ Agency work is usually split across conversations, task boards, documents, desig
 - A temporal company brain: source documents, facts, relations, citations, conflicts, proposals, and signals remain distinguishable.
 - Executable cross-wing workflows with dependencies, evidence gates, approvals, handoffs, SLAs, escalation, rework, and immutable run snapshots.
 - Durable jobs and connector sync that can restart without silently advancing a cursor or claiming a provider is healthy when it is not.
-- A local dashboard, REST API, MCP-style tools, and CLI over the same policy and canonical ledger.
+- A modular local dashboard, REST API, MCP-style tools, CLI, and deterministic Intelligence service over the same policy and canonical ledger.
 
-This is an operating control plane, not a replacement for every specialist tool. Slack, ClickUp, Google Drive, Gmail, explicitly mapped Figma files, and a single mapped Fireflies account have credential-backed read synchronization with provider verification, durable backfill, fenced workers, and lifecycle-aware evidence. Figma polling is bounded to verified exact-file mappings; Fireflies polling is bounded to one verified account mapping.
+This is an operating control plane, not a replacement for every specialist tool. Slack, ClickUp, Google Drive, Gmail, explicitly mapped Figma files, and a single mapped Fireflies account have credential-backed read synchronization with provider verification, durable backfill, fenced workers, and lifecycle-aware evidence. Figma polling is bounded to verified exact-file mappings; Fireflies polling is bounded to one verified account mapping. Intelligence outputs are read models: they cite visible evidence, explain uncertainty, and propose reversible next steps, but they do not silently execute work, approvals, connector writes, or external sends.
 
 ## Who it serves—and who it does not
 
@@ -67,6 +67,7 @@ This is an operating control plane, not a replacement for every specialist tool.
 | Feedback and learning | Record feedback, detect recurring patterns, promote preferences, approve/reject decisions | Implemented; pattern promotion requires configurable threshold |
 | Performance insights | Anomaly detection, creative and channel comparisons, insight approval workflow | Implemented; insights require sourced metric snapshots |
 | Forecasting | Revenue, client renewal, capacity, and utilization projections from recorded data | Implemented; projections are point-in-time and require historical data |
+| Intelligence Engine | Workspace and portfolio briefs from permitted evidence, canonical operating records, situation/change/hypothesis/scenario/impact/recommendation fields, historical analogues, decision-to-outcome learning links, and proposed action descriptors | Implemented as deterministic, read-only intelligence; no LLM deliberation or autonomous execution |
 | Data lifecycle and retention | Retention policies, scoped deletion with allowlist, workspace export, deletion audit trail | Implemented; outbound archive/redact actions remain future |
 
 ## How the system hangs together
@@ -105,6 +106,29 @@ flowchart LR
 ```
 
 Each run snapshots the validated definition. Dependencies control readiness; stage order is the canonical presentation sequence. One-way gates require evidence and an approver, and rejected work records its route back.
+
+### Dashboard and Intelligence surface
+
+```mermaid
+flowchart LR
+    Shell[Python-served dashboard shell] --> Nav[Primary navigation]
+    Shell --> Canvas[Operating canvas]
+    Shell --> Rail[Auremgrid Intelligence rail]
+    Canvas --> DashAPI[Authenticated dashboard read models]
+    Rail --> Intel[Intelligence Engine]
+    Intel --> Evidence[Permitted sources + canonical operating rows]
+    Intel --> Proposed[Proposed action descriptors]
+    Proposed --> Routes[Permission-checked REST/MCP routes]
+    Routes --> Ledger[Canonical ledger]
+```
+
+The dashboard is a zero-build local application served by the Python HTTP process. Its live shell is split into static assets under `src/auremgrid/api/dashboard`: `index.html`, CSS modules, JS modules, and small completion layers. It uses a three-zone desktop layout: grouped primary navigation, an operating canvas, and a permanent Auremgrid Intelligence rail that becomes a drawer on narrower screens.
+
+The interface specifies Gellix as its UI family and resolves it from the local machine so the repository does not redistribute a proprietary font. Install a licensed local Gellix family for exact typography; the CSS retains a generic sans-serif safety fallback when Gellix is unavailable.
+
+The dashboard currently includes Command, Clients, Client HQ, Work board/list, Review Center, Campaigns, Content, Creative, Brain, Meetings, People/Capacity, Finance, Agents, Automations, Reports, Integrations, and Settings surfaces. Those screens call authenticated backend endpoints and preserve honest empty, disconnected, degraded, and permission-denied states. Unknown finance, campaign, or connector values remain unknown until sourced.
+
+The Intelligence rail calls `GET /dashboard/intelligence`; the Command overview also calls `GET /dashboard/intelligence/executive`. The engine composes permitted evidence and canonical operating records into findings with situation, changes, hypotheses, supporting/opposing evidence, scenarios, impact, recommendation, confidence, uncertainty, historical analogues, and decision-to-workflow-outcome-learning links where available. These are deterministic read projections. Suggested operations are returned as descriptors for canonical routes such as work capture, decision creation, and approval request; they require the caller's normal capability checks and, where applicable, explicit human approval.
 
 ### Evidence, knowledge, and proposals
 
@@ -261,7 +285,9 @@ python scripts/auremgrid.py bootstrap-auth --db "C:\data\auremgrid-demo.sqlite" 
 python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\auremgrid-demo.sqlite"
 ```
 
-The bootstrap command prints the session token once. Open `http://127.0.0.1:8791/`; the dashboard opens an in-page **Connect to Auremgrid** dialog where you enter that token. For a real organization database, create or import the organization and person records first, then bootstrap the first principal:
+The server prints `listening on http://127.0.0.1:8791`. Open `http://127.0.0.1:8791/` or `http://127.0.0.1:8791/dashboard`; both serve the same dashboard shell. The shell and `/dashboard-assets/*` load without a token, but all JSON data routes except `/health`, `/metrics`, and `/health/detailed` require bearer authentication.
+
+The bootstrap command prints the session token once. The dashboard opens an in-page **Connect to Auremgrid** dialog where you enter that token; it then calls `/auth/me`, `/dashboard/data`, `/dashboard/settings`, `/dashboard/brain`, `/dashboard/intelligence`, and the other permitted module endpoints with `Authorization: Bearer <token>`. For a real organization database, create or import the organization and person records first, then bootstrap the first principal:
 
 ```text
 python scripts/auremgrid.py bootstrap-auth --db "C:\data\agency.sqlite" --organization <organization-id> --person <person-id> --email owner@example.invalid --workspace <workspace-id> --actor <legacy-actor-id>
@@ -333,7 +359,7 @@ See [REST API reference](docs/api-reference.md) and [MCP tools](docs/mcp-referen
 
 ### Local evaluation
 
-One Python process serves the dashboard/API over localhost and uses SQLite. Synthetic fixtures and simulated connectors keep the path offline.
+One Python process serves the modular dashboard/API over localhost and uses SQLite. Synthetic fixtures and simulated connectors keep the path offline. The Intelligence Engine works in this mode from canonical demo records, permitted Brain evidence, and deterministic projections; optional semantic or graph providers can degrade without preventing the dashboard from starting.
 
 ### Controlled single-host operation
 
@@ -345,7 +371,7 @@ Bind an external environment reference, verify the provider account and mapped s
 
 ### CI and development
 
-Run the unittest suite with synthetic fixtures and injected connector transports. No private accounts or network access are needed. Networked semantic engines and unattended automations remain optional/experimental.
+Run the unittest suite with synthetic fixtures and injected connector transports. No private accounts or network access are needed. Networked semantic engines, upstream graph providers, LLM-backed deliberation, and unattended automations remain optional/experimental.
 
 ## Security and trust boundaries
 
@@ -376,11 +402,12 @@ The offline suite must not require Docker, provider credentials, a private vault
 - No in-product OAuth installation/callback flow, webhook ingestion, or refresh-token rotation; credential binding is manual and environment-backed.
 - Google Drive bootstraps from a captured changes token, walks mapped folders/shared drives through durable continuation tasks, reconciles parent chains and descendants after moves, and retires objects only after ancestry is resolved. Gmail captures a history baseline before label backfill and maintains label membership lifecycle. Objects that match mappings owned by different workspaces create an organization-level redacted quarantine, block cursor promotion, and write no workspace evidence.
 - Figma supports verified, exact-file read polling with `current_user:read`, `file_metadata:read`, and `file_content:read`. A version-fenced file snapshot can retain bounded frame/section evidence; with explicit, proven `file_versions:read`, a changed file can also retain one bounded page of named-version evidence, and with explicit, proven `comments:read`, bounded comment evidence. The parent file remains the only lifecycle and object-count record. Review/approval workflows and auto-created deliverables, reviews, or tasks are out of scope. Fireflies supports verified, single-account read polling with `transcripts:read`, bounded to exactly one `account:<id>` mapping; it emits one sanitized, bounded transcript event per meeting from a durable date cursor and has no delete/tombstone signal. GitHub, advertising, and accounting systems remain disabled catalog entries only and do not report connected.
-- Unattended automations, remote semantic providers, upstream OSS engines, and externally visible sends remain experimental or future gates. Local semantic retrieval and its deterministic fallback are available behind the provider/index boundary described above.
+- The Intelligence Engine is an evidence-backed deterministic read model. It can surface cross-domain relationships, hypotheses, parameterized what-if scenarios, proposed cross-wing plans, historical analogues, and decision/outcome/learning links from available records, but it is not yet an autonomous AI operating partner. It does not run LLM deliberation, infer hidden data, execute work, or contact external tools by itself.
+- Unattended automations, remote semantic providers, upstream OSS engines, LLM-backed strategic reasoning, and externally visible sends remain experimental or future gates. Local semantic retrieval and its deterministic fallback are available behind the provider/index boundary described above.
 - SQLite is local-first, not a multi-region distributed database. External binary assets require a separate backup policy.
 - The standard-library HTTP server is appropriate for local/private operation; hardened public deployment needs an explicit reverse proxy, TLS, and access review.
 
-The next safe increments are OAuth/PKCE with a write-capable secret backend, webhooks and multiple provider installations, a transactional outbox boundary for externally visible sends, and a documented asset backup policy.
+The next safe increments are OAuth/PKCE with a write-capable secret backend, webhooks and multiple provider installations, a transactional outbox boundary for externally visible sends, deeper Intelligence Engine reasoning/deliberation on top of the existing evidence contract, and continued rehearsal of the asset backup policy.
 
 ## Documentation map
 

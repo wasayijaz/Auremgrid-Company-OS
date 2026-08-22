@@ -54,6 +54,8 @@ class DashboardSurfaceTests(unittest.TestCase):
         self.assertIn("renderActionDescriptors(row)", self.html)
         self.assertIn("historical||!Array.isArray(row.allowed_actions)", self.html)
         self.assertEqual(fixture["allowed_actions"][0]["route"], "/brain/promote")
+        self.assertIn("No backend route is available", self.html)
+        self.assertIn("!descriptor.route", self.html)
         for marker in ("data-row-id", "data-stage-id", "stages.map(row", "proposals.map(row", "renderActionDescriptors(row)"):
             self.assertIn(marker, self.html)
 
@@ -260,6 +262,11 @@ class DashboardSurfaceTests(unittest.TestCase):
             "renderIntelligence=function",
             "data-intelligence-object",
             "data.uncertainty?[data.uncertainty]",
+            "auremgrid:auth-required",
+            "localStorage.removeItem(\"auremgrid_session\")",
+            "data-project-id",
+            "data-campaign-id",
+            "data-person-id",
             "/people?organization_id=",
             "people.capacity",
             "/dashboard/client?organization_id=",
