@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">Auremgrid dashboard sample preview</title>
+  <desc id="desc">Deterministic SAMPLE DATA preview of the authenticated local dashboard layout.</desc>
+  <rect width="1200" height="760" fill="#f6f6f4"/>
+  <rect x="24" y="24" width="1152" height="712" rx="18" fill="#ffffff" stroke="#deded8"/>
+  <rect x="24" y="24" width="252" height="712" rx="18" fill="#fbfbfa"/>
+  <path d="M276 24v712" stroke="#e6e6e2"/>
+  <rect x="48" y="52" width="30" height="30" rx="8" fill="#16161a"/>
+  <text x="63" y="72" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#ffffff">A</text>
+  <text x="92" y="64" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#16161a">Auremgrid</text>
+  <text x="92" y="80" font-family="Segoe UI, Arial, sans-serif" font-size="11" fill="#8c8c85">Company OS</text>
+  <rect x="46" y="112" width="206" height="90" rx="10" fill="#ffffff" stroke="#e6e6e2"/>
+  <text x="62" y="136" font-family="Segoe UI, Arial, sans-serif" font-size="10" font-weight="700" fill="#b3b3ac">SAMPLE DATA</text>
+  <text x="62" y="158" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#16161a">Atlas Sample Agency</text>
+  <text x="62" y="182" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#55554f">owner@sample.invalid</text>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#55554f">
+    <rect x="46" y="230" width="206" height="34" rx="8" fill="#16161a"/><text x="84" y="252" fill="#ffffff">Command</text>
+    <text x="84" y="302">Clients</text>
+    <text x="84" y="344">Work</text>
+    <text x="84" y="386">Review</text>
+    <text x="84" y="428">Brain</text>
+    <text x="84" y="470">Finance</text>
+    <text x="84" y="512">Settings</text>
+  </g>
+  <rect x="276" y="24" width="900" height="60" fill="#ffffff"/>
+  <path d="M276 84h900" stroke="#e6e6e2"/>
+  <rect x="306" y="42" width="520" height="30" rx="9" fill="#fbfbfa" stroke="#e6e6e2"/>
+  <text x="326" y="62" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#8c8c85">Ask Auremgrid about approved evidence</text>
+  <circle cx="1018" cy="57" r="4" fill="#16825a"/>
+  <text x="1032" y="62" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#55554f">Ledger healthy</text>
+  <text x="306" y="132" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="700" fill="#16161a">Company command, without the noise.</text>
+  <text x="306" y="158" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#8c8c85">Attention, delivery, clients, agents, and company memory from one canonical ledger.</text>
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <rect x="306" y="198" width="194" height="104" rx="10" fill="#ffffff" stroke="#e6e6e2"/>
+    <text x="326" y="228" font-size="12" fill="#8c8c85">Active clients</text><text x="326" y="274" font-size="30" font-weight="700" fill="#16161a">2</text>
+    <rect x="514" y="198" width="194" height="104" rx="10" fill="#ffffff" stroke="#e6e6e2"/>
+    <text x="534" y="228" font-size="12" fill="#8c8c85">Open work</text><text x="534" y="274" font-size="30" font-weight="700" fill="#16161a">7</text>
+    <rect x="722" y="198" width="194" height="104" rx="10" fill="#ffffff" stroke="#e6e6e2"/>
+    <text x="742" y="228" font-size="12" fill="#8c8c85">In review</text><text x="742" y="274" font-size="30" font-weight="700" fill="#16161a">3</text>
+    <rect x="930" y="198" width="194" height="104" rx="10" fill="#ffffff" stroke="#e6e6e2"/>
+    <text x="950" y="228" font-size="12" fill="#8c8c85">Finance</text><text x="950" y="274" font-size="24" font-weight="700" fill="#16161a">Not connected</text>
+  </g>
+  <rect x="306" y="330" width="540" height="210" rx="10" fill="#ffffff" stroke="#e6e6e2"/>
+  <text x="330" y="364" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#16161a">3 things need you</text>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="13">
+    <rect x="330" y="390" width="492" height="40" rx="7" fill="#fbfbfa"/><rect x="330" y="390" width="4" height="40" rx="2" fill="#b5650a"/><text x="350" y="415" fill="#16161a">Studio sample account needs approval evidence</text>
+    <rect x="330" y="438" width="492" height="40" rx="7" fill="#fbfbfa"/><rect x="330" y="438" width="4" height="40" rx="2" fill="#c73434"/><text x="350" y="463" fill="#16161a">Launch workflow has one blocked handoff</text>
+    <rect x="330" y="486" width="492" height="40" rx="7" fill="#fbfbfa"/><rect x="330" y="486" width="4" height="40" rx="2" fill="#3d63dd"/><text x="350" y="511" fill="#16161a">Knowledge proposal waiting for review</text>
+  </g>
+  <rect x="866" y="330" width="258" height="210" rx="10" fill="#ffffff" stroke="#e6e6e2"/>
+  <text x="890" y="364" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#16161a">Agency pulse</text>
+  <text x="890" y="404" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#55554f">work captured</text>
+  <text x="890" y="438" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#55554f">approval requested</text>
+  <text x="890" y="472" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#55554f">brain proposal created</text>
+  <rect x="306" y="568" width="818" height="118" rx="10" fill="#ffffff" stroke="#e6e6e2"/>
+  <text x="330" y="602" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#16161a">Client portfolio</text>
+  <path d="M330 622h770M330 656h770" stroke="#e6e6e2"/>
+  <text x="330" y="644" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#16161a">Studio Sample Co</text>
+  <text x="572" y="644" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#16825a">healthy</text>
+  <text x="734" y="644" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#55554f">4 open work</text>
+  <text x="330" y="678" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#16161a">Clinic Sample Co</text>
+  <text x="572" y="678" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#b5650a">watch</text>
+  <text x="734" y="678" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#55554f">3 open work</text>
+</svg>

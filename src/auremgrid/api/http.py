@@ -35,6 +35,7 @@ def _route_capability(path: str, method: str) -> str:
         if path == "/entity/candidates": return "brain_propose"
         if path in {"/knowledge-health", "/memory-proposals", "/search", "/entity", "/history", "/neighbors", "/sources", "/recent", "/brief"}: return "brain_read"
         if path == "/dashboard/brain": return "brain_read"
+        if path == "/dashboard/settings": return "workspace_read"
         return "workspace_read"
     if path in {"/approvals/decide", "/workflows/approvals/decide"}: return "approval_decide"
     if path.startswith("/jobs"): return "job_manage"
@@ -249,6 +250,11 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/dashboard/data":
                 self._json(200, self.os.dashboard.command(_need(params,"organization_id"),_need(params,"person_id")))
                 return
+            if parsed.path == "/dashboard/settings":
+                assert identity is not None
+                self._json(200, self.os.dashboard.settings(
+                    identity, _need(params, "organization_id"), _optional_str(params.get("workspace_id"))
+                )); return
             if parsed.path == "/dashboard/review-center":
                 self._json(200, self.os.dashboard.review_center(_need(params,"organization_id"),_need(params,"person_id")))
                 return

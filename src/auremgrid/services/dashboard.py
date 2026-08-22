@@ -64,7 +64,98 @@ class _ExistingDashboardService:
         return {"generated_at":datetime.now(timezone.utc).isoformat(),"metrics":{"active_clients":active_clients,"mrr":finance.get("mrr") if finance["status"]=="connected" else None,
             "finance_status":finance["status"],"open_work":open_work,"overdue_work":overdue,"in_review":review,"active_workflows":active_workflows,"agents_running":sum(a["status"]=="running" for a in agents),
             "automations_today":automation_count,"open_risks":risks},"attention":attention,"clients":clients,"agents":agents,"pulse":pulse,
-            "workspaces":[dict(row) for row in workspaces]}
+            "workspaces":[dict(row) for row in workspaces],
+            "identity": self._identity_view(organization_id, person_id),
+            "ledger_health": self._ledger_health(organization_id, person_id),
+            "capability_summary": self._capability_summary(organization_id, person_id),
+            "modules": self._capability_modules(organization_id, person_id, ids),}
+
+    def _identity_view(self, organization_id: str, person_id: str) -> dict[str, Any]:
+        organization = self.conn.execute(
+            "SELECT id,name,created_at FROM organizations WHERE id=?", (organization_id,)
+        ).fetchone()
+        person = self.conn.execute(
+            """SELECT p.id,p.name,p.email,p.title,p.department,p.status,om.role AS organization_role
+               FROM people p JOIN organization_memberships om ON om.person_id=p.id AND om.organization_id=p.organization_id
+               WHERE p.organization_id=? AND p.id=?""", (organization_id, person_id)
+        ).fetchone()
+        return {
+            "organization": dict(organization) if organization else {"id": organization_id, "name": organization_id},
+            "person": dict(person) if person else {"id": person_id},
+        }
+
+    def _ledger_health(self, organization_id: str, person_id: str) -> dict[str, Any]:
+        def scalar(sql: str, params: tuple[Any, ...] = ()) -> int:
+            row = self.conn.execute(sql, params).fetchone()
+            return int(row[0] or 0) if row else 0
+        finance = self.os.agency_ops.finance_status(organization_id, person_id)
+        integrity = self.conn.execute("PRAGMA integrity_check").fetchone()
+        integrity_status = str(integrity[0]) if integrity else "unknown"
+        graph_health = getattr(self.os, "graph_health", {}) or {}
+        status = "healthy" if integrity_status == "ok" and graph_health.get("status", "healthy") in {"healthy", "ready"} else "degraded"
+        return {
+            "status": status,
+            "integrity": integrity_status,
+            "schema_version": self.os.store.schema_version,
+            "audit_events": scalar("SELECT COUNT(*) FROM ledger_audit WHERE organization_id=?", (organization_id,)),
+            "recent_audit_events": scalar(
+                "SELECT COUNT(*) FROM ledger_audit WHERE organization_id=? AND recorded_at>=datetime('now','-24 hours')", (organization_id,)
+            ),
+            "finance": {"status": finance.get("status", "unavailable")},
+        }
+
+    def _capability_summary(self, organization_id: str, person_id: str) -> dict[str, Any]:
+        return {
+            "feedback_patterns": int(self.conn.execute("SELECT COUNT(*) FROM feedback_patterns WHERE organization_id=?", (organization_id,)).fetchone()[0]),
+            "performance_insights": int(self.conn.execute("SELECT COUNT(*) FROM performance_insights WHERE organization_id=?", (organization_id,)).fetchone()[0]),
+            "forecasts": int(self.conn.execute("SELECT COUNT(*) FROM forecasts WHERE organization_id=?", (organization_id,)).fetchone()[0]),
+            "retention_policies": int(self.conn.execute("SELECT COUNT(*) FROM retention_policies WHERE organization_id=?", (organization_id,)).fetchone()[0]),
+        }
+
+    def _capability_modules(self, organization_id: str, person_id: str, workspace_ids: list[str]) -> dict[str, Any]:
+        # The command payload is organization-scoped; workspace-specific modules
+        # are intentionally left empty until an explicit workspace is selected.
+        if not workspace_ids:
+            return {"feedback": [], "performance": [], "forecasts": [], "retention": []}
+        return {
+            "feedback": [],
+            "performance": [],
+            "forecasts": self.os.forecasts.list_forecasts(organization_id, person_id),
+            "retention": self.os.retention.list_policies(organization_id, person_id),
+        }
+
+    def settings(self, identity: AuthenticatedIdentity, organization_id: str, workspace_id: str | None = None) -> dict[str, Any]:
+        """Return authenticated, canonical settings and system health for the operator."""
+        if identity.organization_id != organization_id:
+            raise AuthorizationError("dashboard scope denied")
+        identity.require("workspace_read")
+        if workspace_id:
+            self.os._require_person_access(organization_id, workspace_id, identity.person_id, write=False)
+        person = self.conn.execute(
+            """SELECT p.id,p.name,p.email,p.title,p.department,p.status,om.role AS organization_role
+               FROM people p JOIN organization_memberships om ON om.person_id=p.id AND om.organization_id=p.organization_id
+               WHERE p.organization_id=? AND p.id=?""", (organization_id, identity.person_id)
+        ).fetchone()
+        memberships = [dict(row) for row in self.conn.execute(
+            """SELECT w.id,w.name,wo.kind,wm.role FROM workspaces w
+               JOIN workspace_organization wo ON wo.workspace_id=w.id
+               JOIN workspace_memberships wm ON wm.workspace_id=w.id
+               WHERE wo.organization_id=? AND wm.person_id=? ORDER BY w.name""", (organization_id, identity.person_id)
+        ).fetchall()]
+        pending_approvals = [dict(row) for row in self.conn.execute(
+            """SELECT id,workspace_id,requested_for,action_type,reason,approver_person_id,status,created_at
+               FROM approval_requests WHERE organization_id=? AND status='pending' ORDER BY created_at DESC LIMIT 20""", (organization_id,)
+        ).fetchall()]
+        integrations = self.os.integrations.list(identity)
+        return {
+            "identity": {"organization": dict(self.conn.execute("SELECT id,name,created_at FROM organizations WHERE id=?", (organization_id,)).fetchone() or {"id": organization_id, "name": organization_id}), "person": dict(person) if person else {"id": identity.person_id}},
+            "workspace": next((item for item in memberships if item["id"] == workspace_id), None) if workspace_id else None,
+            "workspaces": memberships,
+            "permissions": {"capabilities": sorted(identity.capabilities), "scopes": sorted(identity.scopes)},
+            "approvals": {"pending": pending_approvals, "pending_count": len(pending_approvals)},
+            "integrations": integrations,
+            "health": self._ledger_health(organization_id, identity.person_id),
+        }
 
     def client_hq(
         self, identity: AuthenticatedIdentity, organization_id: str, workspace_id: str, person_id: str,
@@ -382,6 +473,20 @@ class _ExistingDashboardService:
 
     def module(self, organization_id: str, workspace_id: str, person_id: str, module: str) -> dict[str,Any]:
         self.os._require_person_access(organization_id,workspace_id,person_id)
+        if module in {"Feedback", "Performance Insights", "Forecasts", "Retention"}:
+            if module == "Feedback":
+                items = self.os.feedback.list_patterns(organization_id, workspace_id, person_id)
+                return {"module": module, "source_table": "feedback_patterns", "items": items,
+                        "allowed_actions": [{"action": "promote_pattern", "route": "/feedback/patterns/promote"}]}
+            if module == "Performance Insights":
+                items = self.os.performance.list_insights(organization_id, workspace_id, person_id)
+                return {"module": module, "source_table": "performance_insights", "items": items,
+                        "allowed_actions": [{"action": "generate_insights", "route": "/insights/performance/generate"}]}
+            if module == "Forecasts":
+                return {"module": module, "source_table": "forecasts", "items": self.os.forecasts.list_forecasts(organization_id, person_id),
+                        "allowed_actions": [{"action": "generate_forecasts", "route": "/forecasts/generate"}]}
+            return {"module": module, "source_table": "retention_policies", "items": self.os.retention.list_policies(organization_id, person_id),
+                    "allowed_actions": [{"action": "create_policy", "route": "/retention/policies"}]}
         queries={
             "Campaigns":("campaigns","SELECT id,name,platform,status,budget,updated_at FROM campaigns WHERE workspace_id=? ORDER BY updated_at DESC"),
             "Content":("content_items","SELECT id,title,stage,objective,publish_at,updated_at FROM content_items WHERE workspace_id=? ORDER BY updated_at DESC"),

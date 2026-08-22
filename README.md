@@ -213,6 +213,22 @@ cd Auremgrid-Company-OS
 python scripts/auremgrid.py --help
 ```
 
+## Dashboard preview
+
+![SAMPLE DATA dashboard preview](docs/assets/dashboard-showcase.svg)
+
+The image above is a deterministic SAMPLE DATA preview for GitHub. It is not
+embedded in the production dashboard and does not come from a customer
+database. To view the actual interactive dashboard locally, create a seeded
+evaluation database, issue a local session token, start the server, then open
+`http://127.0.0.1:8791/`:
+
+```text
+python scripts/auremgrid.py demo --db "C:\data\auremgrid-demo.sqlite"
+python scripts/auremgrid.py bootstrap-auth --db "C:\data\auremgrid-demo.sqlite" --organization org_demo --person person_demo_owner --email owner@demo.invalid --workspace ws_alpha --actor act_alpha_admin
+python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\auremgrid-demo.sqlite"
+```
+
 The launcher is the zero-install path: it runs directly from this trusted
 checkout, does not change directory, install packages, or contact a network.
 Use an explicit absolute database path when operating outside the repository:

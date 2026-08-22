@@ -13,12 +13,12 @@ This matrix maps the product definition of complete to authoritative implementat
 | 7. Review and approvals are enforced | review lifecycle, timestamped comments, single-decision, and approval authorization tests |
 | 8. Meetings and communication generate signals | client-operations, relationship, and promotion/sync tests |
 | 9. Decisions are first class | Decision model/repository/API/MCP and human proposal-promotion tests |
-| 10. Client health is explainable | unanswered-message, risk, overdue-work, and scope explanations in ClientOperationsTests |
-| 11. Risks and opportunities use real signals | signal routing and scope-overage behavior tests |
-| 12. Scope usage is tracked | contract, allowance, usage percentage, risk, and opportunity test |
-| 13. Finance connects without fabricated values | not_connected and sourced finance record tests |
-| 14. Campaigns and creatives are structured | campaign metric, creative library, content pipeline, performance schemas and tests |
-| 15. Agents have scoped permissions and auditable runs | AgentAutomationTests, provider-neutral capability-level routing, immutable escalation audits, and automatic ledger audit tests |
+| 10. Client health is explainable | Current slice: unanswered-message, risk, overdue-work, workflow-readiness, and scope explanations in ClientOperationsTests and dashboard Client HQ projections |
+| 11. Risks and opportunities use real signals | Current slice: signal routing and scope-overage behavior tests; not a complete risk-management system |
+| 12. Scope usage is tracked | Current slice: contract, allowance, usage percentage, risk, and opportunity tests |
+| 13. Finance connects without fabricated values | Current slice: not_connected and sourced finance record tests; not a complete finance system |
+| 14. Campaigns and creatives are structured | Current slice: campaign metric, creative library, content pipeline, performance schemas and tests; not a full campaign manager |
+| 15. Agents have scoped permissions and auditable runs | Current slice: AgentAutomationTests, provider-neutral capability-level routing, immutable escalation audits, and automatic ledger audit tests; not an autonomous agent runtime |
 | 16. Automations trigger safely | training checkpoint, approved execution, outcome, and activation tests |
 | 17. MCP/API cover major domains | ExpandedApiTests and namespaced MCP discovery test |
 | 18. Dashboard surfaces major operations | 18 destinations including workflows, 8 metrics, an accountable Client HQ roster/meeting/workload/readiness view, a derived weekly capacity view, bearer-authenticated data fetches, operational Brain proposal/conflict/current-truth board plus evidence-backed entity discovery, workflow stage board, capability-gated descriptor actions with idempotency/expected-version payloads, historical zero-action behavior, degraded/loading/empty states, and dashboard/API behavior tests |
@@ -35,10 +35,15 @@ This matrix maps the product definition of complete to authoritative implementat
 | 29. Enabled live read synchronization is restart-safe and honest | Slack/ClickUp/Google Drive/Gmail/Figma/Fireflies account and permission verification, explicit workspace mappings, durable provider cursors/inbox/dedupe, baseline-first backfill, Drive reconciliation/descendant tasks, Gmail label lifecycle, version-fenced exact-file Figma polling/tombstones, bounded frame/section/comment evidence, and optional bounded named-version evidence with the parent file as the only lifecycle/object-count record; single-account Fireflies transcript polling with sanitized bounded transcript evidence and no delete/tombstone signal; no Figma model review or approval workflows/auto-created deliverables, reviews, or tasks; opaque cross-workspace quarantine, canonical ingestion, provider-aware retry timing, raw-DB secret scans, and no caller-controlled connected state |
 | 30. Brain retrieval is operable and explainable offline | dependency-free lexical fallback and local graph by default, opt-in local-only SentenceTransformers and explicitly configured Graphiti/Neo4j projection, full-workspace ACL gating before upstream lookup, canonical rehydration, bitemporal eligibility before scoring, bounded hybrid relevance/source-authority/recency contributions, deterministic ties, sanitized unavailable/degraded health, and effective knowledge state across REST/MCP/dashboard reads |
 
+Additional capability batch: feedback_patterns, performance_insights, forecasts,
+and retention_policies are guarded as newer authenticated service/route surfaces
+outside the P6-P15 release matrix.
+
 Release checks:
 
 - tools/test.ps1
 - Python compileall over src and tests
+- python scripts/dashboard_showcase_svg.py
 - git diff --check
 - live Playwright dashboard interaction
 - on-disk schema and projection rebuild inspection

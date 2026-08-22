@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import time
 import unittest
+import json
+import threading
 from datetime import datetime, timedelta, timezone
+from http.client import HTTPConnection
+from pathlib import Path
 
+from auremgrid.api.http import serve
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
 from auremgrid.services.brain import CompanyOS
 from tests.auth_support import issue_identity
@@ -340,6 +345,123 @@ class DashboardServiceTests(unittest.TestCase):
             self.dashboard.workflow_board(
                 self.owner_identity, self.org.id, self.other_ws.id, self.owner.id
             )
+
+    def test_command_dashboard_is_canonical_not_demo_seeded(self) -> None:
+        result = self.dashboard.command(self.org.id, self.owner.id)
+        self.assertEqual(result["workspaces"][0]["id"], self.ws.id)
+        self.assertEqual(result["workspaces"][0]["name"], "Visible")
+        self.assertEqual(result["metrics"]["finance_status"], "not_connected")
+        self.assertNotIn("Auremgrid Demo", repr(result))
+        self.assertNotIn("Demo Owner", repr(result))
+
+    def test_settings_read_model_is_authenticated_and_backend_sourced(self) -> None:
+        settings = self.dashboard.settings(self.owner_identity, self.org.id, self.ws.id)
+        self.assertEqual(settings["identity"]["organization"]["id"], self.org.id)
+        self.assertEqual(settings["identity"]["person"]["id"], self.owner.id)
+        self.assertEqual(settings["workspace"]["id"], self.ws.id)
+        self.assertIn("workspace_read", settings["permissions"]["capabilities"])
+        self.assertIn("pending_count", settings["approvals"])
+        self.assertIn("integrations", settings)
+        self.assertIn("health", settings)
+
+    def test_dashboard_settings_endpoint_requires_auth_and_returns_renderable_health(self) -> None:
+        server = serve(self.os, "127.0.0.1", 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = server.server_address
+
+            def request(path: str, token: str | None = None) -> tuple[int, dict]:
+                connection = HTTPConnection(host, port, timeout=5)
+                headers = {"Authorization": f"Bearer {token}"} if token else {}
+                connection.request("GET", path, headers=headers)
+                response = connection.getresponse()
+                payload = json.loads(response.read())
+                connection.close()
+                return response.status, payload
+
+            path = f"/dashboard/settings?organization_id={self.org.id}&workspace_id={self.ws.id}"
+            status, body = request(path)
+            self.assertEqual(status, 401)
+            self.assertEqual(body["error"], "authentication_error")
+
+            token, _ = issue_identity(self.os, self.org.id, self.owner.id, self.ws.id, self.visible_actor.id)
+            status, settings = request(path, token)
+            self.assertEqual(status, 200)
+            self.assertEqual(settings["workspace"]["id"], self.ws.id)
+            self.assertIsInstance(settings["health"]["schema_version"], int)
+            self.assertIn(settings["health"]["status"], {"healthy", "degraded"})
+
+            status, health = request("/health/detailed")
+            self.assertEqual(status, 200)
+            self.assertIsInstance(health["schema_version"], int)
+            self.assertIn("warnings", health)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_empty_dashboard_payload_is_renderable_and_not_sampled(self) -> None:
+        empty_os = CompanyOS(":memory:")
+        try:
+            org = empty_os.create_organization("Quiet Agency", "org_quiet")
+            person = empty_os.create_person(org.id, "Quiet Owner", "quiet.owner@example.invalid", role="owner", person_id="person_quiet")
+            result = empty_os.dashboard.command(org.id, person.id)
+            self.assertEqual(result["metrics"]["active_clients"], 0)
+            self.assertEqual(result["workspaces"], [])
+            self.assertEqual(result["attention"], [])
+            self.assertEqual(result["clients"], [])
+            self.assertNotIn("SAMPLE DATA", repr(result))
+            self.assertNotIn("Client Alpha", repr(result))
+        finally:
+            empty_os.close()
+
+    def test_release_route_surface_for_p6_p15_rows(self) -> None:
+        http = Path(__file__).parents[1].joinpath("src", "auremgrid", "api", "http.py").read_text(encoding="utf-8")
+        service_names = ("workflow_ops", "client_ops", "agency_ops", "agent_ops")
+        for name in service_names:
+            self.assertTrue(hasattr(self.os, name), name)
+        for route in (
+            "/work/items",
+            "/reviews/comment",
+            "/dashboard/review-center",
+            "/meetings/responsibilities",
+            "/decisions",
+            "/dashboard/workflows",
+            "/workflows/runs",
+            "/workflows/stages/start",
+            "/workflows/evidence",
+            "/workflows/approvals/request",
+            "/workflows/approvals/decide",
+            "/workflows/handoffs/acknowledge",
+            "/signals",
+            "/risks",
+            "/opportunities",
+            "/finance",
+            "/campaigns",
+            "/creative",
+            "/agents",
+        ):
+            self.assertIn(route, http)
+
+    def test_newer_feedback_performance_forecast_retention_batch_is_separately_guarded(self) -> None:
+        http = Path(__file__).parents[1].joinpath("src", "auremgrid", "api", "http.py").read_text(encoding="utf-8")
+        for name in ("feedback", "performance", "forecasts", "retention"):
+            self.assertTrue(hasattr(self.os, name), name)
+        for route in (
+            "/feedback/record",
+            "/feedback/patterns",
+            "/feedback/patterns/promote",
+            "/feedback/patterns/decide",
+            "/insights/performance",
+            "/insights/performance/generate",
+            "/insights/performance/decide",
+            "/forecasts",
+            "/forecasts/generate",
+            "/retention/policies",
+            "/retention/execute",
+        ):
+            self.assertIn(route, http)
 
 
 if __name__ == "__main__":

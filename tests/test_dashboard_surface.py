@@ -72,6 +72,70 @@ class DashboardSurfaceTests(unittest.TestCase):
         self.assertNotIn("draggable=\"true\"", self.html)
         self.assertNotIn("ondrag", self.html.lower())
 
+    def test_shell_identity_and_ledger_health_are_backend_sourced(self) -> None:
+        for demo_marker in ("Auremgrid Demo", "Demo Owner", "org_demo", "person_demo_owner", "ws_alpha", "act_alpha_admin", "Local ledger online"):
+            self.assertEqual(0, self.html.count(demo_marker), demo_marker)
+        self.assertGreater(self.html.count("/auth/me"), 0, "/auth/me")
+        self.assertRegex(self.html, r"/health(?:/detailed)?", "dashboard must fetch backend health")
+        self.assertGreater(self.html.count('id="ledger-status"'), 0, "ledger-status element")
+        self.assertRegex(
+            self.html,
+            r"\$\(['\"]ledger-status['\"]\)\.textContent\s*=",
+            "dashboard must update the ledger-status DOM node from backend health",
+        )
+
+    def test_every_nav_surface_uses_a_real_backend_source(self) -> None:
+        expected_modules = ("Campaigns", "Content", "Creative", "Meetings", "Automations", "Reports", "Integrations", "Settings")
+        for name in expected_modules:
+            self.assertIn(f'"{name}"', self.html)
+        for endpoint in (
+            "/dashboard/data",
+            "/dashboard/client",
+            "/dashboard/module",
+            "/dashboard/settings",
+            "/dashboard/brain",
+            "/dashboard/workflows",
+        ):
+            self.assertGreater(self.html.count(endpoint), 0, endpoint)
+        for marker in ("id=\"agents\"", "page-finance", "id=\"capacity-list\"", "finance_status", "agents_running"):
+            self.assertGreater(self.html.count(marker), 0, marker)
+        self.assertGreater(self.html.count("/dashboard/settings"), 0, "/dashboard/settings")
+        self.assertEqual(0, self.html.count('name==="Settings"){target.innerHTML=['), "static Settings branch")
+        self.assertIn("Loading authenticated settings", self.html)
+        self.assertIn("Settings unavailable:", self.html)
+
+    def test_p6_p9_module_markers_and_actions_are_visible(self) -> None:
+        for marker in (
+            "page-work",
+            "work-board",
+            "capture-form",
+            "/work/capture",
+            "/dashboard/workflows",
+            "/workflows/stages/start",
+            "/workflows/evidence",
+            "/workflows/approvals/request",
+            "/workflows/approvals/decide",
+            "/workflows/handoffs/acknowledge",
+            "/workflows/stages/complete",
+            "page-review",
+            "/dashboard/review-center",
+            "page-brain",
+            "/dashboard/brain",
+        ):
+            self.assertGreater(self.html.count(marker), 0, marker)
+
+    def test_authenticated_command_uses_backend_operations(self) -> None:
+        command_start = self.html.find('"command-form").onsubmit')
+        self.assertNotEqual(command_start, -1)
+        command_slice = self.html[command_start:command_start + 1200]
+        self.assertIn("/search?", command_slice)
+        self.assertIn("workspace_id", command_slice)
+        self.assertIn("query=", command_slice)
+        self.assertIn("api(", command_slice)
+        self.assertIn("Authorization", self.html)
+        self.assertNotIn("mock", command_slice.lower())
+        self.assertNotIn("demo", command_slice.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
