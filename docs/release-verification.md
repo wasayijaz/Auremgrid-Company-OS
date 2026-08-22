@@ -13,17 +13,17 @@ This matrix maps the product definition of complete to authoritative implementat
 | 7. Review and approvals are enforced | review lifecycle, timestamped comments, single-decision, and approval authorization tests |
 | 8. Meetings and communication generate signals | client-operations, relationship, and promotion/sync tests |
 | 9. Decisions are first class | Decision model/repository/API/MCP and human proposal-promotion tests |
-| 10. Client health is explainable | Current slice: unanswered-message, risk, overdue-work, workflow-readiness, and scope explanations in ClientOperationsTests and dashboard Client HQ projections |
-| 11. Risks and opportunities use real signals | Current slice: signal routing and scope-overage behavior tests; not a complete risk-management system |
-| 12. Scope usage is tracked | Current slice: contract, allowance, usage percentage, risk, and opportunity tests |
-| 13. Finance connects without fabricated values | Current slice: not_connected and sourced finance record tests; not a complete finance system |
-| 14. Campaigns and creatives are structured | Current slice: campaign metric, creative library, content pipeline, performance schemas and tests; not a full campaign manager |
-| 15. Agents have scoped permissions and auditable runs | Current slice: AgentAutomationTests, provider-neutral capability-level routing, immutable escalation audits, and automatic ledger audit tests; not an autonomous agent runtime |
+| 10. Client health is explainable | Pure `explain_health` read model plus explicit snapshot calculation, component scores, explanations, evidence references, authenticated HTTP, Client HQ Health UI, and P10-P12 tests |
+| 11. Risks and opportunities use real signals | Signal routing plus create/resolve/reopen risk and create/advance/close opportunity lifecycles, append-only event histories/audits, authenticated HTTP, Client HQ controls, isolation, and invalid-transition tests |
+| 12. Scope usage is tracked | Contract/allowance/quantity-or-hours usage, period history, explicit no-data/recorded/over-scope states, generated risk/opportunity links, authenticated HTTP, and Client HQ Scope UI |
+| 13. Finance connects without fabricated values | Explicit disconnected state plus sourced revenues, invoices, budgets, labor/other/software/AI costs, client contribution/margin calculation, authenticated routes, and focused economics tests |
+| 14. Campaigns and creatives are structured | Legal campaign transitions, append-only lifecycle audits, campaign metrics, immutable creative versions, reviewer-gated approval/revision flow, sourced creative performance, authenticated inspectors/actions, and focused lifecycle tests |
+| 15. Agents have scoped permissions and auditable runs | Scoped queue claim, workspace-fenced tool calls, ordered traces, outputs/errors/costs, person-visible run list/detail, capability-level routing, authenticated routes, command-center inspectors, and observability tests |
 | 16. Automations trigger safely | training checkpoint, approved execution, outcome, and activation tests |
 | 17. MCP/API cover major domains | ExpandedApiTests and namespaced MCP discovery test |
 | 18. Dashboard surfaces major operations | 18 destinations including workflows, 8 metrics, an accountable Client HQ roster/meeting/workload/readiness view, a derived weekly capacity view, bearer-authenticated data fetches, operational Brain proposal/conflict/current-truth board plus evidence-backed entity discovery, workflow stage board, capability-gated descriptor actions with idempotency/expected-version payloads, historical zero-action behavior, degraded/loading/empty states, and dashboard/API behavior tests |
 | 19. Projections rebuild after restart | ProjectionRestartTests, durable schema-16 embedding projection, fenced schema-17 graph generations, append-only schema-21 Graphiti episode-key/provider-UUID mappings, opt-in local-only SentenceTransformers identity/version fencing, and live rebuild report |
-| 20. Tests prove isolation, persistence, permissions, and workflows | 429 offline behavior tests |
+| 20. Tests prove isolation, persistence, permissions, and workflows | Full offline behavior suite plus a deterministic ten-scenario Chromium dashboard gate |
 | 21. README accurately describes reality | implemented/local fallback/optional/experimental/planned status sections |
 | 22. Existing data migrates forward | legacy-v1 migration test and schema 21 migration chain, including durable provider task identity, embedding projection, graph generations and Graphiti UUID sidecar, entity resolution, knowledge states, existing-agent level backfill, and client account rosters |
 | 23. Wings coordinate through executable operating contracts | eight neutral templates, immutable definition versions/run snapshots, dependency and rework behavior, evidence/approval/handoff gates, REST/MCP parity, dashboard status, and workflow isolation tests |
@@ -47,7 +47,7 @@ Release checks:
 - python scripts/dashboard_showcase_svg.py
 - git diff --check
 - `python -m auremgrid.cli evaluate-intelligence`
-- live Playwright dashboard interaction
+- `tools/run-dashboard-browser.ps1` (deterministic Playwright/Chromium gate)
 - on-disk schema and projection rebuild inspection
 
 Clean-room walkthrough evidence (2026-08-19): the zero-install launcher ran

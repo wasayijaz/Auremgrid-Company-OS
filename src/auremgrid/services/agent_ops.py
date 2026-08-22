@@ -246,6 +246,27 @@ class AgentOperations:
         self.conn.commit()
         return run
 
+    def claim_next_task(self, organization_id: str, agent_id: str) -> dict[str, Any] | None:
+        """Claim the highest-priority queued task that remains inside the agent scope."""
+        agent = self.conn.execute(
+            "SELECT * FROM agents WHERE organization_id=? AND id=?",
+            (organization_id, agent_id),
+        ).fetchone()
+        if agent is None:
+            raise NotFoundError("agent not found")
+        allowed = set(json.loads(agent["allowed_workspace_ids"]))
+        rows = self.conn.execute(
+            """SELECT t.* FROM agent_queue_items q
+               JOIN agent_tasks t ON t.id=q.task_id
+               WHERE q.organization_id=? AND q.agent_id=? AND q.status='queued' AND t.status='queued'
+               ORDER BY q.priority DESC,q.enqueued_at ASC,q.id ASC""",
+            (organization_id, agent_id),
+        ).fetchall()
+        for task in rows:
+            if task["workspace_id"] is None or task["workspace_id"] in allowed:
+                return self.start_run(organization_id, agent_id, task["id"])
+        return None
+
     def record_tool_call(
         self,
         organization_id: str,
@@ -260,6 +281,10 @@ class AgentOperations:
         agent = self.conn.execute("SELECT tools FROM agents WHERE id=?", (agent_id,)).fetchone()
         if tool_name not in json.loads(agent[0]):
             raise AuthorizationError("tool is not allowed for agent")
+        run = self.conn.execute("SELECT workspace_id FROM agent_runs WHERE id=?", (run_id,)).fetchone()
+        argument_workspace = arguments.get("workspace_id") if isinstance(arguments, dict) else None
+        if argument_workspace is not None and argument_workspace != run["workspace_id"]:
+            raise AuthorizationError("tool call workspace is outside the run scope")
         now = _now().isoformat()
         item = {
             "id": self.new_id("toolcall"),
@@ -273,6 +298,34 @@ class AgentOperations:
             "error": error,
         }
         self.conn.execute("INSERT INTO tool_calls VALUES (?,?,?,?,?,?,?,?,?)", tuple(item.values()))
+        self.conn.commit()
+        return item
+
+    def record_trace(
+        self,
+        organization_id: str,
+        agent_id: str,
+        run_id: str,
+        kind: str,
+        message: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self._run(organization_id, agent_id, run_id)
+        if not kind.strip() or not message.strip():
+            raise ValidationError("trace kind and message are required")
+        row = self.conn.execute(
+            "SELECT COALESCE(MAX(sequence),0)+1 FROM run_traces WHERE run_id=?", (run_id,)
+        ).fetchone()
+        item = {
+            "id": self.new_id("trace"),
+            "run_id": run_id,
+            "sequence": int(row[0]),
+            "kind": kind.strip(),
+            "message": message.strip(),
+            "metadata": _json(metadata or {}),
+            "recorded_at": _now().isoformat(),
+        }
+        self.conn.execute("INSERT INTO run_traces VALUES (?,?,?,?,?,?,?)", tuple(item.values()))
         self.conn.commit()
         return item
 
@@ -340,6 +393,63 @@ class AgentOperations:
             "running": sum(run["status"] == "running" for run in runs),
             "failed": sum(run["status"] == "failed" for run in runs),
             "token_cost": sum((run["cost"] or 0) for run in runs),
+        }
+
+    def list_runs(
+        self,
+        organization_id: str,
+        person_id: str,
+        workspace_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if self.company.org_membership(organization_id, person_id) is None:
+            raise AuthorizationError("organization membership required")
+        visible = {
+            row[0] for row in self.conn.execute(
+                "SELECT workspace_id FROM workspace_memberships WHERE person_id=?", (person_id,)
+            ).fetchall()
+        }
+        if workspace_id is not None and workspace_id not in visible:
+            raise AuthorizationError("workspace membership required")
+        where = ["organization_id=?"]
+        values: list[Any] = [organization_id]
+        if workspace_id is not None:
+            where.append("workspace_id=?")
+            values.append(workspace_id)
+        elif visible:
+            marks = ",".join("?" for _ in visible)
+            where.append(f"(workspace_id IS NULL OR workspace_id IN ({marks}))")
+            values.extend(sorted(visible))
+        else:
+            where.append("workspace_id IS NULL")
+        if agent_id is not None:
+            where.append("agent_id=?")
+            values.append(agent_id)
+        rows = self.conn.execute(
+            f"SELECT * FROM agent_runs WHERE {' AND '.join(where)} ORDER BY started_at DESC,id DESC",
+            values,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def run_detail(
+        self, organization_id: str, person_id: str, run_id: str
+    ) -> dict[str, Any]:
+        visible = self.list_runs(organization_id, person_id)
+        run = next((item for item in visible if item["id"] == run_id), None)
+        if run is None:
+            raise NotFoundError("agent run not found")
+        task = self.conn.execute("SELECT * FROM agent_tasks WHERE id=?", (run.get("task_id"),)).fetchone()
+        output = self.conn.execute("SELECT * FROM run_outputs WHERE run_id=?", (run_id,)).fetchone()
+        error = self.conn.execute("SELECT * FROM run_errors WHERE run_id=?", (run_id,)).fetchone()
+        tools = self.conn.execute("SELECT * FROM tool_calls WHERE run_id=? ORDER BY started_at,id", (run_id,)).fetchall()
+        traces = self.conn.execute("SELECT * FROM run_traces WHERE run_id=? ORDER BY sequence", (run_id,)).fetchall()
+        return {
+            "run": run,
+            "task": dict(task) if task else None,
+            "output": dict(output) if output else None,
+            "error": dict(error) if error else None,
+            "tool_calls": [dict(row) for row in tools],
+            "traces": [dict(row) for row in traces],
         }
 
     def _run(self, organization_id: str, agent_id: str, run_id: str) -> Any:

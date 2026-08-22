@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
@@ -209,6 +209,80 @@ class ProactiveIntelligenceService:
             scoped = self.os.auth.scope_identity(identity, workspace_id)
         scoped.require("brain_read")
         return scoped
+
+    def refresh_status(
+        self,
+        identity: AuthenticatedIdentity,
+        snapshot_type: str = "executive",
+        workspace_id: str | None = None,
+        stale_after: timedelta = timedelta(hours=24),
+    ) -> dict[str, Any]:
+        """Describe the durable refresh lifecycle without pretending a worker is running."""
+        snapshot_type = self._snapshot_type(snapshot_type)
+        if snapshot_type == "workspace" and not workspace_id:
+            raise ValidationError("workspace_id is required for workspace snapshots")
+        if snapshot_type == "executive" and workspace_id is not None:
+            raise ValidationError("executive snapshots are organization-scoped")
+        scoped = identity if workspace_id is None else self.os.auth.scope_identity(identity, workspace_id)
+        scoped.require("brain_read")
+        snapshot = self.latest_snapshot(
+            scoped.organization_id, scoped.person_id, snapshot_type, workspace_id
+        )
+        jobs = [
+            job for job in self.os.jobs.list_jobs(scoped.organization_id, workspace_id)
+            if job.get("type") == "proactive_intelligence.refresh"
+            and (job.get("payload") or {}).get("snapshot_type") == snapshot_type
+            and (job.get("payload") or {}).get("workspace_id") == workspace_id
+        ]
+        latest_job = jobs[0] if jobs else None
+        job_status = str((latest_job or {}).get("status") or "")
+        if job_status in {"queued", "retry_wait"}:
+            status = "queued"
+        elif job_status in {"leased", "running"}:
+            status = "running"
+        elif job_status in {"failed", "dead_letter"}:
+            status = "failed"
+        elif snapshot is None:
+            status = "no_snapshot"
+        else:
+            generated = datetime.fromisoformat(str(snapshot["generated_at"]).replace("Z", "+00:00"))
+            status = "stale" if _now() - generated.astimezone(timezone.utc) > stale_after else "ready"
+        worker_parts = [
+            "python scripts/auremgrid.py worker-once",
+            "--db <database-path>",
+            f"--organization {scoped.organization_id}",
+        ]
+        if workspace_id:
+            worker_parts.append(f"--workspace {workspace_id}")
+        worker_parts.append("--worker-id local-worker-1")
+        job_view = None
+        if latest_job is not None:
+            job_view = {
+                key: latest_job.get(key)
+                for key in (
+                    "id", "status", "progress", "attempts", "max_attempts", "error",
+                    "created_at", "updated_at", "started_at", "completed_at", "version",
+                )
+            }
+        snapshot_view = None
+        if snapshot is not None:
+            snapshot_view = {
+                "id": snapshot["id"],
+                "version": snapshot["version"],
+                "status": snapshot["status"],
+                "generated_at": snapshot["generated_at"],
+                "attention_count": len(snapshot.get("attention") or []),
+                "degraded_reason": snapshot.get("degraded_reason"),
+            }
+        return {
+            "status": status,
+            "snapshot_type": snapshot_type,
+            "workspace_id": workspace_id,
+            "worker_required": status in {"no_snapshot", "queued", "failed", "stale"},
+            "worker_command": " ".join(worker_parts),
+            "latest_job": job_view,
+            "latest_snapshot": snapshot_view,
+        }
 
     def _decode_snapshot(self, row: Any) -> dict[str, Any]:
         item = dict(row)

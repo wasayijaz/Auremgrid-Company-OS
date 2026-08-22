@@ -39,13 +39,15 @@ class P6P15ReleaseEvidenceTests(unittest.TestCase):
             for route in routes:
                 self.assertIn(route, self.http)
 
-    def test_p10_p15_are_documented_as_current_product_slices(self) -> None:
+    def test_p10_p15_document_the_completed_operational_contracts(self) -> None:
         doc = self.doc.lower()
         for phrase in (
-            "current slice",
-            "not a complete finance system",
-            "not a full campaign manager",
-            "not an autonomous agent runtime",
+            "pure `explain_health` read model",
+            "create/resolve/reopen risk",
+            "explicit no-data/recorded/over-scope states",
+            "client contribution/margin calculation",
+            "reviewer-gated approval/revision flow",
+            "workspace-fenced tool calls",
         ):
             self.assertIn(phrase, doc)
 

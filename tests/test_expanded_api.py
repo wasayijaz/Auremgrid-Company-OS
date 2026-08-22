@@ -46,6 +46,59 @@ class ExpandedApiTests(unittest.TestCase):
         self.assertEqual(status,200);self.assertIn("risk_id",routed)
         status,health=self.post("/health/calculate",common)
         self.assertEqual(status,201);self.assertIn("open risks",health["explanation"])
+        status,explained=self.get("/health/explain?organization_id=org_demo&workspace_id=ws_alpha&person_id=person_demo_owner")
+        self.assertEqual(status,200);self.assertIn("components",explained)
+
+    def test_client_lifecycle_and_scope_read_models_are_available_over_http(self) -> None:
+        common={"organization_id":"org_demo","workspace_id":"ws_alpha","person_id":"person_demo_owner"}
+        status,risk=self.post("/risks",{**common,"type":"delivery","severity":"high","impact":"Delay","evidence":"Late milestone","recommended_action":"Recover"})
+        self.assertEqual(status,201)
+        status,resolved=self.post("/risks/resolve",{**common,"risk_id":risk["id"],"resolution":"Recovered"})
+        self.assertEqual(status,200);self.assertEqual(resolved["status"],"resolved")
+        status,detail=self.get(f"/risks/detail?organization_id=org_demo&workspace_id=ws_alpha&person_id=person_demo_owner&risk_id={risk['id']}")
+        self.assertEqual(status,200);self.assertEqual(len(detail["events"]),2)
+        status,opportunity=self.post("/opportunities",{**common,"type":"upsell","reason":"Demand","evidence":"Requests","recommendation":"Propose"})
+        self.assertEqual(status,201)
+        status,advanced=self.post("/opportunities/advance",{**common,"opportunity_id":opportunity["id"],"to_status":"qualified","note":"Validated"})
+        self.assertEqual(status,200);self.assertEqual(advanced["status"],"qualified")
+        status,scope=self.get("/scope/status?organization_id=org_demo&workspace_id=ws_alpha&person_id=person_demo_owner")
+        self.assertEqual(status,200);self.assertIn(scope["status"],{"no_contract","no_allowances","no_usage","unknown","recorded","over_scope"})
+
+    def test_campaign_creative_finance_and_agent_run_completion_routes(self) -> None:
+        common={"organization_id":"org_demo","workspace_id":"ws_alpha","person_id":"person_demo_owner"}
+        status,campaign=self.post("/campaigns",{**common,"name":"Lifecycle","objective":"Leads","platform":"meta"})
+        self.assertEqual(status,201)
+        status,scheduled=self.post("/campaigns/transition",{**common,"campaign_id":campaign["id"],"to_status":"scheduled","note":"Ready"})
+        self.assertEqual(status,200);self.assertEqual(scheduled["status"],"scheduled")
+        status,campaign_detail=self.get(f"/campaigns/detail?organization_id=org_demo&workspace_id=ws_alpha&person_id=person_demo_owner&campaign_id={campaign['id']}")
+        self.assertEqual(status,200);self.assertEqual(campaign_detail["events"][0]["to_status"],"scheduled")
+        status,creative=self.post("/creative",{**common,"title":"Launch visual","format":"image","campaign_id":campaign["id"]})
+        self.assertEqual(status,201)
+        status,version=self.post("/creative/versions",{**common,"asset_id":creative["id"],"file_url":"https://example.test/v1.png","notes":"First cut"})
+        self.assertEqual(status,201);self.assertEqual(version["version"],1)
+        self.os.agency_ops.connect_finance("org_demo","person_demo_owner","accounting-test")
+        status,cost=self.post("/finance/costs",{**common,"amount":125,"category":"labor","incurred_at":"2026-08-01","source":"timesheets"})
+        self.assertEqual(status,201);self.assertEqual(cost["amount"],125)
+
+        luna=next(item for item in self.os.agent_ops.seed_primary_agents("org_demo","person_demo_owner") if item["name"]=="Luna")
+        self.os.agent_ops.configure_agent("org_demo","person_demo_owner",luna["id"],"local",["work.list"],["ws_alpha"],["domain.write"])
+        status,task=self.post("/agents/tasks",{**common,"agent_id":luna["id"],"title":"Inspect","instructions":"List work"})
+        self.assertEqual(status,201)
+        status,claimed=self.post("/agents/runs/claim",{"organization_id":"org_demo","agent_id":luna["id"]})
+        self.assertEqual(status,200);run=claimed["run"];self.assertEqual(run["task_id"],task["id"])
+        status,_=self.post("/agents/runs/trace",{"organization_id":"org_demo","agent_id":luna["id"],"run_id":run["id"],"kind":"plan","message":"Inspect"})
+        self.assertEqual(status,201)
+        self.os.agent_ops.complete_run("org_demo",luna["id"],run["id"],"Done")
+        status,runs=self.get("/agents/runs?organization_id=org_demo&person_id=person_demo_owner&workspace_id=ws_alpha")
+        self.assertEqual(status,200);self.assertEqual(runs["runs"][0]["id"],run["id"])
+        status,run_detail=self.get(f"/agents/runs/detail?organization_id=org_demo&person_id=person_demo_owner&run_id={run['id']}")
+        self.assertEqual(status,200);self.assertEqual(run_detail["traces"][0]["kind"],"plan")
+
+    def test_proactive_worker_status_never_claims_unstarted_work(self) -> None:
+        status,body=self.get("/dashboard/intelligence/refresh-status?organization_id=org_demo&person_id=person_demo_owner&snapshot_type=executive")
+        self.assertEqual(status,200)
+        self.assertIn(body["status"],{"no_snapshot","queued","running","failed","stale","ready"})
+        self.assertIn("worker_command",body)
 
     def test_expanded_mcp_names_share_permissioned_domains(self) -> None:
         router=McpToolRouter(self.os,self.identity); common={"organization_id":"org_demo","person_id":"person_demo_owner"}
@@ -78,6 +131,66 @@ class ExpandedApiTests(unittest.TestCase):
         self.assertEqual(status,200)
         self.assertEqual(detail["work_item"]["id"],row["id"])
         self.assertIn("comments",detail);self.assertIn("files",detail);self.assertIn("versions",detail)
+        self.assertIn("allowed_transitions",detail);self.assertIn("version",detail)
+
+    def test_work_transition_endpoint_enforces_version_idempotency_and_workspace_scope(self) -> None:
+        status,created=self.post("/work/items",{
+            "organization_id":"org_demo",
+            "workspace_id":"ws_alpha",
+            "person_id":"person_demo_owner",
+            "title":"Lifecycle API",
+            "request":"Move this through the canonical route",
+            "requested_by":"Client",
+        })
+        self.assertEqual(status,201)
+        status,detail=self.get(f"/work/detail?organization_id=org_demo&workspace_id=ws_alpha&person_id=person_demo_owner&work_item_id={created['id']}")
+        self.assertEqual(status,200)
+        status,moved=self.post("/work/items/transition",{
+            "organization_id":"org_demo",
+            "workspace_id":"ws_alpha",
+            "person_id":"person_demo_owner",
+            "work_item_id":created["id"],
+            "to_status":"assigned",
+            "reason":"Accepted",
+            "expected_version":detail["version"],
+            "idempotency_key":"api-transition-1",
+        })
+        self.assertEqual(status,200)
+        self.assertEqual(moved["work_item"]["status"],"assigned")
+        status,replay=self.post("/work/items/transition",{
+            "organization_id":"org_demo",
+            "workspace_id":"ws_alpha",
+            "person_id":"person_demo_owner",
+            "work_item_id":created["id"],
+            "to_status":"assigned",
+            "reason":"Accepted",
+            "expected_version":detail["version"],
+            "idempotency_key":"api-transition-1",
+        })
+        self.assertEqual(status,200)
+        self.assertEqual(replay,moved)
+        status,mismatch=self.post("/work/items/transition",{
+            "organization_id":"org_demo",
+            "workspace_id":"ws_alpha",
+            "person_id":"person_demo_owner",
+            "work_item_id":created["id"],
+            "to_status":"in_progress",
+            "reason":"Different",
+            "expected_version":moved["version"],
+            "idempotency_key":"api-transition-1",
+        })
+        self.assertEqual(status,400)
+        self.assertEqual(mismatch["error"],"validation_error")
+        status,scoped=self.post("/work/items/transition",{
+            "organization_id":"org_demo",
+            "workspace_id":"ws_beta",
+            "person_id":"person_demo_owner",
+            "work_item_id":created["id"],
+            "to_status":"in_progress",
+            "expected_version":moved["version"],
+            "idempotency_key":"api-transition-cross-scope",
+        })
+        self.assertIn(status,{403,404})
 
     def test_cross_workspace_rest_lookup_returns_no_records(self) -> None:
         outsider=self.os.create_person("org_demo","Prime only")

@@ -37,6 +37,12 @@ ROSTER_ROLE_KEYS = {
     "default_meeting_note_taker",
 }
 WING_ROLES = {"wing_lead", "wing_executive"}
+OPPORTUNITY_ACTIVE_STATUSES = {"open", "qualified", "proposed", "deferred"}
+OPPORTUNITY_TERMINAL_STATUSES = {"won", "lost", "closed"}
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, separators=(",", ":"))
 
 
 def _parse_dt(value: datetime | str | None) -> datetime:
@@ -61,6 +67,36 @@ def _norm_wing(value: Any) -> str | None:
         return None
     wing = " ".join(str(value).strip().lower().split())
     return wing or None
+
+
+def _load_json_object(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _usage_totals(row: Any) -> dict[str, Any]:
+    used_quantity = float(row["delivered_quantity"] or 0) + float(row["in_review_quantity"] or 0) + float(row["requested_quantity"] or 0)
+    included_quantity = float(row["included_quantity"] or 0)
+    included_hours = float(row["included_hours"] or 0)
+    used_hours = float(row["used_hours"] or 0)
+    if included_hours:
+        return {
+            "basis": "hours",
+            "included": included_hours,
+            "used": used_hours,
+            "percentage": round(used_hours / included_hours * 100, 3),
+        }
+    if included_quantity:
+        return {
+            "basis": "quantity",
+            "included": included_quantity,
+            "used": used_quantity,
+            "percentage": round(used_quantity / included_quantity * 100, 3),
+        }
+    return {"basis": None, "included": None, "used": used_hours or used_quantity or None, "percentage": None}
 
 
 class ClientOperations:
@@ -451,12 +487,73 @@ class ClientOperations:
         self.conn.execute("INSERT INTO risks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(
             item.id,item.organization_id,item.workspace_id,item.project_id,item.type,item.severity,item.probability,item.impact,
             item.owner_person_id,item.detected_at.isoformat(),item.status,item.evidence,item.recommended_action,None,None))
+        self._record_risk_event(
+            organization_id, workspace_id, person_id, item.id, "created", None, "open",
+            "Risk created", {"type": type, "severity": severity, "project_id": project_id},
+        )
         self.conn.commit(); return item
 
     def list_risks(self, organization_id: str, workspace_id: str, person_id: str, open_only: bool = True) -> list[dict[str, Any]]:
         self.authorize(organization_id,workspace_id,person_id)
         sql="SELECT * FROM risks WHERE workspace_id=?" + (" AND status='open'" if open_only else "")
         return [dict(row) for row in self.conn.execute(sql+" ORDER BY detected_at DESC",(workspace_id,)).fetchall()]
+
+    def resolve_risk(self, organization_id: str, workspace_id: str, person_id: str, risk_id: str, resolution: str) -> dict[str, Any]:
+        self.authorize(organization_id, workspace_id, person_id, write=True)
+        note = resolution.strip()
+        if not note:
+            raise ValidationError("risk resolution is required")
+        row = self.conn.execute(
+            "SELECT * FROM risks WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, risk_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("risk not found")
+        if row["status"] != "open":
+            raise ValidationError("only open risks can be resolved")
+        now = _now().isoformat()
+        self.conn.execute(
+            "UPDATE risks SET status='resolved',resolution=?,resolved_at=? WHERE id=?",
+            (note, now, risk_id),
+        )
+        self._record_risk_event(organization_id, workspace_id, person_id, risk_id, "resolved", row["status"], "resolved", note)
+        self.conn.commit()
+        return self.risk_detail(organization_id, workspace_id, person_id, risk_id)
+
+    def reopen_risk(self, organization_id: str, workspace_id: str, person_id: str, risk_id: str, reason: str) -> dict[str, Any]:
+        self.authorize(organization_id, workspace_id, person_id, write=True)
+        note = reason.strip()
+        if not note:
+            raise ValidationError("risk reopen reason is required")
+        row = self.conn.execute(
+            "SELECT * FROM risks WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, risk_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("risk not found")
+        if row["status"] == "open":
+            raise ValidationError("risk is already open")
+        self.conn.execute("UPDATE risks SET status='open',resolution=NULL,resolved_at=NULL WHERE id=?", (risk_id,))
+        self._record_risk_event(
+            organization_id, workspace_id, person_id, risk_id, "reopened", row["status"], "open",
+            note, {"previous_resolution": row["resolution"], "previous_resolved_at": row["resolved_at"]},
+        )
+        self.conn.commit()
+        return self.risk_detail(organization_id, workspace_id, person_id, risk_id)
+
+    def risk_detail(self, organization_id: str, workspace_id: str, person_id: str, risk_id: str) -> dict[str, Any]:
+        self.authorize(organization_id, workspace_id, person_id)
+        row = self.conn.execute(
+            "SELECT * FROM risks WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, risk_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("risk not found")
+        events = [dict(item) for item in self.conn.execute(
+            "SELECT * FROM risk_events WHERE organization_id=? AND workspace_id=? AND risk_id=? ORDER BY created_at,rowid",
+            (organization_id, workspace_id, risk_id),
+        ).fetchall()]
+        return {**dict(row), "events": events}
 
     def create_opportunity(self, organization_id: str, workspace_id: str, person_id: str, type: str,
         reason: str, evidence: str, recommendation: str, estimated_value: float | None = None) -> Opportunity:
@@ -467,7 +564,97 @@ class ClientOperations:
         self.conn.execute("INSERT INTO opportunities VALUES (?,?,?,?,?,?,?,?,?,?,?)",(
             item.id,item.organization_id,item.workspace_id,item.type,item.estimated_value,item.reason,item.evidence,
             item.recommendation,item.owner_person_id,item.status,item.created_at.isoformat()))
+        self._record_opportunity_event(
+            organization_id, workspace_id, person_id, item.id, "created", None, "open",
+            "Opportunity created", {"type": type},
+        )
         self.conn.commit(); return item
+
+    def list_opportunities(self, organization_id: str, workspace_id: str, person_id: str, open_only: bool = False) -> list[dict[str, Any]]:
+        self.authorize(organization_id, workspace_id, person_id)
+        sql = "SELECT * FROM opportunities WHERE organization_id=? AND workspace_id=?"
+        values: list[Any] = [organization_id, workspace_id]
+        if open_only:
+            sql += " AND status NOT IN ('won','lost','closed')"
+        return [dict(row) for row in self.conn.execute(sql + " ORDER BY created_at DESC", values).fetchall()]
+
+    def advance_opportunity(self, organization_id: str, workspace_id: str, person_id: str,
+        opportunity_id: str, to_status: str, note: str = "") -> dict[str, Any]:
+        self.authorize(organization_id, workspace_id, person_id, write=True)
+        status = str(to_status or "").strip().lower()
+        if status not in OPPORTUNITY_ACTIVE_STATUSES:
+            raise ValidationError("opportunity advance status must be open, qualified, proposed, or deferred")
+        row = self.conn.execute(
+            "SELECT * FROM opportunities WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, opportunity_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("opportunity not found")
+        if row["status"] in OPPORTUNITY_TERMINAL_STATUSES:
+            raise ValidationError("closed opportunities cannot advance")
+        if row["status"] == status:
+            raise ValidationError("opportunity is already in that status")
+        text = note.strip() or f"Advanced opportunity to {status}"
+        self.conn.execute("UPDATE opportunities SET status=? WHERE id=?", (status, opportunity_id))
+        self._record_opportunity_event(organization_id, workspace_id, person_id, opportunity_id, "advanced", row["status"], status, text)
+        self.conn.commit()
+        return self.opportunity_detail(organization_id, workspace_id, person_id, opportunity_id)
+
+    def close_opportunity(self, organization_id: str, workspace_id: str, person_id: str,
+        opportunity_id: str, outcome: str, note: str) -> dict[str, Any]:
+        self.authorize(organization_id, workspace_id, person_id, write=True)
+        status = str(outcome or "").strip().lower()
+        text = note.strip()
+        if status not in OPPORTUNITY_TERMINAL_STATUSES:
+            raise ValidationError("opportunity outcome must be won, lost, or closed")
+        if not text:
+            raise ValidationError("opportunity close note is required")
+        row = self.conn.execute(
+            "SELECT * FROM opportunities WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, opportunity_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("opportunity not found")
+        if row["status"] in OPPORTUNITY_TERMINAL_STATUSES:
+            raise ValidationError("opportunity is already closed")
+        self.conn.execute("UPDATE opportunities SET status=? WHERE id=?", (status, opportunity_id))
+        self._record_opportunity_event(organization_id, workspace_id, person_id, opportunity_id, "closed", row["status"], status, text)
+        self.conn.commit()
+        return self.opportunity_detail(organization_id, workspace_id, person_id, opportunity_id)
+
+    def opportunity_detail(self, organization_id: str, workspace_id: str, person_id: str, opportunity_id: str) -> dict[str, Any]:
+        self.authorize(organization_id, workspace_id, person_id)
+        row = self.conn.execute(
+            "SELECT * FROM opportunities WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, opportunity_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("opportunity not found")
+        events = [dict(item) for item in self.conn.execute(
+            "SELECT * FROM opportunity_events WHERE organization_id=? AND workspace_id=? AND opportunity_id=? ORDER BY created_at,rowid",
+            (organization_id, workspace_id, opportunity_id),
+        ).fetchall()]
+        return {**dict(row), "events": events}
+
+    def _record_risk_event(self, organization_id: str, workspace_id: str, person_id: str, risk_id: str,
+        action: str, from_status: str | None, to_status: str, note: str, payload: dict[str, Any] | None = None) -> None:
+        self.conn.execute(
+            """INSERT INTO risk_events(
+                id,organization_id,workspace_id,risk_id,actor_person_id,action,from_status,to_status,note,payload_json,created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (self.new_id("riskevent"), organization_id, workspace_id, risk_id, person_id, action,
+             from_status, to_status, note, _json(payload or {}), _now().isoformat()),
+        )
+
+    def _record_opportunity_event(self, organization_id: str, workspace_id: str, person_id: str, opportunity_id: str,
+        action: str, from_status: str | None, to_status: str, note: str, payload: dict[str, Any] | None = None) -> None:
+        self.conn.execute(
+            """INSERT INTO opportunity_events(
+                id,organization_id,workspace_id,opportunity_id,actor_person_id,action,from_status,to_status,note,payload_json,created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (self.new_id("opportunityevent"), organization_id, workspace_id, opportunity_id, person_id, action,
+             from_status, to_status, note, _json(payload or {}), _now().isoformat()),
+        )
 
     def create_contract(self, organization_id: str, workspace_id: str, person_id: str, kind: str,
         billing_model: str, start_date: str, value: float | None = None, currency: str = "USD",
@@ -493,6 +680,8 @@ class ClientOperations:
         allowance_id: str, period_start: str, delivered: float, in_review: float = 0, requested: float = 0,
         used_hours: float = 0) -> dict[str, Any]:
         self.authorize(organization_id,workspace_id,person_id,write=True)
+        if any(value < 0 for value in (delivered, in_review, requested, used_hours)):
+            raise ValidationError("scope usage values cannot be negative")
         allowance=self.conn.execute("""SELECT a.*,c.organization_id,c.workspace_id FROM scope_allowances a
             JOIN contracts c ON c.id=a.contract_id
             WHERE a.contract_id=? AND a.id=? AND c.organization_id=? AND c.workspace_id=?""",(contract_id,allowance_id,organization_id,workspace_id)).fetchone()
@@ -501,14 +690,111 @@ class ClientOperations:
             "allowance_id":allowance_id,"period_start":period_start,"delivered_quantity":delivered,"in_review_quantity":in_review,
             "requested_quantity":requested,"used_hours":used_hours,"calculated_at":_now().isoformat()}
         self.conn.execute("INSERT INTO scope_usage VALUES (?,?,?,?,?,?,?,?,?,?,?)",tuple(item.values())); self.conn.commit()
-        included=allowance["included_quantity"] or 0; total=delivered+in_review+requested
-        percentage=(total/included*100) if included else None
+        usage_for_score = {**item, "included_quantity": allowance["included_quantity"], "included_hours": allowance["included_hours"]}
+        percentage = _usage_totals(usage_for_score)["percentage"]
         if percentage is not None and percentage>100:
             self.create_risk(organization_id,workspace_id,person_id,"scope","high",min(percentage/200,1),
                 f"Scope usage is {percentage:.0f}%",json.dumps(item),"Review change order or retainer expansion")
             self.create_opportunity(organization_id,workspace_id,person_id,"scope_expansion",f"Scope usage is {percentage:.0f}%",
                 json.dumps(item),"Propose expanded allowance")
         return {**item,"usage_percent":percentage}
+
+    def scope_status(self, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any]:
+        self.authorize(organization_id, workspace_id, person_id)
+        contracts = [dict(row) for row in self.conn.execute(
+            "SELECT * FROM contracts WHERE organization_id=? AND workspace_id=? ORDER BY start_date DESC,created_at DESC,id",
+            (organization_id, workspace_id),
+        ).fetchall()]
+        if not contracts:
+            return {
+                "status": "no_contract",
+                "workspace_id": workspace_id,
+                "contracts": [],
+                "allowances": [],
+                "summary": {"allowances": 0, "over_scope": 0, "unknown": 0, "recorded": 0},
+            }
+        allowances: list[dict[str, Any]] = []
+        for contract in contracts:
+            rows = self.conn.execute(
+                "SELECT * FROM scope_allowances WHERE contract_id=? ORDER BY service_category,period,id",
+                (contract["id"],),
+            ).fetchall()
+            for allowance in rows:
+                history_rows = self.conn.execute(
+                    """SELECT u.*,a.included_quantity,a.included_hours,a.revision_limit
+                       FROM scope_usage u JOIN scope_allowances a ON a.id=u.allowance_id
+                       WHERE u.organization_id=? AND u.workspace_id=? AND u.allowance_id=?
+                       ORDER BY u.period_start DESC,u.calculated_at DESC,u.id DESC""",
+                    (organization_id, workspace_id, allowance["id"]),
+                ).fetchall()
+                history = []
+                for usage in history_rows:
+                    totals = _usage_totals(usage)
+                    history.append({**dict(usage), **totals, "status": self._scope_usage_state(totals["percentage"])})
+                latest = history[0] if history else None
+                linked = self._scope_generated_links(organization_id, workspace_id, allowance["id"], latest["id"] if latest else None)
+                allowance_status = latest["status"] if latest else "no_usage"
+                allowances.append({
+                    **dict(allowance),
+                    "contract_id": contract["id"],
+                    "contract_status": contract["status"],
+                    "status": allowance_status,
+                    "latest_usage": latest,
+                    "period_history": history,
+                    "generated": linked,
+                })
+        status_counts = {
+            "allowances": len(allowances),
+            "over_scope": sum(item["status"] == "over_scope" for item in allowances),
+            "unknown": sum(item["status"] == "unknown" for item in allowances),
+            "recorded": sum(item["status"] == "recorded" for item in allowances),
+            "no_usage": sum(item["status"] == "no_usage" for item in allowances),
+        }
+        status = (
+            "no_allowances" if not allowances else
+            "over_scope" if status_counts["over_scope"] else
+            "no_usage" if status_counts["no_usage"] == len(allowances) else
+            "unknown" if status_counts["unknown"] or status_counts["no_usage"] else
+            "recorded"
+        )
+        return {
+            "status": status,
+            "workspace_id": workspace_id,
+            "contracts": contracts,
+            "allowances": allowances,
+            "summary": status_counts,
+        }
+
+    @staticmethod
+    def _scope_usage_state(percentage: float | None) -> str:
+        if percentage is None:
+            return "unknown"
+        return "over_scope" if percentage > 100 else "recorded"
+
+    def _scope_generated_links(self, organization_id: str, workspace_id: str, allowance_id: str, usage_id: str | None) -> dict[str, list[str]]:
+        if usage_id is None:
+            return {"risk_ids": [], "opportunity_ids": []}
+        risk_ids = []
+        for row in self.conn.execute(
+            """SELECT id,evidence FROM risks
+               WHERE organization_id=? AND workspace_id=? AND type='scope'
+               ORDER BY detected_at DESC,id""",
+            (organization_id, workspace_id),
+        ).fetchall():
+            payload = _load_json_object(row["evidence"])
+            if payload.get("allowance_id") == allowance_id and payload.get("id") == usage_id:
+                risk_ids.append(row["id"])
+        opportunity_ids = []
+        for row in self.conn.execute(
+            """SELECT id,evidence FROM opportunities
+               WHERE organization_id=? AND workspace_id=? AND type='scope_expansion'
+               ORDER BY created_at DESC,id""",
+            (organization_id, workspace_id),
+        ).fetchall():
+            payload = _load_json_object(row["evidence"])
+            if payload.get("allowance_id") == allowance_id and payload.get("id") == usage_id:
+                opportunity_ids.append(row["id"])
+        return {"risk_ids": risk_ids, "opportunity_ids": opportunity_ids}
 
     def create_meeting(self, organization_id: str, workspace_id: str, person_id: str, title: str,
         occurred_at: datetime, summary: str = "", source: str = "manual", transcript: str | None = None,
@@ -600,25 +886,98 @@ class ClientOperations:
             WHERE c.workspace_id=? AND m.requires_reply=1 AND m.replied_at IS NULL ORDER BY m.sent_at""",(workspace_id,)).fetchall()
         return [dict(row) for row in rows]
 
+    def explain_health(self, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any]:
+        self.authorize(organization_id, workspace_id, person_id)
+        overdue = [dict(row) for row in self.conn.execute(
+            """SELECT id,title,status,COALESCE(deadline,needed_by) AS due_at,assignee_person_id
+               FROM work_items
+               WHERE workspace_id=? AND status!='shipped'
+                 AND COALESCE(deadline,needed_by) IS NOT NULL
+                 AND COALESCE(deadline,needed_by) < date('now')
+               ORDER BY due_at,id""",
+            (workspace_id,),
+        ).fetchall()]
+        unanswered = self.unanswered_messages(organization_id, workspace_id, person_id)
+        open_risks = [dict(row) for row in self.conn.execute(
+            "SELECT * FROM risks WHERE organization_id=? AND workspace_id=? AND status='open' ORDER BY detected_at DESC,id",
+            (organization_id, workspace_id),
+        ).fetchall()]
+        scope = self.scope_status(organization_id, workspace_id, person_id)
+        reasons: list[str] = []
+        delivery = 100.0
+        communication = 100.0
+        relationship = 100.0
+        scope_score = 100.0
+        if overdue:
+            delivery = max(0, 100 - len(overdue) * 12)
+            reasons.append(f"{len(overdue)} overdue work items")
+        if unanswered:
+            communication = max(0, 100 - len(unanswered) * 10)
+            reasons.append(f"{len(unanswered)} unanswered client messages")
+        if open_risks:
+            relationship = max(0, 100 - len(open_risks) * 8)
+            reasons.append(f"{len(open_risks)} open risks")
+        latest_percentages = [
+            item["latest_usage"]["percentage"] for item in scope.get("allowances", [])
+            if item.get("latest_usage") and item["latest_usage"].get("percentage") is not None
+        ]
+        scope_percentage = max(latest_percentages) if latest_percentages else None
+        if scope_percentage is not None and scope_percentage > 100:
+            scope_score = max(0, 100 - (scope_percentage - 100))
+            reasons.append(f"scope usage {scope_percentage:.0f}%")
+        overall = round((delivery + communication + scope_score + relationship) / 4, 1)
+        previous = self.conn.execute(
+            "SELECT * FROM client_health_snapshots WHERE workspace_id=? ORDER BY calculated_at DESC LIMIT 1",
+            (workspace_id,),
+        ).fetchone()
+        previous_score = float(previous["overall"]) if previous else None
+        trend = "stable" if previous_score is None or previous_score == overall else ("up" if overall > previous_score else "down")
+        components = {
+            "delivery": {"score": delivery, "evidence_refs": [{"table": "work_items", "id": row["id"]} for row in overdue]},
+            "communication": {"score": communication, "evidence_refs": [{"table": "messages", "id": row["id"]} for row in unanswered]},
+            "relationship": {"score": relationship, "evidence_refs": [{"table": "risks", "id": row["id"]} for row in open_risks]},
+            "scope": {
+                "score": scope_score,
+                "status": scope["status"],
+                "percentage": scope_percentage,
+                "evidence_refs": [
+                    {"table": "scope_usage", "id": item["latest_usage"]["id"]}
+                    for item in scope.get("allowances", []) if item.get("latest_usage")
+                ],
+            },
+            "performance": {"score": None, "status": "unknown", "evidence_refs": []},
+            "finance": {"score": None, "status": "unknown", "evidence_refs": []},
+        }
+        return {
+            "organization_id": organization_id,
+            "workspace_id": workspace_id,
+            "overall": overall,
+            "relationship": relationship,
+            "delivery": delivery,
+            "performance": None,
+            "finance": None,
+            "communication": communication,
+            "scope": scope_score,
+            "sentiment": None,
+            "components": components,
+            "evidence": {
+                "overdue_work": overdue,
+                "unanswered_messages": unanswered,
+                "open_risks": open_risks,
+                "scope": scope,
+            },
+            "contributing_signals": reasons,
+            "explanation": "; ".join(reasons) or "No negative operational signals",
+            "previous_score": previous_score,
+            "trend": trend,
+            "latest_snapshot": dict(previous) if previous else None,
+        }
+
     def calculate_health(self, organization_id: str, workspace_id: str, person_id: str) -> ClientHealthSnapshot:
         self.authorize(organization_id,workspace_id,person_id,write=True)
-        reasons=[]; delivery=100.0; communication=100.0; scope_score=100.0; relationship=100.0
-        overdue=self.conn.execute("SELECT COUNT(*) FROM work_items WHERE workspace_id=? AND status!='shipped' AND needed_by IS NOT NULL AND needed_by < date('now')",(workspace_id,)).fetchone()[0]
-        unanswered=len(self.unanswered_messages(organization_id,workspace_id,person_id))
-        open_risks=self.conn.execute("SELECT COUNT(*) FROM risks WHERE workspace_id=? AND status='open'",(workspace_id,)).fetchone()[0]
-        if overdue: delivery=max(0,100-overdue*12); reasons.append(f"{overdue} overdue work items")
-        if unanswered: communication=max(0,100-unanswered*10); reasons.append(f"{unanswered} unanswered client messages")
-        if open_risks: relationship=max(0,100-open_risks*8); reasons.append(f"{open_risks} open risks")
-        usage=self.conn.execute("""SELECT u.*,a.included_quantity FROM scope_usage u JOIN scope_allowances a ON a.id=u.allowance_id
-            WHERE u.workspace_id=? ORDER BY u.calculated_at DESC LIMIT 1""",(workspace_id,)).fetchone()
-        if usage and usage["included_quantity"]:
-            pct=(usage["delivered_quantity"]+usage["in_review_quantity"]+usage["requested_quantity"])/usage["included_quantity"]*100
-            if pct>100: scope_score=max(0,100-(pct-100)); reasons.append(f"scope usage {pct:.0f}%")
-        overall=round((delivery+communication+scope_score+relationship)/4,1)
-        prev=self.conn.execute("SELECT overall FROM client_health_snapshots WHERE workspace_id=? ORDER BY calculated_at DESC LIMIT 1",(workspace_id,)).fetchone()
-        previous=float(prev[0]) if prev else None; trend="stable" if previous is None or previous==overall else ("up" if overall>previous else "down")
-        item=ClientHealthSnapshot(self.new_id("health"),organization_id,workspace_id,overall,relationship,delivery,None,None,
-            communication,scope_score,None,tuple(reasons),"; ".join(reasons) or "No negative operational signals",previous,trend,_now())
+        explained = self.explain_health(organization_id, workspace_id, person_id)
+        item=ClientHealthSnapshot(self.new_id("health"),organization_id,workspace_id,explained["overall"],explained["relationship"],explained["delivery"],None,None,
+            explained["communication"],explained["scope"],None,tuple(explained["contributing_signals"]),explained["explanation"],explained["previous_score"],explained["trend"],_now())
         self.conn.execute("INSERT INTO client_health_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(
             item.id,item.organization_id,item.workspace_id,item.overall,item.relationship,item.delivery,item.performance,item.finance,
             item.communication,item.scope,item.sentiment,json.dumps(item.contributing_signals),item.explanation,item.previous_score,item.trend,item.calculated_at.isoformat()))

@@ -13,6 +13,7 @@ auremgrid = "auremgrid.cli:main"
 semantic = ["sentence-transformers"]
 graphiti = ["graphiti-core>=0.29.3,<0.30"]
 postgres = ["psycopg[binary]>=3.2"]
+browser = ["playwright>=1.48,<2", "pytest>=8"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -24,4 +25,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "browser: deterministic localhost dashboard verification (requires Playwright and Chromium)",
+]
 

@@ -30,7 +30,7 @@ def _route_capability(path: str, method: str) -> str:
         if path == "/auth/me": return "workspace_read"
         if path == "/finance": return "finance_read"
         if path == "/capacity": return "workspace_read"
-        if path in {"/agents"}: return "agent_run"
+        if path == "/agents" or path.startswith("/agents/runs"): return "agent_run"
         if path in {"/integrations"}: return "integration_configure"
         if path.startswith("/workflows"): return "workspace_read"
         if path == "/entity/candidates": return "brain_propose"
@@ -338,6 +338,13 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200, {"attention": self.os.proactive_intelligence.attention_queue(
                     organization_id, person_id, workspace_id, _int(params.get("limit", "20"), "limit")
                 )}); return
+            if parsed.path == "/dashboard/intelligence/refresh-status":
+                assert identity is not None
+                self._json(200, self.os.proactive_intelligence.refresh_status(
+                    identity,
+                    str(params.get("snapshot_type") or ("workspace" if params.get("workspace_id") else "executive")),
+                    _optional_str(params.get("workspace_id")),
+                )); return
             if parsed.path == "/dashboard/workflows":
                 assert identity is not None
                 organization_id, workspace_id, person_id = _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
@@ -355,6 +362,34 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200,{parsed.path[1:]:result}); return
             if parsed.path == "/finance":
                 self._json(200,self.os.agency_ops.finance_status(_need(params,"organization_id"),_need(params,"person_id"),params.get("workspace_id"))); return
+            if parsed.path == "/health/explain":
+                self._json(200, self.os.client_ops.explain_health(
+                    _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
+                )); return
+            if parsed.path == "/risks/detail":
+                self._json(200, self.os.client_ops.risk_detail(
+                    _need(params,"organization_id"), _need(params,"workspace_id"),
+                    _need(params,"person_id"), _need(params,"risk_id")
+                )); return
+            if parsed.path == "/opportunities/detail":
+                self._json(200, self.os.client_ops.opportunity_detail(
+                    _need(params,"organization_id"), _need(params,"workspace_id"),
+                    _need(params,"person_id"), _need(params,"opportunity_id")
+                )); return
+            if parsed.path == "/scope/status":
+                self._json(200, self.os.client_ops.scope_status(
+                    _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
+                )); return
+            if parsed.path == "/campaigns/detail":
+                self._json(200, self.os.agency_ops.campaign_detail(
+                    _need(params,"organization_id"), _need(params,"workspace_id"),
+                    _need(params,"person_id"), _need(params,"campaign_id")
+                )); return
+            if parsed.path == "/creative/detail":
+                self._json(200, self.os.agency_ops.creative_detail(
+                    _need(params,"organization_id"), _need(params,"workspace_id"),
+                    _need(params,"person_id"), _need(params,"asset_id")
+                )); return
             if parsed.path == "/notifications":
                 self._json(200,{"notifications":self.os.agency_ops.attention(_need(params,"organization_id"),_need(params,"person_id"),_int(params.get("limit",20),"limit"))}); return
             if parsed.path == "/agents":
@@ -362,6 +397,15 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/agents/detail":
                 self._json(200, self.os.dashboard.agent_detail(
                     _need(params, "organization_id"), _need(params, "person_id"), _need(params, "agent_id")
+                )); return
+            if parsed.path == "/agents/runs":
+                self._json(200, {"runs": self.os.agent_ops.list_runs(
+                    _need(params,"organization_id"), _need(params,"person_id"),
+                    _optional_str(params.get("workspace_id")), _optional_str(params.get("agent_id")),
+                )}); return
+            if parsed.path == "/agents/runs/detail":
+                self._json(200, self.os.agent_ops.run_detail(
+                    _need(params,"organization_id"), _need(params,"person_id"), _need(params,"run_id")
                 )); return
             if parsed.path == "/dashboard/performance":
                 self._json(200, self.os.dashboard.performance_surface(
@@ -648,9 +692,31 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/risks":
                 item=self.os.client_ops.create_risk(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"type"),_need(payload,"severity"),float(payload.get("probability",0.5)),_need(payload,"impact"),_need(payload,"evidence"),_need(payload,"recommended_action"),_optional_str(payload.get("project_id")))
                 self._json(201,item.to_dict()); return
+            if parsed.path == "/risks/resolve":
+                self._json(200, self.os.client_ops.resolve_risk(
+                    _need(payload,"organization_id"), _need(payload,"workspace_id"),
+                    _need(payload,"person_id"), _need(payload,"risk_id"), _need(payload,"resolution")
+                )); return
+            if parsed.path == "/risks/reopen":
+                self._json(200, self.os.client_ops.reopen_risk(
+                    _need(payload,"organization_id"), _need(payload,"workspace_id"),
+                    _need(payload,"person_id"), _need(payload,"risk_id"), _need(payload,"reason")
+                )); return
             if parsed.path == "/opportunities":
                 item=self.os.client_ops.create_opportunity(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"type"),_need(payload,"reason"),_need(payload,"evidence"),_need(payload,"recommendation"),float(payload["estimated_value"]) if payload.get("estimated_value") is not None else None)
                 self._json(201,item.to_dict()); return
+            if parsed.path == "/opportunities/advance":
+                self._json(200, self.os.client_ops.advance_opportunity(
+                    _need(payload,"organization_id"), _need(payload,"workspace_id"),
+                    _need(payload,"person_id"), _need(payload,"opportunity_id"),
+                    _need(payload,"to_status"), str(payload.get("note", "")),
+                )); return
+            if parsed.path == "/opportunities/close":
+                self._json(200, self.os.client_ops.close_opportunity(
+                    _need(payload,"organization_id"), _need(payload,"workspace_id"),
+                    _need(payload,"person_id"), _need(payload,"opportunity_id"),
+                    _need(payload,"outcome"), _need(payload,"note"),
+                )); return
             if parsed.path == "/health/calculate":
                 item=self.os.client_ops.calculate_health(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id")); self._json(201,item.to_dict()); return
             if parsed.path == "/campaigns":
@@ -658,12 +724,63 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(201,item); return
             if parsed.path == "/campaigns/metrics":
                 item=self.os.agency_ops.record_campaign_metrics(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"campaign_id"),_need(payload,"source"),*[_optional_float(payload.get(k)) for k in ("spend","revenue","leads","impressions","clicks")]); self._json(201,item); return
+            if parsed.path == "/campaigns/transition":
+                self._json(200, self.os.agency_ops.transition_campaign(
+                    _need(payload,"organization_id"), _need(payload,"workspace_id"),
+                    _need(payload,"person_id"), _need(payload,"campaign_id"),
+                    _need(payload,"to_status"), str(payload.get("note", "")),
+                )); return
             if parsed.path == "/creative":
                 item=self.os.agency_ops.create_creative(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"title"),_need(payload,"format"),_optional_str(payload.get("project_id")),_optional_str(payload.get("campaign_id")),_optional_str(payload.get("platform")),_optional_str(payload.get("dimensions")),[str(x) for x in payload.get("style_tags",[])],_optional_str(payload.get("source_url"))); self._json(201,item); return
+            if parsed.path == "/creative/versions":
+                self._json(201, self.os.agency_ops.create_creative_version(
+                    _need(payload,"organization_id"), _need(payload,"workspace_id"),
+                    _need(payload,"person_id"), _need(payload,"asset_id"),
+                    _optional_str(payload.get("file_url")), _need(payload,"notes"),
+                )); return
+            if parsed.path == "/creative/transition":
+                self._json(200, self.os.agency_ops.transition_creative(
+                    _need(payload,"organization_id"), _need(payload,"workspace_id"),
+                    _need(payload,"person_id"), _need(payload,"asset_id"),
+                    _need(payload,"to_state"), _need(payload,"note"),
+                    _optional_str(payload.get("reviewer_person_id")),
+                )); return
             if parsed.path == "/content":
                 item=self.os.agency_ops.create_content(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"title"),_need(payload,"objective"),_need(payload,"audience"),str(payload.get("hook","")),str(payload.get("copy","")),_optional_str(payload.get("project_id")),_optional_str(payload.get("channel_id")),[str(x) for x in payload.get("references",[])],str(payload.get("brain_context",""))); self._json(201,item); return
             if parsed.path == "/content/advance":
                 self._json(200,self.os.agency_ops.advance_content(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"content_id"),_need(payload,"to_stage"))); return
+            if parsed.path == "/finance/costs":
+                self._json(201, self.os.agency_ops.record_cost(
+                    _need(payload,"organization_id"), _optional_str(payload.get("workspace_id")),
+                    _need(payload,"person_id"), float(_need(payload,"amount")), _need(payload,"category"),
+                    _need(payload,"incurred_at"), _need(payload,"source"), str(payload.get("currency", "USD")),
+                )); return
+            if parsed.path == "/finance/budgets":
+                self._json(201, self.os.agency_ops.record_budget(
+                    _need(payload,"organization_id"), _optional_str(payload.get("workspace_id")),
+                    _need(payload,"person_id"), float(_need(payload,"amount")), _need(payload,"period_start"),
+                    _need(payload,"period_end"), str(payload.get("currency", "USD")),
+                    _optional_str(payload.get("project_id")),
+                )); return
+            if parsed.path == "/finance/software-costs":
+                self._json(201, self.os.agency_ops.record_software_cost(
+                    _need(payload,"organization_id"), _optional_str(payload.get("workspace_id")),
+                    _need(payload,"person_id"), _need(payload,"vendor"), float(_need(payload,"amount")),
+                    _need(payload,"period_start"), _need(payload,"source"), str(payload.get("currency", "USD")),
+                )); return
+            if parsed.path == "/finance/ai-usage-costs":
+                self._json(201, self.os.agency_ops.record_ai_usage_cost(
+                    _need(payload,"organization_id"), _optional_str(payload.get("workspace_id")),
+                    _need(payload,"person_id"), _need(payload,"provider"), _need(payload,"model"),
+                    int(_need(payload,"tokens")), float(_need(payload,"amount")), _need(payload,"occurred_at"),
+                    _need(payload,"source"), str(payload.get("currency", "USD")),
+                    _optional_str(payload.get("agent_id")),
+                )); return
+            if parsed.path == "/finance/economics/calculate":
+                self._json(201, self.os.agency_ops.calculate_client_economics(
+                    _need(payload,"organization_id"), _need(payload,"workspace_id"),
+                    _need(payload,"person_id"), _need(payload,"period_start"), _need(payload,"period_end"),
+                )); return
             if parsed.path == "/approvals":
                 item=self.os.agency_ops.request_approval(_need(payload,"organization_id"),_need(payload,"requested_by_type"),_need(payload,"requested_by_id"),_need(payload,"requested_for"),_need(payload,"action_type"),payload.get("payload") or {},_need(payload,"reason"),str(payload.get("policy","human")),_optional_str(payload.get("workspace_id")),_optional_str(payload.get("approver_person_id"))); self._json(201,item); return
             if parsed.path == "/approvals/decide":
@@ -696,6 +813,22 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 ));return
             if parsed.path == "/agents/runs/start":
                 self._json(201,self.os.agent_ops.start_run(_need(payload,"organization_id"),_need(payload,"agent_id"),_need(payload,"task_id")));return
+            if parsed.path == "/agents/runs/claim":
+                item = self.os.agent_ops.claim_next_task(
+                    _need(payload,"organization_id"), _need(payload,"agent_id")
+                )
+                self._json(200, {"run": item}); return
+            if parsed.path == "/agents/runs/trace":
+                self._json(201, self.os.agent_ops.record_trace(
+                    _need(payload,"organization_id"), _need(payload,"agent_id"), _need(payload,"run_id"),
+                    _need(payload,"kind"), _need(payload,"message"), payload.get("metadata") or {},
+                )); return
+            if parsed.path == "/agents/runs/tool-call":
+                self._json(201, self.os.agent_ops.record_tool_call(
+                    _need(payload,"organization_id"), _need(payload,"agent_id"), _need(payload,"run_id"),
+                    _need(payload,"tool_name"), payload.get("arguments") or {},
+                    str(payload.get("result_preview", "")), _optional_str(payload.get("error")),
+                )); return
             if parsed.path == "/agents/runs/complete":
                 self._json(200,self.os.agent_ops.complete_run(_need(payload,"organization_id"),_need(payload,"agent_id"),_need(payload,"run_id"),str(payload.get("content","")),int(payload.get("input_tokens",0)),int(payload.get("output_tokens",0)),_optional_float(payload.get("cost")),[str(x) for x in payload.get("source_refs",[])]));return
             if parsed.path == "/automations":
@@ -776,6 +909,8 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 item=self.os.work_ops.create(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"title"),_need(payload,"request"),_need(payload,"requested_by"),_optional_str(payload.get("project_id")),_optional_str(payload.get("campaign_id")),_optional_str(payload.get("parent_id")),str(payload.get("priority","normal")),[str(x) for x in payload.get("tags",[])],_optional_float(payload.get("estimate_hours")),_optional_str(payload.get("deadline")),str(payload.get("brief","")),str(payload.get("brain_context","")),_optional_float(payload.get("financial_value")));self._json(201,item.to_dict());return
             if parsed.path == "/work/items/update":
                 item=self.os.work_ops.update(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"work_item_id"),payload.get("changes") or {});self._json(200,item.to_dict());return
+            if parsed.path == "/work/items/transition":
+                item=self.os.work_ops.transition(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"work_item_id"),_need(payload,"to_status"),str(payload.get("reason","")),_optional_int(payload.get("expected_version")),_optional_str(payload.get("idempotency_key")));self._json(200,item);return
             if parsed.path == "/work/dependencies":
                 self._json(201,self.os.work_ops.add_dependency(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"work_item_id"),_need(payload,"depends_on_id"),str(payload.get("kind","blocks"))));return
             if parsed.path == "/work/comments":

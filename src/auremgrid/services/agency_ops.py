@@ -12,6 +12,20 @@ def _now() -> datetime:
 
 
 CONTENT_STAGES = ("idea","research","brief","script","design","review","approved","scheduled","published","measured")
+CAMPAIGN_TRANSITIONS = {
+    "draft": {"scheduled", "cancelled"},
+    "scheduled": {"active", "cancelled"},
+    "active": {"paused", "completed", "cancelled"},
+    "paused": {"active", "completed", "cancelled"},
+    "completed": set(),
+    "cancelled": set(),
+}
+CREATIVE_TRANSITIONS = {
+    "draft": {"in_review"},
+    "in_review": {"approved", "changes_requested"},
+    "changes_requested": {"draft"},
+    "approved": set(),
+}
 
 
 class AgencyOperations:
@@ -49,6 +63,48 @@ class AgencyOperations:
         metric=self.conn.execute("SELECT * FROM campaign_metric_snapshots WHERE campaign_id=? ORDER BY captured_at DESC LIMIT 1",(campaign_id,)).fetchone()
         return {"campaign":dict(campaign),"metrics":dict(metric) if metric else {"status":"not_connected"}}
 
+    def transition_campaign(self, organization_id: str, workspace_id: str, person_id: str,
+        campaign_id: str, to_status: str, note: str = "") -> dict[str, Any]:
+        self.authorize(organization_id, workspace_id, person_id, write=True)
+        campaign = self.conn.execute(
+            "SELECT * FROM campaigns WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, campaign_id),
+        ).fetchone()
+        if campaign is None:
+            raise NotFoundError("campaign not found")
+        current = campaign["status"]
+        if to_status not in CAMPAIGN_TRANSITIONS.get(current, set()):
+            raise ValidationError(f"campaign cannot transition from {current} to {to_status}")
+        now = _now().isoformat()
+        self.conn.execute(
+            "UPDATE campaigns SET status=?,updated_at=? WHERE id=?",
+            (to_status, now, campaign_id),
+        )
+        self.conn.execute(
+            "INSERT INTO campaign_events VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                self.new_id("campaign_event"), organization_id, workspace_id, campaign_id,
+                person_id, current, to_status, note.strip(), now,
+            ),
+        )
+        self.conn.commit()
+        return dict(self.conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone())
+
+    def campaign_detail(self, organization_id: str, workspace_id: str, person_id: str,
+        campaign_id: str) -> dict[str, Any]:
+        performance = self.campaign_performance(
+            organization_id, workspace_id, person_id, campaign_id
+        )
+        events = self.conn.execute(
+            "SELECT * FROM campaign_events WHERE campaign_id=? ORDER BY created_at,id",
+            (campaign_id,),
+        ).fetchall()
+        performance["events"] = [dict(row) for row in events]
+        performance["allowed_transitions"] = sorted(
+            CAMPAIGN_TRANSITIONS.get(performance["campaign"]["status"], set())
+        )
+        return performance
+
     def create_creative(self, organization_id: str, workspace_id: str, person_id: str, title: str,
         format: str, project_id: str | None = None, campaign_id: str | None = None, platform: str | None = None,
         dimensions: str | None = None, style_tags: list[str] | None = None, source_url: str | None = None) -> dict[str, Any]:
@@ -69,6 +125,99 @@ class AgencyOperations:
         if approval_state: sql+=" AND approval_state=?"; values.append(approval_state)
         if campaign_id: sql+=" AND campaign_id=?"; values.append(campaign_id)
         return [dict(row) for row in self.conn.execute(sql+" ORDER BY created_at DESC",values).fetchall()]
+
+    def create_creative_version(self, organization_id: str, workspace_id: str, person_id: str,
+        asset_id: str, file_url: str | None, notes: str) -> dict[str, Any]:
+        self.authorize(organization_id, workspace_id, person_id, write=True)
+        asset = self.conn.execute(
+            "SELECT * FROM creative_assets WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, asset_id),
+        ).fetchone()
+        if asset is None:
+            raise NotFoundError("creative asset not found")
+        if not notes.strip():
+            raise ValidationError("creative version notes are required")
+        version = int(self.conn.execute(
+            "SELECT COALESCE(MAX(version),0)+1 FROM creative_versions WHERE asset_id=?",
+            (asset_id,),
+        ).fetchone()[0])
+        item = {
+            "id": self.new_id("creative_version"), "asset_id": asset_id, "version": version,
+            "file_url": file_url, "notes": notes.strip(), "created_by_person_id": person_id,
+            "created_at": _now().isoformat(),
+        }
+        self.conn.execute("INSERT INTO creative_versions VALUES (?,?,?,?,?,?,?)", tuple(item.values()))
+        self.conn.execute(
+            "UPDATE creative_assets SET revision_count=?,source_url=COALESCE(?,source_url) WHERE id=?",
+            (version, file_url, asset_id),
+        )
+        self.conn.commit()
+        return item
+
+    def transition_creative(self, organization_id: str, workspace_id: str, person_id: str,
+        asset_id: str, to_state: str, note: str, reviewer_person_id: str | None = None) -> dict[str, Any]:
+        self.authorize(organization_id, workspace_id, person_id, write=True)
+        asset = self.conn.execute(
+            "SELECT * FROM creative_assets WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, asset_id),
+        ).fetchone()
+        if asset is None:
+            raise NotFoundError("creative asset not found")
+        current = asset["approval_state"]
+        if to_state not in CREATIVE_TRANSITIONS.get(current, set()):
+            raise ValidationError(f"creative cannot transition from {current} to {to_state}")
+        reviewer = reviewer_person_id or asset["reviewer_person_id"]
+        if to_state == "in_review":
+            if reviewer is None or self.company.get_person(organization_id, reviewer) is None:
+                raise ValidationError("a valid reviewer is required")
+            if self.company.workspace_membership(workspace_id, reviewer) is None:
+                raise AuthorizationError("reviewer must be a workspace member")
+        if to_state in {"approved", "changes_requested"} and person_id != reviewer:
+            raise AuthorizationError("assigned reviewer must decide the creative review")
+        if not note.strip():
+            raise ValidationError("creative transition note is required")
+        final_url = asset["source_url"] if to_state == "approved" else asset["final_url"]
+        now = _now().isoformat()
+        self.conn.execute(
+            "UPDATE creative_assets SET approval_state=?,reviewer_person_id=?,final_url=? WHERE id=?",
+            (to_state, reviewer, final_url, asset_id),
+        )
+        self.conn.execute(
+            "INSERT INTO creative_review_events VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                self.new_id("creative_review_event"), organization_id, workspace_id, asset_id,
+                person_id, current, to_state, note.strip(), now,
+            ),
+        )
+        self.conn.commit()
+        return dict(self.conn.execute("SELECT * FROM creative_assets WHERE id=?", (asset_id,)).fetchone())
+
+    def creative_detail(self, organization_id: str, workspace_id: str, person_id: str,
+        asset_id: str) -> dict[str, Any]:
+        self.authorize(organization_id, workspace_id, person_id)
+        asset = self.conn.execute(
+            "SELECT * FROM creative_assets WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, asset_id),
+        ).fetchone()
+        if asset is None:
+            raise NotFoundError("creative asset not found")
+        versions = self.conn.execute(
+            "SELECT * FROM creative_versions WHERE asset_id=? ORDER BY version", (asset_id,)
+        ).fetchall()
+        events = self.conn.execute(
+            "SELECT * FROM creative_review_events WHERE asset_id=? ORDER BY created_at,id", (asset_id,)
+        ).fetchall()
+        performance = self.conn.execute(
+            "SELECT * FROM creative_performance WHERE asset_id=? ORDER BY captured_at DESC,id DESC",
+            (asset_id,),
+        ).fetchall()
+        return {
+            "asset": dict(asset),
+            "versions": [dict(row) for row in versions],
+            "events": [dict(row) for row in events],
+            "performance": [dict(row) for row in performance],
+            "allowed_transitions": sorted(CREATIVE_TRANSITIONS.get(asset["approval_state"], set())),
+        }
 
     def record_creative_performance(self, organization_id: str, workspace_id: str, person_id: str,
         asset_id: str, source: str, campaign_id: str | None = None, impressions: float | None = None,
@@ -173,7 +322,22 @@ class AgencyOperations:
         if workspace_id: where+=" AND workspace_id=?"; values.append(workspace_id)
         revenue=self.conn.execute(f"SELECT COALESCE(SUM(amount),0) FROM revenues WHERE {where}",values).fetchone()[0]
         outstanding=self.conn.execute(f"SELECT COALESCE(SUM(amount),0) FROM invoices WHERE {where} AND status IN ('issued','overdue')",values).fetchone()[0]
-        return {"status":"connected","recognized_revenue":revenue,"outstanding_revenue":outstanding,"source":connection["provider"]}
+        costs=self.conn.execute(f"SELECT COALESCE(SUM(amount),0) FROM costs WHERE {where}",values).fetchone()[0]
+        software=self.conn.execute(f"SELECT COALESCE(SUM(amount),0) FROM software_costs WHERE {where}",values).fetchone()[0]
+        ai=self.conn.execute(f"SELECT COALESCE(SUM(amount),0) FROM ai_usage_costs WHERE {where}",values).fetchone()[0]
+        budget=self.conn.execute(f"SELECT COALESCE(SUM(amount),0) FROM budgets WHERE {where}",values).fetchone()[0]
+        economics_where="organization_id=?"; economics_values=[organization_id]
+        if workspace_id: economics_where+=" AND workspace_id=?"; economics_values.append(workspace_id)
+        economics=self.conn.execute(
+            f"SELECT * FROM client_economics WHERE {economics_where} ORDER BY period_start DESC,calculated_at DESC LIMIT 1",
+            economics_values,
+        ).fetchone()
+        return {
+            "status":"connected", "recognized_revenue":revenue, "outstanding_revenue":outstanding,
+            "recorded_costs":costs, "software_costs":software, "ai_costs":ai,
+            "budget":budget, "latest_economics":dict(economics) if economics else None,
+            "source":connection["provider"],
+        }
 
     def connect_finance(self, organization_id: str, person_id: str, provider: str) -> dict[str,Any]:
         membership=self.company.org_membership(organization_id,person_id)
@@ -200,6 +364,143 @@ class AgencyOperations:
         item={"id":self.new_id("revenue"),"organization_id":organization_id,"workspace_id":workspace_id,"project_id":project_id,
             "amount":amount,"currency":currency,"kind":kind,"recognized_at":recognized_at,"source":source}
         self.conn.execute("INSERT INTO revenues VALUES (?,?,?,?,?,?,?,?,?)",tuple(item.values()));self.conn.commit();return item
+
+    def record_cost(self, organization_id: str, workspace_id: str | None, person_id: str, amount: float,
+        category: str, incurred_at: str, source: str, currency: str = "USD") -> dict[str, Any]:
+        self._authorize_finance_write(organization_id, workspace_id, person_id)
+        self._validate_finance_amount(amount, currency, source)
+        if not category.strip():
+            raise ValidationError("cost category is required")
+        item = {
+            "id": self.new_id("cost"), "organization_id": organization_id, "workspace_id": workspace_id,
+            "amount": amount, "currency": currency, "category": category.strip(),
+            "incurred_at": incurred_at, "source": source.strip(),
+        }
+        self.conn.execute("INSERT INTO costs VALUES (?,?,?,?,?,?,?,?)", tuple(item.values()))
+        self.conn.commit()
+        return item
+
+    def record_budget(self, organization_id: str, workspace_id: str | None, person_id: str, amount: float,
+        period_start: str, period_end: str, currency: str = "USD", project_id: str | None = None) -> dict[str, Any]:
+        self._authorize_finance_write(organization_id, workspace_id, person_id)
+        self._validate_finance_amount(amount, currency, "budget")
+        if period_end < period_start:
+            raise ValidationError("budget period end must not precede period start")
+        if project_id and (workspace_id is None or self.company.get_project(workspace_id, project_id) is None):
+            raise NotFoundError("project not found")
+        item = {
+            "id": self.new_id("budget"), "organization_id": organization_id, "workspace_id": workspace_id,
+            "project_id": project_id, "amount": amount, "currency": currency,
+            "period_start": period_start, "period_end": period_end,
+        }
+        self.conn.execute("INSERT INTO budgets VALUES (?,?,?,?,?,?,?,?)", tuple(item.values()))
+        self.conn.commit()
+        return item
+
+    def record_software_cost(self, organization_id: str, workspace_id: str | None, person_id: str,
+        vendor: str, amount: float, period_start: str, source: str, currency: str = "USD") -> dict[str, Any]:
+        self._authorize_finance_write(organization_id, workspace_id, person_id)
+        self._validate_finance_amount(amount, currency, source)
+        if not vendor.strip():
+            raise ValidationError("software vendor is required")
+        item = {
+            "id": self.new_id("software_cost"), "organization_id": organization_id,
+            "workspace_id": workspace_id, "vendor": vendor.strip(), "amount": amount,
+            "currency": currency, "period_start": period_start, "source": source.strip(),
+        }
+        self.conn.execute("INSERT INTO software_costs VALUES (?,?,?,?,?,?,?,?)", tuple(item.values()))
+        self.conn.commit()
+        return item
+
+    def record_ai_usage_cost(self, organization_id: str, workspace_id: str | None, person_id: str,
+        provider: str, model: str, tokens: int, amount: float, occurred_at: str, source: str,
+        currency: str = "USD", agent_id: str | None = None) -> dict[str, Any]:
+        self._authorize_finance_write(organization_id, workspace_id, person_id)
+        self._validate_finance_amount(amount, currency, source)
+        if tokens < 0 or not provider.strip() or not model.strip():
+            raise ValidationError("AI provider, model, and non-negative token count are required")
+        if agent_id and not self.conn.execute(
+            "SELECT 1 FROM agents WHERE organization_id=? AND id=?", (organization_id, agent_id)
+        ).fetchone():
+            raise NotFoundError("agent not found")
+        item = {
+            "id": self.new_id("ai_cost"), "organization_id": organization_id,
+            "workspace_id": workspace_id, "agent_id": agent_id, "provider": provider.strip(),
+            "model": model.strip(), "tokens": tokens, "amount": amount, "currency": currency,
+            "occurred_at": occurred_at, "source": source.strip(),
+        }
+        self.conn.execute("INSERT INTO ai_usage_costs VALUES (?,?,?,?,?,?,?,?,?,?,?)", tuple(item.values()))
+        self.conn.commit()
+        return item
+
+    def calculate_client_economics(self, organization_id: str, workspace_id: str, person_id: str,
+        period_start: str, period_end: str) -> dict[str, Any]:
+        self._authorize_finance_write(organization_id, workspace_id, person_id)
+        if period_end < period_start:
+            raise ValidationError("economics period end must not precede period start")
+        base = (organization_id, workspace_id, period_start, period_end)
+        revenue = float(self.conn.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM revenues WHERE organization_id=? AND workspace_id=? AND recognized_at BETWEEN ? AND ?",
+            base,
+        ).fetchone()[0])
+        labor = float(self.conn.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM costs WHERE organization_id=? AND workspace_id=? AND category='labor' AND incurred_at BETWEEN ? AND ?",
+            base,
+        ).fetchone()[0])
+        other = float(self.conn.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM costs WHERE organization_id=? AND workspace_id=? AND category!='labor' AND incurred_at BETWEEN ? AND ?",
+            base,
+        ).fetchone()[0])
+        software = float(self.conn.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM software_costs WHERE organization_id=? AND workspace_id=? AND period_start BETWEEN ? AND ?",
+            base,
+        ).fetchone()[0])
+        ai = float(self.conn.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM ai_usage_costs WHERE organization_id=? AND workspace_id=? AND occurred_at BETWEEN ? AND ?",
+            base,
+        ).fetchone()[0])
+        contribution = round(revenue - labor - software - ai - other, 4)
+        margin = round(contribution / revenue, 6) if revenue else None
+        now = _now().isoformat()
+        existing = self.conn.execute(
+            "SELECT id FROM client_economics WHERE workspace_id=? AND period_start=?",
+            (workspace_id, period_start),
+        ).fetchone()
+        economics_id = existing["id"] if existing else self.new_id("economics")
+        values = (
+            economics_id, organization_id, workspace_id, period_start, revenue, labor, software,
+            ai, other, contribution, margin, now,
+        )
+        self.conn.execute(
+            """INSERT INTO client_economics VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(workspace_id,period_start) DO UPDATE SET
+               revenue=excluded.revenue,labor_cost=excluded.labor_cost,
+               software_cost=excluded.software_cost,ai_cost=excluded.ai_cost,
+               other_cost=excluded.other_cost,gross_contribution=excluded.gross_contribution,
+               margin=excluded.margin,calculated_at=excluded.calculated_at""",
+            values,
+        )
+        self.conn.commit()
+        return dict(self.conn.execute("SELECT * FROM client_economics WHERE id=?", (economics_id,)).fetchone())
+
+    def _authorize_finance_write(self, organization_id: str, workspace_id: str | None,
+        person_id: str) -> None:
+        if workspace_id:
+            self.authorize(organization_id, workspace_id, person_id, write=True)
+        elif self.company.org_membership(organization_id, person_id) is None:
+            raise AuthorizationError("organization membership required")
+        connection = self.conn.execute(
+            "SELECT status FROM finance_connections WHERE organization_id=?", (organization_id,)
+        ).fetchone()
+        if connection is None or connection[0] != "connected":
+            raise ValidationError("finance is not connected")
+
+    @staticmethod
+    def _validate_finance_amount(amount: float, currency: str, source: str) -> None:
+        if amount < 0:
+            raise ValidationError("finance amount cannot be negative")
+        if not currency.strip() or not source.strip():
+            raise ValidationError("finance currency and source are required")
 
     def request_approval(self, organization_id: str, requested_by_type: str, requested_by_id: str,
         requested_for: str, action_type: str, payload: dict[str, Any], reason: str, policy: str = "human",

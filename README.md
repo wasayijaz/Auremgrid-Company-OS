@@ -113,7 +113,7 @@ Each run snapshots the validated definition. Dependencies control readiness; sta
 flowchart LR
     Shell[Python-served dashboard shell] --> Nav[Primary navigation]
     Shell --> Canvas[Operating canvas]
-    Shell --> Rail[Auremgrid Intelligence rail]
+    Shell --> Rail[Cosmo Intelligence rail]
     Canvas --> DashAPI[Authenticated dashboard read models]
     Rail --> Intel[Intelligence Engine]
     Intel --> Evidence[Permitted sources + canonical operating rows]
@@ -122,15 +122,15 @@ flowchart LR
     Routes --> Ledger[Canonical ledger]
 ```
 
-The dashboard is a zero-build local application served by the Python HTTP process. Its live shell is split into static assets under `src/auremgrid/api/dashboard`: `index.html`, CSS modules, JS modules, and small completion layers. It uses a three-zone desktop layout: grouped primary navigation, an operating canvas, and a permanent Auremgrid Intelligence rail that becomes a drawer on narrower screens.
+The dashboard is a zero-build local application served by the Python HTTP process. Its live shell is split into static assets under `src/auremgrid/api/dashboard`: `index.html`, CSS modules, JS modules, and small completion layers. It uses a three-zone desktop layout: grouped primary navigation, an operating canvas, and a permanent Cosmo Intelligence rail that becomes a drawer on narrower screens. Auremgrid is the product and operating system; Cosmo Intelligence is the named assistant inside it. The persisted backend key remains `cosmo`.
 
 The interface specifies Gellix as its UI family and resolves it from the local machine so the repository does not redistribute a proprietary font. Install a licensed local Gellix family for exact typography; the CSS retains a generic sans-serif safety fallback when Gellix is unavailable.
 
-The dashboard currently includes Command, Clients, Client HQ, Work board/list, Review Center, Campaigns, Content, Creative, Brain, Meetings, People/Capacity, Finance, Agents, Automations, Reports, Integrations, and Settings surfaces. Those screens call authenticated backend endpoints and preserve honest empty, disconnected, degraded, and permission-denied states. Visible actions either invoke a canonical authenticated route or are disabled with the backend-reported reason; the UI does not imply unsupported mutations. Unknown finance, campaign, or connector values remain unknown until sourced.
+The dashboard currently includes Command, Clients, Client HQ, Work board/list, Review Center, Campaigns, Content, Creative, Brain, Meetings, People/Capacity, Finance, Agents, Automations, Reports, Integrations, and Settings surfaces. Those screens call authenticated backend endpoints and preserve honest empty, disconnected, degraded, and permission-denied states. Visible actions either invoke a canonical authenticated route or are disabled with the backend-reported reason; the UI does not imply unsupported mutations. Unknown finance, campaign, or connector values remain unknown until sourced. Client HQ exposes explainable health, contract/scope consumption, and auditable risk/opportunity lifecycles. Work transitions use server-granted legal transitions, optimistic versions, scoped idempotency, history, and permission checks. Campaign and creative inspectors expose legal lifecycle transitions, immutable creative versions, review history, and sourced performance. Finance reads sourced revenue, invoices, budgets, labor/software/AI costs, and calculated contribution only after a finance connection is active. Agent views are backed by scoped tasks, claims, tool calls, traces, outputs, failures, and costs.
 
 The Intelligence rail calls `GET /dashboard/intelligence`; the Command overview also calls `GET /dashboard/intelligence/executive`. The engine composes permitted evidence and canonical operating records into findings with situation, changes, hypotheses, supporting/opposing evidence, scenarios, impact, recommendation, confidence, uncertainty, historical analogues, and decision-to-workflow-outcome-learning links where available. Expanded scenarios retain explicit new-client, staffing, leave, client economics, and keep/drop inputs without inventing missing values. Portfolio reads add ACL-scoped cross-workspace analogues and the executive brief ranks a sourced top-three narrative.
 
-These are read projections. A capability-gated refresh request can enqueue a durable `proactive_intelligence.refresh` job; the worker persists an immutable, per-person snapshot and attention queue for the dashboard. Manual refreshes create a fresh job, callers can supply an explicit idempotency key when they need request deduplication, unchanged projections do not append records, and later changed projections create a new version. Persisted refreshes use deterministic local reasoning and write no external action. Live reads may use an explicitly injected strategic-reasoning provider to add validated hypotheses, options, scenarios, recommendation, confidence, and dissent; it receives only the already ACL-scoped context, stores only hashed/redacted run metadata, and falls back to deterministic review on provider failure or malformed output. Suggested operations are returned as descriptors for canonical routes such as work capture, decision creation, and approval request; they require the caller's normal capability checks and, where applicable, explicit human approval.
+These are read projections. A capability-gated refresh request can enqueue a durable `proactive_intelligence.refresh` job; the worker persists an immutable, per-person snapshot and attention queue for the dashboard. The UI distinguishes `no snapshot`, `queued`, `running`, `failed`, `stale`, and `ready`; enqueueing never falsely claims that a worker has started. `GET /dashboard/intelligence/refresh-status` reports the latest job/snapshot plus the exact local worker command when operator action is needed. Manual refreshes create a fresh job, callers can supply an explicit idempotency key when they need request deduplication, unchanged projections do not append records, and later changed projections create a new version. Persisted refreshes use deterministic local reasoning and write no external action. Live reads may use an explicitly injected strategic-reasoning provider to add validated hypotheses, options, scenarios, recommendation, confidence, and dissent; it receives only the already ACL-scoped context, stores only hashed/redacted run metadata, and falls back to deterministic review on provider failure or malformed output. Suggested operations are returned as descriptors for canonical routes such as work capture, decision creation, and approval request; they require the caller's normal capability checks and, where applicable, explicit human approval.
 
 For a concrete JSON model endpoint outside tests, set `AUREMGRID_REASONING_ENDPOINT` and optionally `AUREMGRID_REASONING_MODEL`, `AUREMGRID_REASONING_VERSION`, `AUREMGRID_REASONING_API_KEY_ENV`, and `AUREMGRID_REASONING_TIMEOUT`. An absent endpoint keeps the deterministic offline path; an explicitly present but invalid configuration fails startup rather than silently pretending the provider is offline.
 
@@ -338,6 +338,15 @@ Run the offline verification suite:
 .\tools\test.ps1                 # PowerShell
 python -m unittest discover -s tests
 ```
+
+Run the deterministic real-browser dashboard gate when changing UI or API wiring:
+
+```text
+python -m pip install --no-build-isolation -e ".[browser]"
+.\tools\run-dashboard-browser.ps1 -InstallChromium
+```
+
+The browser harness starts an isolated in-memory server on an available local port, seeds realistic agency workspaces, injects the session only into browser storage, and verifies authentication, workspace isolation, board/list behavior, status transitions, inspectors, comments, Cosmo Intelligence, disconnected states, scroll regions, tile geometry, and responsive widths. It never places the token in a URL, screenshot, or log. Normal `unittest` discovery skips this optional gate cleanly when Playwright is not installed; the dedicated script fails with an actionable dependency message.
 
 Create a seeded evaluation database, issue its first local session, then start the server:
 

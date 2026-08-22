@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from auremgrid.domain.errors import NotFoundError, ValidationError
-from auremgrid.domain.ops import WorkItem, default_dod
+from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
+from auremgrid.domain.ops import ALLOWED_TRANSITIONS, WorkEvent, WorkItem, default_dod
 
 
 def _now() -> datetime: return datetime.now(timezone.utc).replace(microsecond=0)
@@ -46,6 +47,63 @@ class WorkOperations:
         values={**item.__dict__,**changes,"updated_at":_now()}
         if "tags" in changes: values["tags"]=tuple(changes["tags"])
         updated=WorkItem(**values); self.store.upsert_work_item(updated); self.snapshot(updated,"person",person_id); return updated
+
+    def transition(
+        self, organization_id: str, workspace_id: str, person_id: str, work_item_id: str,
+        to_status: str, reason: str = "", expected_version: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str,Any]:
+        self.authorize(organization_id,workspace_id,person_id,write=True)
+        atomic=getattr(self.store,"atomic",None)
+        if callable(atomic):
+            with atomic(immediate=True):
+                return self._transition_locked(
+                    organization_id,workspace_id,person_id,work_item_id,to_status,reason,expected_version,idempotency_key
+                )
+        return self._transition_locked(
+            organization_id,workspace_id,person_id,work_item_id,to_status,reason,expected_version,idempotency_key
+        )
+
+    def _transition_locked(
+        self, organization_id: str, workspace_id: str, person_id: str, work_item_id: str,
+        to_status: str, reason: str = "", expected_version: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str,Any]:
+        item=self._item(workspace_id,work_item_id)
+        to_status=str(to_status or "").strip()
+        if to_status not in ALLOWED_TRANSITIONS:
+            raise ValidationError("invalid work status")
+        payload={"work_item_id":work_item_id,"to_status":to_status,"reason":reason or "","expected_version":expected_version}
+        payload_hash=self._payload_hash(payload)
+        operation="work.transition"
+        if idempotency_key:
+            cached=self._get_idempotency(organization_id,workspace_id,idempotency_key,operation)
+            if cached:
+                if cached["payload_hash"]!=payload_hash:
+                    raise ValidationError("idempotency key was already used with a different work transition payload")
+                return json.loads(cached["response"])
+        current_version=self.current_version(work_item_id)
+        if expected_version is not None and int(expected_version)!=current_version:
+            raise ValidationError("work item version conflict")
+        allowed=ALLOWED_TRANSITIONS.get(item.status,set())
+        if to_status not in allowed:
+            raise ValidationError(f"cannot transition work from {item.status} to {to_status}")
+        now=_now()
+        detail=(reason or f"status changed to {to_status}").strip()
+        updated=WorkItem(**{**item.__dict__,"status":to_status,"updated_at":now})
+        self.store.upsert_work_item(updated)
+        self.store.create_work_event(WorkEvent(self.new_id("wev"),workspace_id,work_item_id,person_id,"status_transition",item.status,to_status,detail,now))
+        version=self.snapshot(updated,"person",person_id)
+        response={"work_item":updated.to_dict(),"version":version,"allowed_transitions":self.allowed_transitions(updated),"idempotency_key":idempotency_key}
+        if idempotency_key:
+            self.conn.execute(
+                """INSERT INTO work_idempotency_keys(
+                    organization_id,workspace_id,key,operation,payload_hash,response,created_at
+                ) VALUES (?,?,?,?,?,?,?)""",
+                (organization_id,workspace_id,idempotency_key,operation,payload_hash,json.dumps(response,sort_keys=True,separators=(",",":")),now.isoformat()),
+            )
+            self._commit()
+        return response
 
     def assign(self, organization_id: str, workspace_id: str, person_id: str, work_item_id: str, assignee_person_id: str) -> WorkItem:
         self.authorize(organization_id,workspace_id,person_id,write=True); self.authorize(organization_id,workspace_id,assignee_person_id)
@@ -88,9 +146,15 @@ class WorkOperations:
 
     def detail(self, organization_id: str, workspace_id: str, person_id: str, work_item_id: str) -> dict[str,Any]:
         self.authorize(organization_id,workspace_id,person_id);item=self._item(workspace_id,work_item_id)
-        result={"work_item":item.to_dict()}
+        try:
+            self.authorize(organization_id,workspace_id,person_id,write=True)
+            allowed_transitions=self.allowed_transitions(item)
+        except AuthorizationError:
+            allowed_transitions=[]
+        result={"work_item":item.to_dict(),"version":self.current_version(work_item_id),"allowed_transitions":allowed_transitions}
         for key,table in (("comments","work_comments"),("versions","work_versions"),("files","work_files"),("links","work_links"),("time_entries","time_entries")):
             result[key]=[dict(r) for r in self.conn.execute(f"SELECT * FROM {table} WHERE work_item_id=?",(work_item_id,)).fetchall()]
+        result["events"]=[dict(r) for r in self.conn.execute("SELECT * FROM work_events WHERE work_item_id=? ORDER BY recorded_at,id",(work_item_id,)).fetchall()]
         result["watchers"]=[r[0] for r in self.conn.execute("SELECT person_id FROM work_watchers WHERE work_item_id=?",(work_item_id,)).fetchall()]
         result["dependencies"]=[dict(r) for r in self.conn.execute("SELECT * FROM work_dependencies WHERE work_item_id=?",(work_item_id,)).fetchall()]
         result["subtasks"]=[w.to_dict() for w in self.store.list_work_items(workspace_id) if w.parent_id==work_item_id]
@@ -133,9 +197,27 @@ class WorkOperations:
         }
         return result
 
-    def snapshot(self,item:WorkItem,actor_type:str,actor_id:str)->None:
+    def current_version(self,work_item_id:str)->int:
+        row=self.conn.execute("SELECT COALESCE(MAX(version),0) FROM work_versions WHERE work_item_id=?",(work_item_id,)).fetchone()
+        return int(row[0] or 0)
+    def allowed_transitions(self,item:WorkItem)->list[str]:
+        return sorted(ALLOWED_TRANSITIONS.get(item.status,set()))
+    def snapshot(self,item:WorkItem,actor_type:str,actor_id:str)->int:
         version=self.conn.execute("SELECT COALESCE(MAX(version),0)+1 FROM work_versions WHERE work_item_id=?",(item.id,)).fetchone()[0]
-        self.conn.execute("INSERT INTO work_versions VALUES (?,?,?,?,?,?,?)",(self.new_id("workversion"),item.id,version,json.dumps(item.to_dict()),actor_type,actor_id,_now().isoformat()));self.conn.commit()
+        self.conn.execute("INSERT INTO work_versions VALUES (?,?,?,?,?,?,?)",(self.new_id("workversion"),item.id,version,json.dumps(item.to_dict()),actor_type,actor_id,_now().isoformat()));self._commit()
+        return int(version)
+    def _payload_hash(self,payload:dict[str,Any])->str:
+        return hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(",",":")).encode("utf-8")).hexdigest()
+    def _get_idempotency(self,organization_id:str,workspace_id:str,key:str,operation:str)->dict[str,Any]|None:
+        row=self.conn.execute(
+            "SELECT * FROM work_idempotency_keys WHERE organization_id=? AND workspace_id=? AND key=? AND operation=?",
+            (organization_id,workspace_id,key,operation),
+        ).fetchone()
+        return dict(row) if row else None
+    def _commit(self)->None:
+        commit=getattr(self.store,"_commit",None)
+        if callable(commit): commit()
+        else: self.conn.commit()
     def _item(self,workspace_id:str,item_id:str)->WorkItem:
         item=self.store.get_work_item(workspace_id,item_id)
         if item is None:raise NotFoundError("work item not found")

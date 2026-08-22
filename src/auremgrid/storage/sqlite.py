@@ -190,6 +190,19 @@ CREATE TABLE IF NOT EXISTS work_events (
     FOREIGN KEY(work_item_id) REFERENCES work_items(id)
 );
 
+CREATE TABLE IF NOT EXISTS work_idempotency_keys (
+    organization_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    response TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(organization_id, workspace_id, key, operation),
+    FOREIGN KEY(organization_id) REFERENCES organizations(id),
+    FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+);
+
 CREATE TABLE IF NOT EXISTS touchpoints (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,

@@ -74,7 +74,9 @@ class DashboardSurfaceTests(unittest.TestCase):
         self.assertIn('"collections"', Path(__file__).parents[1].joinpath("src", "auremgrid", "services", "dashboard.py").read_text(encoding="utf-8"))
 
     def test_cosmo_relationship_label_is_visible_without_renaming_operator(self) -> None:
-        self.assertIn("Cosmo · Auremgrid Intelligence", self.html)
+        self.assertIn("Auremgrid is the product/OS. Cosmo Intelligence is its named operating assistant.", self.html)
+        self.assertIn('aria-label="Cosmo Intelligence"', self.html)
+        self.assertIn("Ask Cosmo", self.html)
         self.assertIn('result["cosmo"]["name"]', Path(__file__).parents[1].joinpath("tests", "test_dashboard_service.py").read_text(encoding="utf-8"))
 
     def test_action_dialog_is_lazy_and_supports_descriptor_fields(self) -> None:
@@ -139,7 +141,7 @@ class DashboardSurfaceTests(unittest.TestCase):
             "page-work",
             "work-board",
             "capture-form",
-            "/work/capture",
+            "/work/items",
             "/dashboard/workflows",
             "/workflows/stages/start",
             "/workflows/evidence",
@@ -181,7 +183,7 @@ class DashboardSurfaceTests(unittest.TestCase):
             "/dashboard/module", "/dashboard/settings", "/dashboard/review-center",
             "/dashboard/brain", "/dashboard/workflows", "/dashboard/intelligence",
             "/dashboard/intelligence/executive", "/people", "/work/detail",
-            "/work/capture", "/search", "/entity/candidates", "/tools/call", "/finance",
+            "/work/items", "/work/items/transition", "/search", "/entity/candidates", "/tools/call", "/finance",
             "/campaigns", "/content", "/creative",
             "/brain/promote", "/brain/conflicts/resolve", "/workflows/stages/start",
             "/workflows/evidence", "/workflows/approvals/request",
@@ -248,6 +250,14 @@ class DashboardSurfaceTests(unittest.TestCase):
             'data-backend-route="/work/detail"',
             'const data=await api(`/work/detail?',
             "if(!item)throw new Error('The backend response did not include work_item.')",
+            "allowed_transitions",
+            "data-work-transition",
+            "/work/items/transition",
+            "expected_version",
+            "idempotency_key",
+            "await loadWorkBoard()",
+            "Only server-granted transitions returned by /work/detail are shown",
+            "deadline:fields.get('needed_by')||null",
         ):
             self.assertIn(marker, self.html)
         self.assertNotIn("localWorkDetail", self.html)

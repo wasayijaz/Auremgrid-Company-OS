@@ -9,6 +9,7 @@ from http.client import HTTPConnection
 from pathlib import Path
 
 from auremgrid.api.http import serve
+from auremgrid.domain.errors import ValidationError
 from auremgrid.services.brain import CompanyOS
 from auremgrid.services.worker import run_one_job
 from tests.auth_support import issue_identity
@@ -138,6 +139,37 @@ class ProactiveIntelligenceTests(unittest.TestCase):
         self.assertEqual(explicit["id"], explicit_again["id"])
         self.assertEqual(first["type"], "proactive_intelligence.refresh")
         self.assertIsNone(first["workspace_id"])
+
+    def test_refresh_status_distinguishes_worker_lifecycle_states(self) -> None:
+        empty = self.os.proactive_intelligence.refresh_status(self.identity, "executive")
+        self.assertEqual(empty["status"], "no_snapshot")
+        self.assertTrue(empty["worker_required"])
+        self.assertIn("worker-once", empty["worker_command"])
+        self.assertIsNone(empty["latest_job"])
+        self.assertIsNone(empty["latest_snapshot"])
+
+        job = self.os.proactive_intelligence.enqueue_refresh(self.identity, "executive")
+        queued = self.os.proactive_intelligence.refresh_status(self.identity, "executive")
+        self.assertEqual(queued["status"], "queued")
+        self.assertEqual(queued["latest_job"]["id"], job["id"])
+        self.assertTrue(queued["worker_required"])
+
+        result = run_one_job(self.os, "org_demo", None, "worker-status")
+        self.assertEqual(result["status"], "succeeded")
+        ready = self.os.proactive_intelligence.refresh_status(self.identity, "executive")
+        self.assertEqual(ready["status"], "ready")
+        self.assertFalse(ready["worker_required"])
+        self.assertEqual(ready["latest_job"]["status"], "succeeded")
+        self.assertGreaterEqual(ready["latest_snapshot"]["version"], 1)
+
+    def test_workspace_refresh_status_is_scoped_and_validated(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.os.proactive_intelligence.refresh_status(self.identity, "workspace")
+        status = self.os.proactive_intelligence.refresh_status(
+            self.identity, "workspace", "ws_alpha"
+        )
+        self.assertEqual(status["workspace_id"], "ws_alpha")
+        self.assertIn("--workspace ws_alpha", status["worker_command"])
 
     def test_completed_manual_refresh_job_does_not_block_changed_state_refresh(self) -> None:
         first_job = self.os.proactive_intelligence.enqueue_refresh(self.identity, "workspace", "ws_alpha")

@@ -2577,6 +2577,143 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        32,
+        "work_transition_idempotency",
+        """
+        CREATE TABLE IF NOT EXISTS work_idempotency_keys (
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            response TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(organization_id, workspace_id, key, operation),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        """,
+    ),
+    Migration(
+        33,
+        "client_operations_lifecycle_events",
+        """
+        CREATE TABLE IF NOT EXISTS risk_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            risk_id TEXT NOT NULL,
+            actor_person_id TEXT NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('created','resolved','reopened')),
+            from_status TEXT,
+            to_status TEXT NOT NULL,
+            note TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(risk_id) REFERENCES risks(id),
+            FOREIGN KEY(actor_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_risk_events_risk ON risk_events(risk_id, created_at, id);
+        CREATE TABLE IF NOT EXISTS opportunity_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            opportunity_id TEXT NOT NULL,
+            actor_person_id TEXT NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('created','advanced','closed')),
+            from_status TEXT,
+            to_status TEXT NOT NULL,
+            note TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(opportunity_id) REFERENCES opportunities(id),
+            FOREIGN KEY(actor_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_opportunity_events_opportunity
+            ON opportunity_events(opportunity_id, created_at, id);
+        CREATE TRIGGER IF NOT EXISTS risk_events_no_update BEFORE UPDATE ON risk_events BEGIN
+            SELECT RAISE(ABORT, 'risk events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS risk_events_no_delete BEFORE DELETE ON risk_events BEGIN
+            SELECT RAISE(ABORT, 'risk events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS opportunity_events_no_update BEFORE UPDATE ON opportunity_events BEGIN
+            SELECT RAISE(ABORT, 'opportunity events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS opportunity_events_no_delete BEFORE DELETE ON opportunity_events BEGIN
+            SELECT RAISE(ABORT, 'opportunity events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS audit_risk_events_insert AFTER INSERT ON risk_events BEGIN
+            INSERT INTO ledger_audit VALUES ('audit_'||lower(hex(randomblob(8))),NEW.organization_id,NEW.workspace_id,NEW.actor_person_id,'person',CASE WHEN NEW.action='created' THEN 'create' ELSE NEW.action END,'risk',NEW.risk_id,NEW.note,CURRENT_TIMESTAMP);
+        END;
+        CREATE TRIGGER IF NOT EXISTS audit_opportunity_events_insert AFTER INSERT ON opportunity_events BEGIN
+            INSERT INTO ledger_audit VALUES ('audit_'||lower(hex(randomblob(8))),NEW.organization_id,NEW.workspace_id,NEW.actor_person_id,'person',CASE WHEN NEW.action='created' THEN 'create' ELSE NEW.action END,'opportunity',NEW.opportunity_id,NEW.note,CURRENT_TIMESTAMP);
+        END;
+        """,
+    ),
+    Migration(
+        34,
+        "campaign_creative_lifecycle_events",
+        """
+        CREATE TABLE IF NOT EXISTS campaign_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            campaign_id TEXT NOT NULL,
+            actor_person_id TEXT NOT NULL,
+            from_status TEXT,
+            to_status TEXT NOT NULL,
+            note TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(campaign_id) REFERENCES campaigns(id),
+            FOREIGN KEY(actor_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_campaign_events_campaign
+            ON campaign_events(campaign_id, created_at, id);
+        CREATE TABLE IF NOT EXISTS creative_review_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            asset_id TEXT NOT NULL,
+            actor_person_id TEXT NOT NULL,
+            from_state TEXT,
+            to_state TEXT NOT NULL,
+            note TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(asset_id) REFERENCES creative_assets(id),
+            FOREIGN KEY(actor_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_creative_review_events_asset
+            ON creative_review_events(asset_id, created_at, id);
+        CREATE TRIGGER IF NOT EXISTS campaign_events_no_update BEFORE UPDATE ON campaign_events BEGIN
+            SELECT RAISE(ABORT, 'campaign events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS campaign_events_no_delete BEFORE DELETE ON campaign_events BEGIN
+            SELECT RAISE(ABORT, 'campaign events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS creative_review_events_no_update BEFORE UPDATE ON creative_review_events BEGIN
+            SELECT RAISE(ABORT, 'creative review events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS creative_review_events_no_delete BEFORE DELETE ON creative_review_events BEGIN
+            SELECT RAISE(ABORT, 'creative review events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS audit_campaign_events_insert AFTER INSERT ON campaign_events BEGIN
+            INSERT INTO ledger_audit VALUES ('audit_'||lower(hex(randomblob(8))),NEW.organization_id,NEW.workspace_id,NEW.actor_person_id,'person','transition','campaign',NEW.campaign_id,NEW.note,CURRENT_TIMESTAMP);
+        END;
+        CREATE TRIGGER IF NOT EXISTS audit_creative_review_events_insert AFTER INSERT ON creative_review_events BEGIN
+            INSERT INTO ledger_audit VALUES ('audit_'||lower(hex(randomblob(8))),NEW.organization_id,NEW.workspace_id,NEW.actor_person_id,'person','review','creative',NEW.asset_id,NEW.note,CURRENT_TIMESTAMP);
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

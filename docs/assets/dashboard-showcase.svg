@@ -25,7 +25,7 @@
   <rect x="276" y="24" width="900" height="60" fill="#ffffff"/>
   <path d="M276 84h900" stroke="#e6e6e2"/>
   <rect x="306" y="42" width="520" height="30" rx="9" fill="#fbfbfa" stroke="#e6e6e2"/>
-  <text x="326" y="62" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#8c8c85">Ask Auremgrid about approved evidence</text>
+  <text x="326" y="62" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#8c8c85">Ask Cosmo about approved evidence</text>
   <circle cx="1018" cy="57" r="4" fill="#16825a"/>
   <text x="1032" y="62" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#55554f">Ledger healthy</text>
   <text x="306" y="132" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="700" fill="#16161a">Company command, without the noise.</text>

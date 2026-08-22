@@ -54,5 +54,51 @@ class ExpandedWorkTests(unittest.TestCase):
         viewer=self.os.create_person(self.org.id,"Viewer");self.os.add_person_to_workspace(self.org.id,self.ws.id,viewer.id,"viewer")
         with self.assertRaises(AuthorizationError):self.os.work_ops.create(self.org.id,self.ws.id,viewer.id,"No","No","No")
 
+    def test_work_transition_is_versioned_idempotent_and_audited(self)->None:
+        item=self.os.work_ops.create(self.org.id,self.ws.id,self.owner.id,"Lifecycle","Move safely","Client")
+        detail=self.os.work_ops.detail(self.org.id,self.ws.id,self.owner.id,item.id)
+        self.assertEqual(detail["allowed_transitions"],["assigned"])
+        result=self.os.work_ops.transition(
+            self.org.id,self.ws.id,self.owner.id,item.id,"assigned","Accepted by owner",
+            expected_version=detail["version"],idempotency_key="work-transition-1",
+        )
+        self.assertEqual(result["work_item"]["status"],"assigned")
+        self.assertEqual(result["version"],detail["version"]+1)
+        replay=self.os.work_ops.transition(
+            self.org.id,self.ws.id,self.owner.id,item.id,"assigned","Accepted by owner",
+            expected_version=detail["version"],idempotency_key="work-transition-1",
+        )
+        self.assertEqual(replay,result)
+        self.assertEqual(
+            1,
+            self.os.store.conn.execute(
+                "SELECT COUNT(*) FROM work_events WHERE work_item_id=? AND action='status_transition'",
+                (item.id,),
+            ).fetchone()[0],
+        )
+        audits=[dict(row) for row in self.os.store.conn.execute(
+            "SELECT action,entity_type,entity_id FROM ledger_audit WHERE workspace_id=? AND entity_id=?",
+            (self.ws.id,item.id),
+        ).fetchall()]
+        self.assertTrue(any(row["action"]=="update" and row["entity_type"]=="work_item" for row in audits))
+        with self.assertRaises(ValidationError):
+            self.os.work_ops.transition(
+                self.org.id,self.ws.id,self.owner.id,item.id,"in_progress","Different payload",
+                expected_version=result["version"],idempotency_key="work-transition-1",
+            )
+
+    def test_work_transition_rejects_stale_illegal_and_hides_transitions_for_viewer(self)->None:
+        item=self.os.work_ops.create(self.org.id,self.ws.id,self.owner.id,"Guarded","Move safely","Client")
+        with self.assertRaises(ValidationError):
+            self.os.work_ops.transition(self.org.id,self.ws.id,self.owner.id,item.id,"shipped",expected_version=1)
+        with self.assertRaises(ValidationError):
+            self.os.work_ops.transition(self.org.id,self.ws.id,self.owner.id,item.id,"assigned",expected_version=0)
+        viewer=self.os.create_person(self.org.id,"Read only")
+        self.os.add_person_to_workspace(self.org.id,self.ws.id,viewer.id,"viewer")
+        detail=self.os.work_ops.detail(self.org.id,self.ws.id,viewer.id,item.id)
+        self.assertEqual(detail["allowed_transitions"],[])
+        with self.assertRaises(AuthorizationError):
+            self.os.work_ops.transition(self.org.id,self.ws.id,viewer.id,item.id,"assigned",expected_version=detail["version"])
+
 
 if __name__=="__main__":unittest.main()

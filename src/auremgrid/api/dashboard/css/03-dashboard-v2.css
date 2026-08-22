@@ -158,7 +158,7 @@ dialog::backdrop{background:rgba(20,20,18,.35);backdrop-filter:blur(2px)}
 .row{display:flex;gap:8px;justify-content:flex-end}
 .ghost{border:1px solid var(--line);background:var(--surface-2);color:var(--text-2);padding:8px 13px;border-radius:8px;font-weight:600;font-size:12.5px}
 .ghost:hover{background:var(--sunken)}
-.toast{position:fixed;right:22px;bottom:22px;background:var(--text);color:#fff;padding:11px 16px;border-radius:9px;font-size:12.8px;font-weight:600;opacity:0;transform:translateY(8px);transition:.2s;z-index:9;box-shadow:var(--shadow-2)}
+.toast{position:fixed;right:22px;bottom:22px;background:var(--text);color:#fff;padding:11px 16px;border-radius:9px;font-size:12.8px;font-weight:600;opacity:0;transform:translateY(8px);transition:.2s;z-index:9;box-shadow:var(--shadow-2);pointer-events:none}
 .toast.on{opacity:1;transform:none}
 
 .work-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;padding-bottom:18px}

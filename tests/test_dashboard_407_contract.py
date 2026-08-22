@@ -59,8 +59,17 @@ class Dashboard407ContractTests(unittest.TestCase):
         self.assertIn("what_if_${key}", self.bundle)
 
     def test_second_parity_controls_are_backend_wired(self) -> None:
-        for marker in ("/work/comments", "/work/items/update", "data-work-comment", "data-work-update", "Status transitions are not exposed", "/reports/generate", "data-report-generate", "reportType", "/automations/activate", "/automations/trigger", "data-automation-activate", "data-automation-trigger", "training_state", "/integrations/verify", "/integrations/sync", "Not connected — add and verify credentials", "/dashboard/intelligence/attention", "/dashboard/intelligence/refresh", "Persisted attention", "worker is processing", "Agency performance KPIs", "Attributed revenue", "ROAS", "CTR"):
+        for marker in ("/work/comments", "/work/items/update", "/work/items/transition", "data-work-comment", "data-work-update", "data-work-transition", "Only server-granted transitions", "expected_version", "idempotency_key", "/reports/generate", "data-report-generate", "reportType", "/automations/activate", "/automations/trigger", "data-automation-activate", "data-automation-trigger", "training_state", "/integrations/verify", "/integrations/sync", "Not connected — add and verify credentials", "/dashboard/intelligence/attention", "/dashboard/intelligence/refresh", "Persisted attention", "worker is processing", "Agency performance KPIs", "Attributed revenue", "ROAS", "CTR"):
             self.assertIn(marker, self.bundle)
+
+    def test_new_work_uses_canonical_work_items_route(self) -> None:
+        self.assertIn("captureForm", self.bundle)
+        self.assertIn("api('/work/items'", self.bundle)
+        self.assertIn("organization_id:org", self.bundle)
+        self.assertIn("person_id:person", self.bundle)
+        self.assertIn("deadline:fields.get('needed_by')||null", self.bundle)
+        final_capture = self.bundle[self.bundle.rfind("const captureForm="):self.bundle.rfind("const agencyBootstrap=")]
+        self.assertNotIn("/work/capture", final_capture)
 
 
 if __name__ == "__main__":
