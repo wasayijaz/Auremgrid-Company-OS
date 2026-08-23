@@ -70,6 +70,51 @@ This is an operating control plane, not a replacement for every specialist tool.
 | Intelligence Engine | Workspace and portfolio briefs from permitted evidence, canonical operating records, situation/change/hypothesis/scenario/impact/recommendation fields, historical analogues, decision-to-outcome learning links, and proposed action descriptors | Deterministic read-only intelligence with an optional injected model-reasoning provider; malformed/unavailable providers fall back and no provider can execute writes |
 | Data lifecycle and retention | Retention policies, scoped deletion with allowlist, workspace export, deletion audit trail | Implemented; outbound archive/redact actions remain future |
 
+### Capability and onboarding matrix
+
+The status below is deliberately split by how a new operator can exercise a
+capability. “End-to-end local” means it works against the local SQLite ledger
+without a provider account. “Manual/sourced” means the ledger and API are
+implemented, but an operator must enter or bind evidence; Auremgrid does not
+invent the missing values. “Planned/not yet implemented” is not a supported
+workflow in this release.
+
+| Surface | End-to-end local | Manual/sourced boundary | Planned/not yet implemented |
+|---|---|---|---|
+| Organization, identity, workspaces, memberships, projects, work, reviews, approvals, workflows | Yes, including the local dashboard, REST, MCP-style tools, and CLI | Staff must create the real roster and records | Hosted auth and client self-service login |
+| Company Brain, search, citations, proposals, conflicts, Intelligence | Yes with deterministic local projections and human-gated proposals | Optional local model/Graphiti projections require already-installed models and explicit configuration | Autonomous writes or unsupervised promotion |
+| Sales pipeline | Yes for local prospects, proposals, append-only sales events, and idempotent proposal-to-client conversion | Proposal amounts and contract terms are operator-entered | CRM/provider sync, outbound proposal sending |
+| Campaigns, creative, content | Yes for lifecycle, review, and immutable versions | Metrics and campaign pacing require manually imported or connector-sourced snapshots; pacing is `insufficient_data` without budget and spend | Ads-platform sync and outbound content publishing |
+| Retainers and reports | Yes for retainer read-model calculations and internal report-pack request/approval/delivery history | Revenue, costs, scope usage, and report runs must already be recorded; report packs are internal delivery only | Client-facing report delivery or external sends |
+| Finance | Local ledger and authenticated controls are implemented | An organization admin must connect a finance state first; every revenue, invoice, cost, budget, software-cost, and AI-usage-cost row requires a source. Client economics/profit/margin are derived only from those rows | Accounting-provider sync and fabricated/default metrics |
+| Forecasts and capacity | Deterministic point-in-time forecasts from recorded contracts, revenue, and capacity snapshots | Historical data and correctly scoped workspace/contract dates are required | Guaranteed predictive accuracy or external planning-system sync |
+| Integrations and jobs | Local mappings, verification state, durable jobs, leases, retries, fencing, redaction, and recovery | Credential references, provider verification, mapped streams, and worker execution are manual; supported read sync is Slack, ClickUp, Drive, Gmail, exact-file Figma, and one Fireflies account | OAuth installation/callbacks, webhooks, multi-account installs, accounting/ads sync |
+| Deployment and operations | Local evaluation and controlled single-host SQLite operation | Operators provide durable storage, backups, restore rehearsal, secret manager, private network, and reverse proxy/TLS for non-local access | Packaged production deployment, managed observability backend, multi-region service |
+
+### Finance controls (exact boundary)
+
+Finance is a connected-only sourced ledger, not an accounting integration. An
+organization owner/admin sets the finance connection state; until then
+`GET /finance` returns `not_connected` with null metrics and all finance writes
+fail. After connection, a writable workspace member (or an organization
+admin for organization-level rows) can record revenue, invoices, costs,
+budgets, software costs, and AI usage costs, but each row must include a
+non-empty source and valid dates/amounts. There is no accounting-provider or
+ads-provider import path. `POST /finance/economics/calculate` derives client
+revenue, labor, software, AI, and other cost, gross contribution/profit, and
+margin for the requested period; it never estimates missing values.
+
+The agency revenue operations layer adds local prospect/proposal records and
+append-only sales events. `POST /sales/convert` is an idempotent, staff-authenticated
+operation that creates a client workspace and contract from a proposal; it is
+not a CRM sync or an externally sent proposal. Campaign budget pacing compares
+the configured campaign budget with the latest sourced spend and reports
+`insufficient_data` when either is absent. The retainer read model derives
+recognized revenue, recorded costs, profit, margin, scope usage/utilization,
+and a bounded renewal signal from existing contracts and usage rows. Report
+packs have a request → approve/reject → `delivered_internal` lifecycle with an
+append-only event history; they do not publish or deliver to clients.
+
 ## How the system hangs together
 
 ### Company hierarchy and data isolation
@@ -273,6 +318,42 @@ network until it is behind HTTPS, a trusted reverse proxy, backups, a secret
 manager, and an explicit access policy. API tokens are for scoped integrations;
 human operators should use sessions.
 
+## First-run sequence for a real agency
+
+Complete these steps in order. The sequence creates authority before data and
+proves recovery before any external connector is allowed to run.
+
+1. **Organization, owner, and auth.** Run `setup-agency` to create the
+   organization, internal workspace, owner person, memberships, principal, and
+   one-time local session. Start `serve`, connect the browser with that token,
+   then issue one separate session per operator. Use `bootstrap-auth` only for
+   an existing database whose identity and actor bindings are already present.
+2. **Client workspace.** Create each client workspace and associate it with the
+   organization. Keep the internal workspace separate from client workspaces;
+   ACLs apply before lookup, counts, ranking, and aggregation.
+3. **Membership and roster.** Add people to the organization and only the
+   workspaces they may access. Record client account-roster roles and meeting
+   responsibilities before assigning delivery work.
+4. **Project and workflow.** Create a project, work items, owners, dates, and
+   approved context. Start a versioned workflow run, satisfy evidence gates,
+   and use the review/approval routes for one-way decisions.
+5. **Finance and manual records.** An organization admin connects the finance
+   state. Enter sourced revenue, invoices, costs, budgets, software costs, AI
+   usage costs, and (when inputs are complete) calculate client economics. Add
+   prospects/proposals, campaign budgets/metrics, retainer allowances, and
+   internal report-pack requests only from real or clearly labelled fixture
+   evidence; no values are inferred.
+6. **Backup rehearsal.** Run `backup` and `verify-backup`, inspect the manifest,
+   and rehearse an offline restore to a separate destination. Keep the service
+   in recovery mode until a human has reviewed pending jobs and outbound state.
+7. **Integrations.** Store only environment/secret references, verify one
+   provider mapping at a time, and enqueue a read-sync job with a durable
+   worker. Start with a private/local bind and confirm redaction, cursors,
+   fencing, and degraded states before adding another connector.
+8. **Operate and review.** Schedule online backups and a separate worker,
+   review report-pack approvals and finance sources, and keep unsupported sends,
+   provider syncs, and hosted-login expectations outside the operating process.
+
 ## Dashboard preview
 
 ![SAMPLE DATA dashboard preview](docs/assets/dashboard-showcase.svg)
@@ -426,6 +507,16 @@ The MCP-style interface exposes the same service policy through namespaced tools
 
 See [REST API reference](docs/api-reference.md) and [MCP tools](docs/mcp-reference.md) for route/tool coverage and capability requirements.
 
+The revenue-operations HTTP routes are `/sales/prospects`,
+`/sales/proposals`, and idempotent `/sales/convert`; read-only derived views
+are `/campaigns/budget-pacing`, `/client-hq/retainer`, and `/report-packs`.
+Internal report-pack actions are `POST /report-packs`,
+`/report-packs/approve`, and `/report-packs/deliver-internal`. Finance controls
+are `/finance`, `/finance/connect`, `/finance/revenue`, `/finance/invoices`,
+`/finance/costs`, `/finance/budgets`, `/finance/software-costs`,
+`/finance/ai-usage-costs`, and `/finance/economics/calculate`; all are
+authenticated and finance writes require the connected state and a source.
+
 ## Deployment modes
 
 ### Local evaluation
@@ -483,6 +574,18 @@ The offline suite must not require Docker, provider credentials, a private vault
 ## Current limitations and roadmap
 
 - No in-product OAuth installation/callback flow, webhook ingestion, or refresh-token rotation; credential binding is manual and environment-backed.
+- Finance has no accounting-provider or advertising-provider sync. Revenue,
+  invoices, costs, budgets, software costs, and AI usage costs are connected-only
+  sourced records entered through authenticated controls; client economics,
+  profit, and margin are derived read models, not accounting truth.
+- Prospect/proposal conversion, campaign budget pacing, retainer read models,
+  forecast generation, and report-pack approval history are local ledger
+  operations. Report packs stop at internal delivery; no client-facing report
+  send or outbound content publishing exists.
+- There is no CSV bulk-import wizard, hosted auth, client self-service login,
+  packaged production deployment, or managed observability backend. The
+  standard-library server and SQLite are intended for local/private or
+  controlled single-host operation only.
 - Google Drive bootstraps from a captured changes token, walks mapped folders/shared drives through durable continuation tasks, reconciles parent chains and descendants after moves, and retires objects only after ancestry is resolved. Gmail captures a history baseline before label backfill and maintains label membership lifecycle. Objects that match mappings owned by different workspaces create an organization-level redacted quarantine, block cursor promotion, and write no workspace evidence.
 - Figma supports verified, exact-file read polling with `current_user:read`, `file_metadata:read`, and `file_content:read`. A version-fenced file snapshot can retain bounded frame/section evidence; with explicit, proven `file_versions:read`, a changed file can also retain one bounded page of named-version evidence, and with explicit, proven `comments:read`, bounded comment evidence. The parent file remains the only lifecycle and object-count record. Review/approval workflows and auto-created deliverables, reviews, or tasks are out of scope. Fireflies supports verified, single-account read polling with `transcripts:read`, bounded to exactly one `account:<id>` mapping; it emits one sanitized, bounded transcript event per meeting from a durable date cursor and has no delete/tombstone signal. GitHub, advertising, and accounting systems remain disabled catalog entries only and do not report connected.
 - The Intelligence Engine is an evidence-backed read model. It can surface cross-domain relationships, hypotheses, parameterized what-if scenarios, proposed cross-wing plans, historical analogues, and decision/outcome/learning links from available records. Optional model-backed strategic reasoning is provider-injected, ACL-scoped, schema-validated, auditable without raw prompts/outputs, and read-only; it is not an autonomous execution path.
