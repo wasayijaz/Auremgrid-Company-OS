@@ -155,6 +155,41 @@ class AgentRunObservabilityTests(unittest.TestCase):
         with self.assertRaises(NotFoundError):
             self.os.dashboard.agent_detail(self.org.id, self.viewer.id, hidden_only["id"])
 
+    def test_agent_and_report_descriptors_require_capabilities_and_visible_workspace(self) -> None:
+        owner_agent_actions = self.os.agent_ops.agent_action_descriptors(
+            self.org.id, self.owner.id, self.agent["id"], self.primary.id, {"agent_run"}
+        )
+        self.assertEqual(
+            {action["kind"] for action in owner_agent_actions},
+            {"agent.task.create", "agent.task.claim"},
+        )
+        self.assertEqual(
+            self.os.agent_ops.agent_action_descriptors(
+                self.org.id, self.owner.id, self.agent["id"], self.primary.id, {"workspace_read"}
+            ),
+            [],
+        )
+        self.assertEqual(
+            self.os.agent_ops.agent_action_descriptors(
+                self.org.id, self.viewer.id, self.agent["id"], self.hidden.id, {"agent_run"}
+            ),
+            [],
+        )
+        report_actions = self.os.agent_ops.report_action_descriptors(
+            self.org.id, self.owner.id, self.primary.id, {"workspace_write"}
+        )
+        self.assertIn("/reports/generate", {action["route"] for action in report_actions})
+        self.assertEqual(
+            self.os.agent_ops.report_action_descriptors(
+                self.org.id, self.owner.id, self.primary.id, {"workspace_read"}
+            ),
+            [],
+        )
+        with self.assertRaises(AuthorizationError):
+            self.os.agent_ops.generate_report(
+                self.org.id, self.viewer.id, "client_weekly_report", self.hidden.id
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

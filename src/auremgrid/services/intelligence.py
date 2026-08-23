@@ -66,6 +66,7 @@ class IntelligenceService:
                   what_if: dict[str, Any] | None = None,
                   context_type: str | None = None,
                   context_id: str | None = None,
+                  capabilities: Any = None,
                   use_reasoning_provider: bool = True) -> dict[str, Any]:
         """Return a stable intelligence contract for one authorized workspace.
 
@@ -74,7 +75,9 @@ class IntelligenceService:
         facts use the existing temporal/ACL filtering implementation.
         """
         membership = self.os._require_person_access(organization_id, workspace_id, person_id)
-        can_write = membership.role in {"admin", "operator"}
+        can_write = membership.role in {"admin", "operator"} and (
+            capabilities is None or "workspace_write" in set(capabilities)
+        )
         self._evidence_issue = None
         workspace = self.os.store.get_workspace(workspace_id)
         if workspace is None:
@@ -170,6 +173,15 @@ class IntelligenceService:
             for finding in findings:
                 finding["actions"] = []
                 finding["action_descriptors"] = []
+        elif capabilities is not None:
+            allowed_capabilities = set(capabilities)
+            for finding in findings:
+                descriptors = [
+                    descriptor for descriptor in finding.get("action_descriptors", [])
+                    if self._descriptor_allowed_by_capability(descriptor, allowed_capabilities)
+                ]
+                finding["actions"] = descriptors
+                finding["action_descriptors"] = descriptors
 
         provider_reasons: list[str] = []
         if self._evidence_issue:
@@ -283,6 +295,17 @@ class IntelligenceService:
             "findings": findings,
             "generated_at": _now().isoformat(),
         }
+
+    @staticmethod
+    def _descriptor_allowed_by_capability(descriptor: dict[str, Any], capabilities: set[str]) -> bool:
+        route = str(descriptor.get("route") or "")
+        if route.startswith("/agents"):
+            return "agent_run" in capabilities
+        if route == "/reports/generate":
+            return "workspace_write" in capabilities
+        if route in {"/work/capture", "/decisions", "/approvals"}:
+            return "workspace_write" in capabilities
+        return True
 
     def portfolio(
         self,
@@ -1935,6 +1958,19 @@ class IntelligenceService:
                 "route": "/decisions",
                 "method": "POST",
                 "payload": decision_payload, "required_fields": [],
+                "safe": True,
+                "one_way": False,
+                "requires_approval": False,
+                "status": "proposed",
+            },
+            {
+                "id": "generate-client-weekly-report",
+                "action": "Generate report", "label": "Generate report",
+                "kind": "report.generate",
+                "route": "/reports/generate",
+                "method": "POST",
+                "payload": {"organization_id": organization_id, "workspace_id": workspace_id, "person_id": person_id, "type": "client_weekly_report"},
+                "required_fields": [],
                 "safe": True,
                 "one_way": False,
                 "requires_approval": False,

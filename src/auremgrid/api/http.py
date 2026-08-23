@@ -32,7 +32,7 @@ def _route_capability(path: str, method: str) -> str:
         if path == "/reports": return "workspace_read"
         if path == "/finance": return "finance_read"
         if path == "/capacity": return "workspace_read"
-        if path == "/agents" or path.startswith("/agents/runs"): return "agent_run"
+        if path in {"/agents", "/agents/detail"} or path.startswith("/agents/runs"): return "agent_run"
         if path in {"/integrations"}: return "integration_configure"
         if path.startswith("/workflows"): return "workspace_read"
         if path == "/entity/candidates": return "brain_propose"
@@ -415,8 +415,10 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/agents":
                 self._json(200,self.os.agent_ops.command_center(_need(params,"organization_id"),_need(params,"person_id"))); return
             if parsed.path == "/agents/detail":
+                assert identity is not None
                 self._json(200, self.os.dashboard.agent_detail(
-                    _need(params, "organization_id"), _need(params, "person_id"), _need(params, "agent_id")
+                    _need(params, "organization_id"), _need(params, "person_id"), _need(params, "agent_id"),
+                    identity.capabilities,
                 )); return
             if parsed.path == "/agents/runs":
                 self._json(200, {"runs": self.os.agent_ops.list_runs(

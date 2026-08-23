@@ -366,6 +366,7 @@ def test_agent_operations_inspector_observes_canonical_runs(owner_page: Page, da
     inspector = page.locator("#agent-side-inspector")
     expect(inspector).to_have_class(re.compile("open"))
     expect(inspector).to_contain_text("Operate this worker")
+    expect(inspector.locator("[data-agent-action-descriptor]")).to_have_count(2)
     expect(inspector).to_contain_text("Queue")
     expect(inspector).to_contain_text("Recent runs")
     run = inspector.locator("[data-agent-run-id]").first

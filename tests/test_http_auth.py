@@ -124,6 +124,104 @@ class HttpAuthenticationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(result["job"]["status"], "queued")
 
+    def test_report_actions_are_descriptor_gated_and_scope_checked(self) -> None:
+        status, reports = self.request(
+            "GET",
+            "/reports?organization_id=org_auth_http&workspace_id=ws_allowed&person_id=person_owner",
+            self.token,
+        )
+        self.assertEqual(status, 200)
+        self.assertIn(
+            "/reports/generate",
+            {action["route"] for action in reports["allowed_actions"]},
+        )
+
+        read_token = self.os.auth.create_api_token(
+            self.identity.principal_id, "report read", ["workspace_read"]
+        )
+        status, read_reports = self.request(
+            "GET",
+            "/reports?organization_id=org_auth_http&workspace_id=ws_allowed&person_id=person_owner",
+            read_token["token"],
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(read_reports["allowed_actions"], [])
+        status, _ = self.request(
+            "POST",
+            "/reports/generate",
+            read_token["token"],
+            {
+                "organization_id": "org_auth_http",
+                "workspace_id": "ws_allowed",
+                "person_id": "person_owner",
+                "type": "client_weekly_report",
+            },
+        )
+        self.assertEqual(status, 403)
+        status, _ = self.request(
+            "POST",
+            "/reports/generate",
+            self.token,
+            {
+                "organization_id": "org_auth_http",
+                "workspace_id": "ws_allowed",
+                "person_id": "someone_else",
+                "type": "client_weekly_report",
+            },
+        )
+        self.assertEqual(status, 403)
+        status, _ = self.request(
+            "GET",
+            "/reports?organization_id=org_auth_http&workspace_id=ws_restricted&person_id=person_owner",
+            self.token,
+        )
+        self.assertEqual(status, 403)
+
+    def test_agent_task_actions_require_agent_run_capability(self) -> None:
+        agent = next(
+            item for item in self.os.agent_ops.seed_primary_agents("org_auth_http", "person_owner")
+            if item["name"] == "Luna"
+        )
+        self.os.agent_ops.configure_agent(
+            "org_auth_http", "person_owner", agent["id"], "local", ["work.list"], ["ws_allowed"], []
+        )
+        status, detail = self.request(
+            "GET",
+            f"/agents/detail?organization_id=org_auth_http&person_id=person_owner&agent_id={agent['id']}",
+            self.token,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            {action["kind"] for action in detail["allowed_actions"]},
+            {"agent.task.create", "agent.task.claim"},
+        )
+
+        viewer = self.os.create_person(
+            "org_auth_http", "Viewer", "viewer@auth.test", role="member", person_id="person_viewer"
+        )
+        self.os.add_person_to_workspace("org_auth_http", "ws_allowed", viewer.id, "viewer")
+        viewer_token, _ = issue_identity(self.os, "org_auth_http", viewer.id, "ws_allowed")
+        status, _ = self.request(
+            "GET",
+            f"/agents/detail?organization_id=org_auth_http&person_id={viewer.id}&agent_id={agent['id']}",
+            viewer_token,
+        )
+        self.assertEqual(status, 403)
+        status, _ = self.request(
+            "POST",
+            "/agents/tasks",
+            viewer_token,
+            {
+                "organization_id": "org_auth_http",
+                "workspace_id": "ws_allowed",
+                "person_id": viewer.id,
+                "agent_id": agent["id"],
+                "title": "Forged task",
+                "instructions": "Should not queue",
+            },
+        )
+        self.assertEqual(status, 403)
+
     def test_connector_configuration_earns_connected_state_through_job_flow(self) -> None:
         status, integration = self.request(
             "POST", "/integrations", self.token,

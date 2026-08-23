@@ -27,6 +27,10 @@ class AgentOperations:
     def __init__(self, conn: Any, new_id: Callable[[str], str], company: Any, approvals: Any, client_ops: Any, capacity: Any | None = None) -> None:
         self.conn, self.new_id, self.company, self.approvals, self.client_ops, self.capacity = conn, new_id, company, approvals, client_ops, capacity
 
+    @staticmethod
+    def _can(capabilities: Any, capability: str) -> bool:
+        return capabilities is None or capability in set(capabilities)
+
     def visible_workspace_ids(self, organization_id: str, person_id: str) -> set[str]:
         """Return only workspaces in *organization_id* that this person belongs to.
 
@@ -174,6 +178,8 @@ class AgentOperations:
     ) -> dict[str, Any]:
         if self.company.org_membership(organization_id, requested_by_person_id) is None:
             raise AuthorizationError("organization membership required")
+        if workspace_id and workspace_id not in self.visible_workspace_ids(organization_id, requested_by_person_id):
+            raise AuthorizationError("agent task workspace is not visible to caller")
         agent = self.conn.execute(
             "SELECT * FROM agents WHERE organization_id=? AND id=?",
             (organization_id, agent_id),
@@ -249,6 +255,8 @@ class AgentOperations:
         return task
 
     def start_run(self, organization_id: str, person_id: str, agent_id: str, task_id: str) -> dict[str, Any]:
+        if self.company.org_membership(organization_id, person_id) is None:
+            raise AuthorizationError("organization membership required")
         task = self.conn.execute(
             "SELECT * FROM agent_tasks WHERE organization_id=? AND agent_id=? AND id=?",
             (organization_id, agent_id, task_id),
@@ -283,6 +291,8 @@ class AgentOperations:
 
     def claim_next_task(self, organization_id: str, person_id: str, agent_id: str) -> dict[str, Any] | None:
         """Claim the highest-priority queued task that remains inside the agent scope."""
+        if self.company.org_membership(organization_id, person_id) is None:
+            raise AuthorizationError("organization membership required")
         agent = self.conn.execute(
             "SELECT * FROM agents WHERE organization_id=? AND id=?",
             (organization_id, agent_id),
@@ -302,6 +312,101 @@ class AgentOperations:
             if task["workspace_id"] is None or task["workspace_id"] in allowed and task["workspace_id"] in visible:
                 return self.start_run(organization_id, person_id, agent_id, task["id"])
         return None
+
+    def report_action_descriptors(
+        self,
+        organization_id: str,
+        person_id: str,
+        workspace_id: str | None,
+        capabilities: Any = None,
+    ) -> list[dict[str, Any]]:
+        if not self._can(capabilities, "workspace_write"):
+            return []
+        if self.company.org_membership(organization_id, person_id) is None:
+            return []
+        if workspace_id and workspace_id not in self.visible_workspace_ids(organization_id, person_id):
+            return []
+        types = ["client_weekly_report", "capacity_report", "workload_report"]
+        return [
+            {
+                "id": f"generate-{report_type}",
+                "action": "generate_report",
+                "label": report_type.replace("_", " ").title(),
+                "kind": "report.generate",
+                "route": "/reports/generate",
+                "method": "POST",
+                "payload": {
+                    "organization_id": organization_id,
+                    "person_id": person_id,
+                    "workspace_id": workspace_id,
+                    "type": report_type,
+                },
+                "required_fields": [],
+                "safe": True,
+                "one_way": False,
+                "requires_approval": False,
+                "status": "available",
+                "idempotency_scope": f"report:{organization_id}:{workspace_id or 'organization'}:{report_type}",
+            }
+            for report_type in types
+        ]
+
+    def agent_action_descriptors(
+        self,
+        organization_id: str,
+        person_id: str,
+        agent_id: str,
+        workspace_id: str | None = None,
+        capabilities: Any = None,
+    ) -> list[dict[str, Any]]:
+        if not self._can(capabilities, "agent_run"):
+            return []
+        if self.company.org_membership(organization_id, person_id) is None:
+            return []
+        visible = self.visible_workspace_ids(organization_id, person_id)
+        if workspace_id and workspace_id not in visible:
+            return []
+        agent = self.conn.execute(
+            "SELECT * FROM agents WHERE organization_id=? AND id=?",
+            (organization_id, agent_id),
+        ).fetchone()
+        if agent is None:
+            return []
+        allowed = set(json.loads(agent["allowed_workspace_ids"] or "[]"))
+        effective_workspace = workspace_id if workspace_id in allowed and workspace_id in visible else None
+        if workspace_id and effective_workspace is None:
+            return []
+        base = {"organization_id": organization_id, "person_id": person_id, "agent_id": agent_id}
+        return [
+            {
+                "id": "create-agent-task",
+                "action": "create_agent_task",
+                "label": "Queue task",
+                "kind": "agent.task.create",
+                "route": "/agents/tasks",
+                "method": "POST",
+                "payload": {**base, "workspace_id": effective_workspace, "priority": 50},
+                "required_fields": ["title", "instructions"],
+                "safe": True,
+                "one_way": False,
+                "requires_approval": False,
+                "status": "available",
+            },
+            {
+                "id": "claim-agent-task",
+                "action": "claim_agent_task",
+                "label": "Claim next task",
+                "kind": "agent.task.claim",
+                "route": "/agents/runs/claim",
+                "method": "POST",
+                "payload": base,
+                "required_fields": [],
+                "safe": True,
+                "one_way": False,
+                "requires_approval": False,
+                "status": "available",
+            },
+        ]
 
     def record_tool_call(
         self,
@@ -728,6 +833,8 @@ class AgentOperations:
     def generate_report(self, organization_id: str, person_id: str, type: str, workspace_id: str | None = None) -> dict[str, Any]:
         if self.company.org_membership(organization_id, person_id) is None:
             raise AuthorizationError("organization membership required")
+        if workspace_id and workspace_id not in self.visible_workspace_ids(organization_id, person_id):
+            raise AuthorizationError("report workspace is not visible to caller")
         allowed = {
             "daily_owner_brief",
             "weekly_agency_brief",

@@ -1207,7 +1207,13 @@ class DashboardService(_ExistingDashboardService):
         except (AuthorizationError, ValidationError): capacity = None
         return {"person": dict(person), "memberships": memberships, "projects": projects, "work": work, "reviews": reviews, "skills": skills, "leave": leave, "capacity": capacity, "capacity_status": "sourced" if capacity else "unknown", "deadlines": [row for row in work if row.get("needed_by")]}
 
-    def agent_detail(self, organization_id: str, person_id: str, agent_id: str) -> dict[str, Any]:
+    def agent_detail(
+        self,
+        organization_id: str,
+        person_id: str,
+        agent_id: str,
+        capabilities: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
         if self.os.company.org_membership(organization_id, person_id) is None: raise AuthorizationError("organization membership required")
         visible = self.os.agent_ops.visible_workspace_ids(organization_id, person_id)
         agent = self.conn.execute("SELECT * FROM agents WHERE organization_id=? AND id=?", (organization_id, agent_id)).fetchone()
@@ -1236,7 +1242,9 @@ class DashboardService(_ExistingDashboardService):
             (organization_id, agent_id, *scope_values),
         ).fetchall()]
         completed = sum(row.get("status") == "completed" for row in runs); failed = sum(row.get("status") == "failed" for row in runs); finished = completed + failed
-        return {"agent": {**self.os.agent_ops._redacted_agent(agent, visible), "capability": {"role": role["name"] if role else "Unknown", "description": role["description"] if role else "Unknown"}, "tools": _json_list(agent["tools"]), "write_permissions": _json_list(agent["write_permissions"]), "allowed_workspace_ids": [item for item in allowed if item in visible]}, "current_task": next((row for row in tasks if row.get("status") in {"running", "queued"}), None), "tasks": tasks, "queue": queue, "runs": runs, "quality": {"completed": completed, "failed": failed, "success_rate": completed / finished if finished else None}, "cost": {"total": sum(float(row.get("cost") or 0) for row in runs), "currency": "USD", "status": "sourced" if runs else "unknown"}, "budget": {"status": "not_configured", "amount": None, "currency": "USD"}}
+        scoped_allowed = [item for item in allowed if item in visible]
+        action_workspace = scoped_allowed[0] if scoped_allowed else None
+        return {"agent": {**self.os.agent_ops._redacted_agent(agent, visible), "capability": {"role": role["name"] if role else "Unknown", "description": role["description"] if role else "Unknown"}, "tools": _json_list(agent["tools"]), "write_permissions": _json_list(agent["write_permissions"]), "allowed_workspace_ids": scoped_allowed}, "current_task": next((row for row in tasks if row.get("status") in {"running", "queued"}), None), "tasks": tasks, "queue": queue, "runs": runs, "quality": {"completed": completed, "failed": failed, "success_rate": completed / finished if finished else None}, "cost": {"total": sum(float(row.get("cost") or 0) for row in runs), "currency": "USD", "status": "sourced" if runs else "unknown"}, "budget": {"status": "not_configured", "amount": None, "currency": "USD"}, "allowed_actions": self.os.agent_ops.agent_action_descriptors(organization_id, person_id, agent_id, action_workspace, capabilities)}
 
     def performance_surface(self, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any]:
         self.os._require_person_access(organization_id, workspace_id, person_id)

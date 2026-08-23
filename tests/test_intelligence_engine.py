@@ -131,6 +131,26 @@ class IntelligenceEngineTests(unittest.TestCase):
         self.assertTrue(result["findings"])
         self.assertTrue(all(not finding["actions"] and not finding["action_descriptors"] for finding in result["findings"]))
 
+    def test_capability_scoped_intelligence_only_returns_authorized_descriptors(self) -> None:
+        writable = self.os.intelligence.workspace(
+            "org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin",
+            capabilities={"workspace_write", "brain_read"},
+        )
+        action_kinds = {
+            action["kind"]
+            for finding in writable["findings"]
+            for action in finding["action_descriptors"]
+        }
+        self.assertIn("report.generate", action_kinds)
+        self.assertIn("work.capture", action_kinds)
+
+        read_only = self.os.intelligence.workspace(
+            "org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin",
+            capabilities={"brain_read"},
+        )
+        self.assertTrue(read_only["findings"])
+        self.assertTrue(all(not finding["action_descriptors"] for finding in read_only["findings"]))
+
     def test_cross_domain_reasoning_scenarios_analogues_and_learning_are_explicit(self) -> None:
         result = self.os.intelligence.workspace(
             "org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin"
