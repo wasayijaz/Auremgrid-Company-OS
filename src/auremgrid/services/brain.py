@@ -63,6 +63,7 @@ from auremgrid.services.client_portal import ClientPortalOperations
 from auremgrid.services.feedback_ops import FeedbackOperations
 from auremgrid.services.performance_ops import PerformanceOperations
 from auremgrid.services.forecast_ops import ForecastOperations
+from auremgrid.services.revenue_ops import RevenueOperations
 from auremgrid.services.retention_ops import RetentionOperations
 from auremgrid.services.intelligence import IntelligenceService
 from auremgrid.services.proactive_intelligence import ProactiveIntelligenceService
@@ -158,6 +159,7 @@ class CompanyOS:
         )
         self.performance = PerformanceOperations(self.store.conn, new_id, self._require_person_access)
         self.forecasts = ForecastOperations(self.store.conn, new_id, self._require_scope_access)
+        self.revenue = RevenueOperations(self.store.conn, new_id, self._require_person_access, self.company)
         self.retention = RetentionOperations(self.store.conn, new_id, self._require_scope_access)
         self.intelligence = IntelligenceService(self)
         self.proactive_intelligence = ProactiveIntelligenceService(self)

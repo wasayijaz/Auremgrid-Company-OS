@@ -43,10 +43,15 @@ class ForecastOperations:
     def _client_renewal(self, org: str, now: datetime) -> list[dict[str, Any]]:
         results = []
         contracts = self.conn.execute(
-            "SELECT id, client_id, end_date, status FROM contracts WHERE organization_id=? AND status='active' AND end_date IS NOT NULL",
+            # REAL CompanyOS schema scopes contracts by workspace; it has no
+            # client_id column.  Keep renewal forecasts workspace-scoped and
+            # derive the client identity from the workspace boundary.
+            "SELECT id, workspace_id, end_date, status FROM contracts WHERE organization_id=? AND status='active' AND end_date IS NOT NULL",
             (org,)).fetchall()
         for c in contracts:
             end = datetime.fromisoformat(c["end_date"])
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
             days_left = (end - now).days
             if days_left > 90 or days_left < 0:
                 continue
@@ -82,7 +87,7 @@ class ForecastOperations:
     def _capacity(self, org: str, now: datetime) -> list[dict[str, Any]]:
         results = []
         snaps = self.conn.execute(
-            "SELECT AVG(available_hours) as avg_avail, AVG(utilized_hours) as avg_util, captured_at FROM capacity_snapshots WHERE organization_id=? AND captured_at > ? GROUP BY captured_at ORDER BY captured_at DESC LIMIT 4",
+            "SELECT AVG(available_hours) as avg_avail, AVG(estimated_assigned_hours + booked_hours) as avg_util, calculated_at FROM capacity_snapshots WHERE organization_id=? AND calculated_at > ? GROUP BY calculated_at ORDER BY calculated_at DESC LIMIT 4",
             (org, _months_ago(2))).fetchall()
         if not snaps:
             return results
@@ -99,7 +104,7 @@ class ForecastOperations:
     def _utilization(self, org: str, now: datetime) -> list[dict[str, Any]]:
         results = []
         snaps = self.conn.execute(
-            "SELECT AVG(utilization_pct) as avg_util, captured_at FROM capacity_snapshots WHERE organization_id=? AND captured_at > ? GROUP BY captured_at ORDER BY captured_at DESC LIMIT 6",
+            "SELECT AVG((available_hours - remaining_hours) / CASE WHEN available_hours=0 THEN 1 ELSE available_hours END) as avg_util, calculated_at FROM capacity_snapshots WHERE organization_id=? AND calculated_at > ? GROUP BY calculated_at ORDER BY calculated_at DESC LIMIT 6",
             (org, _months_ago(3))).fetchall()
         if len(snaps) < 2:
             return results

@@ -2714,6 +2714,65 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        35,
+        "agency_revenue_operations",
+        """
+        CREATE TABLE IF NOT EXISTS sales_prospects (
+            id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+            name TEXT NOT NULL, company_name TEXT NOT NULL, contact_email TEXT,
+            status TEXT NOT NULL CHECK(status IN ('new','qualified','proposal','won','lost','converted')),
+            owner_person_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id), FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(owner_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sales_prospects_scope ON sales_prospects(organization_id,workspace_id,status,updated_at);
+        CREATE TABLE IF NOT EXISTS sales_proposals (
+            id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, workspace_id TEXT NOT NULL, prospect_id TEXT NOT NULL,
+            title TEXT NOT NULL, amount REAL NOT NULL, currency TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft','sent','won','lost')),
+            valid_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            FOREIGN KEY(prospect_id) REFERENCES sales_prospects(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sales_proposals_scope ON sales_proposals(organization_id,workspace_id,status,updated_at);
+        CREATE TABLE IF NOT EXISTS sales_events (
+            id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+            entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, event_type TEXT NOT NULL,
+            actor_person_id TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id), FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(actor_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sales_events_entity ON sales_events(organization_id,workspace_id,entity_type,entity_id,created_at,id);
+        CREATE TRIGGER IF NOT EXISTS sales_events_no_update BEFORE UPDATE ON sales_events BEGIN SELECT RAISE(ABORT,'sales events are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS sales_events_no_delete BEFORE DELETE ON sales_events BEGIN SELECT RAISE(ABORT,'sales events are append-only'); END;
+        CREATE TABLE IF NOT EXISTS sales_conversions (
+            id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, workspace_id TEXT NOT NULL, prospect_id TEXT NOT NULL,
+            proposal_id TEXT NOT NULL, client_workspace_id TEXT NOT NULL, contract_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL, created_at TEXT NOT NULL,
+            UNIQUE(organization_id,idempotency_key), UNIQUE(proposal_id),
+            FOREIGN KEY(prospect_id) REFERENCES sales_prospects(id), FOREIGN KEY(proposal_id) REFERENCES sales_proposals(id),
+            FOREIGN KEY(client_workspace_id) REFERENCES workspaces(id), FOREIGN KEY(contract_id) REFERENCES contracts(id)
+        );
+        CREATE TABLE IF NOT EXISTS campaign_budget_signals (
+            id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, workspace_id TEXT NOT NULL, campaign_id TEXT NOT NULL,
+            rule TEXT NOT NULL, threshold REAL NOT NULL, actual REAL, status TEXT NOT NULL CHECK(status IN ('open','resolved')),
+            evidence_json TEXT NOT NULL, created_at TEXT NOT NULL, resolved_at TEXT,
+            UNIQUE(campaign_id,rule,status)
+        );
+        CREATE TABLE IF NOT EXISTS report_pack_requests (
+            id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, workspace_id TEXT NOT NULL, report_run_id TEXT,
+            requested_by_person_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','delivered_internal')),
+            note TEXT NOT NULL, created_at TEXT NOT NULL, decided_at TEXT, decided_by_person_id TEXT,
+            FOREIGN KEY(report_run_id) REFERENCES report_runs(id)
+        );
+        CREATE TABLE IF NOT EXISTS report_pack_events (
+            id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, workspace_id TEXT NOT NULL, request_id TEXT NOT NULL,
+            action TEXT NOT NULL, actor_person_id TEXT NOT NULL, note TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(request_id) REFERENCES report_pack_requests(id), FOREIGN KEY(actor_person_id) REFERENCES people(id)
+        );
+        CREATE TRIGGER IF NOT EXISTS report_pack_events_no_update BEFORE UPDATE ON report_pack_events BEGIN SELECT RAISE(ABORT,'report pack events are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS report_pack_events_no_delete BEFORE DELETE ON report_pack_events BEGIN SELECT RAISE(ABORT,'report pack events are append-only'); END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

@@ -25,9 +25,11 @@ JOB_TYPES = {"report.generate", "projection.rebuild", "agent.run", "automation.e
 
 def _route_capability(path: str, method: str) -> str:
     if method == "GET":
+        if path.startswith("/sales/") or path in {"/campaigns/budget-pacing","/client-hq/retainer","/report-packs"}: return "workspace_read"
         if path.startswith("/jobs"): return "job_manage"
         if path == "/client-portal/intake/queue": return "people_manage"
         if path == "/auth/me": return "workspace_read"
+        if path == "/reports": return "workspace_read"
         if path == "/finance": return "finance_read"
         if path == "/capacity": return "workspace_read"
         if path == "/agents" or path.startswith("/agents/runs"): return "agent_run"
@@ -40,6 +42,8 @@ def _route_capability(path: str, method: str) -> str:
         if path == "/reviews/annotations": return "workspace_read"
         return "workspace_read"
     if path in {"/approvals/decide", "/workflows/approvals/decide"}: return "approval_decide"
+    if path.startswith("/sales/") or path.startswith("/report-packs"):
+        return "workspace_write"
     if path.startswith("/jobs"): return "job_manage"
     if path in {"/auth/sessions/rotate", "/auth/revoke"}: return "workspace_read"
     if path in {"/dashboard/intelligence/refresh"}: return "brain_read"
@@ -52,6 +56,7 @@ def _route_capability(path: str, method: str) -> str:
     if path in {"/integrations/verify","/integrations/sync"}: return "integration_sync"
     if path == "/integrations": return "integration_configure"
     if path.startswith("/agents/runs") or path == "/agents/tasks": return "agent_run"
+    if path == "/reports/generate": return "workspace_write"
     if path.startswith("/agents"): return "agent_configure"
     if path.startswith("/automations/execute") or path == "/automations/trigger": return "automation_execute"
     if path.startswith("/automations"): return "automation_manage"
@@ -312,6 +317,7 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                     what_if=_what_if_params(params),
                     context_type=_optional_str(params.get("context_type")),
                     context_id=_optional_str(params.get("context_id")),
+                    capabilities=identity.capabilities,
                 )); return
             if parsed.path in {"/dashboard/intelligence/portfolio", "/dashboard/intelligence/executive"}:
                 assert identity is not None
@@ -364,6 +370,16 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 elif parsed.path == "/creative": result=self.os.agency_ops.search_creative(organization_id,workspace_id,person_id,params.get("query",""),params.get("approval_state"),params.get("campaign_id"))
                 else: result=[dict(r) for r in self.os.store.conn.execute("SELECT * FROM content_items WHERE workspace_id=? ORDER BY updated_at DESC",(workspace_id,)).fetchall()]
                 self._json(200,{parsed.path[1:]:result}); return
+            if parsed.path == "/sales/prospects":
+                self._json(200, {"prospects": self.os.revenue.list_prospects(_need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id"), params.get("status"))}); return
+            if parsed.path == "/sales/proposals":
+                self._json(200, {"proposals": self.os.revenue.list_proposals(_need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id"), params.get("status"))}); return
+            if parsed.path == "/campaigns/budget-pacing":
+                self._json(200, {"signals": self.os.revenue.campaign_budget_pacing(_need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id"))}); return
+            if parsed.path == "/client-hq/retainer":
+                self._json(200, self.os.revenue.retainer_read_model(_need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id"))); return
+            if parsed.path == "/report-packs":
+                self._json(200, {"requests": self.os.revenue.list_report_packs(_need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id"))}); return
             if parsed.path == "/finance":
                 self._json(200,self.os.agency_ops.finance_status(_need(params,"organization_id"),_need(params,"person_id"),params.get("workspace_id"))); return
             if parsed.path == "/health/explain":
@@ -416,9 +432,49 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                     _need(params, "organization_id"), _need(params, "workspace_id"), _need(params, "person_id")
                 )); return
             if parsed.path in {"/approvals","/automations","/reports"}:
+                assert identity is not None
                 organization_id,person_id=_need(params,"organization_id"),_need(params,"person_id")
+                if identity.organization_id != organization_id or identity.person_id != person_id:
+                    raise AuthorizationError("identity scope mismatch")
                 if self.os.company.org_membership(organization_id,person_id) is None: raise AuthorizationError("organization membership required")
                 table={"/approvals":"approval_requests","/automations":"automations","/reports":"report_runs"}[parsed.path]
+                if parsed.path == "/reports":
+                    workspace_id = _optional_str(params.get("workspace_id"))
+                    visible = self.os.agent_ops.visible_workspace_ids(organization_id, person_id)
+                    if workspace_id and workspace_id not in visible:
+                        raise AuthorizationError("report workspace is not visible to caller")
+                    values: list[Any] = [organization_id]
+                    if workspace_id:
+                        where = "organization_id=? AND workspace_id=?"
+                        values.append(workspace_id)
+                    elif visible:
+                        marks = ",".join("?" for _ in visible)
+                        where = f"organization_id=? AND (workspace_id IS NULL OR workspace_id IN ({marks}))"
+                        values.extend(sorted(visible))
+                    else:
+                        where = "organization_id=? AND workspace_id IS NULL"
+                    rows=self.os.store.conn.execute(f"SELECT * FROM report_runs WHERE {where} ORDER BY rowid DESC",values).fetchall()
+                    reports = []
+                    for row in rows:
+                        item = dict(row)
+                        item["allowed_actions"] = [{
+                            "id": "view-report",
+                            "action": "view_report",
+                            "label": "View report",
+                            "kind": "report.view",
+                            "route": "",
+                            "method": "GET",
+                            "payload": {"report_id": item["id"]},
+                            "required_fields": [],
+                            "safe": True,
+                            "one_way": False,
+                            "requires_approval": False,
+                            "status": "available",
+                        }]
+                        reports.append(item)
+                    self._json(200,{"reports":reports,"allowed_actions":self.os.agent_ops.report_action_descriptors(
+                        organization_id, person_id, workspace_id, identity.capabilities
+                    )});return
                 rows=self.os.store.conn.execute(f"SELECT * FROM {table} WHERE organization_id=? ORDER BY rowid DESC",(organization_id,)).fetchall()
                 self._json(200,{parsed.path[1:]:[dict(r) for r in rows]});return
             if parsed.path == "/integrations":
@@ -759,6 +815,18 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/campaigns":
                 item=self.os.agency_ops.create_campaign(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"name"),_need(payload,"objective"),_need(payload,"platform"),_optional_str(payload.get("project_id")),float(payload["budget"]) if payload.get("budget") is not None else None,str(payload.get("currency","USD")),_optional_str(payload.get("start_date")),_optional_str(payload.get("end_date")))
                 self._json(201,item); return
+            if parsed.path == "/sales/prospects":
+                self._json(201, self.os.revenue.create_prospect(_need(payload,"organization_id"), _need(payload,"workspace_id"), _need(payload,"person_id"), _need(payload,"name"), _need(payload,"company_name"), _optional_str(payload.get("contact_email")))); return
+            if parsed.path == "/sales/proposals":
+                self._json(201, self.os.revenue.create_proposal(_need(payload,"organization_id"), _need(payload,"workspace_id"), _need(payload,"person_id"), _need(payload,"prospect_id"), _need(payload,"title"), float(_need(payload,"amount")), str(payload.get("currency","USD")), _optional_str(payload.get("valid_until")))); return
+            if parsed.path == "/sales/convert":
+                self._json(201, self.os.revenue.convert_to_client(_need(payload,"organization_id"), _need(payload,"workspace_id"), _need(payload,"person_id"), _need(payload,"proposal_id"), str(payload.get("client_name","")), str(payload.get("contract_kind","retainer")), str(payload.get("billing_model","monthly")), _optional_str(payload.get("start_date")), _optional_str(payload.get("end_date")), _need(payload,"idempotency_key"))); return
+            if parsed.path == "/report-packs":
+                self._json(201, self.os.revenue.request_report_pack(_need(payload,"organization_id"), _need(payload,"workspace_id"), _need(payload,"person_id"), _need(payload,"note"), _optional_str(payload.get("report_run_id")))); return
+            if parsed.path == "/report-packs/approve":
+                self._json(200, self.os.revenue.decide_report_pack(_need(payload,"organization_id"), _need(payload,"workspace_id"), _need(payload,"person_id"), _need(payload,"request_id"), _bool(payload.get("approved"),"approved"), str(payload.get("note","")))); return
+            if parsed.path == "/report-packs/deliver-internal":
+                self._json(200, self.os.revenue.deliver_report_pack_internal(_need(payload,"organization_id"), _need(payload,"workspace_id"), _need(payload,"person_id"), _need(payload,"request_id"), str(payload.get("note","")))); return
             if parsed.path == "/campaigns/metrics":
                 item=self.os.agency_ops.record_campaign_metrics(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"campaign_id"),_need(payload,"source"),*[_optional_float(payload.get(k)) for k in ("spend","revenue","leads","impressions","clicks")]); self._json(201,item); return
             if parsed.path == "/campaigns/transition":
