@@ -70,6 +70,18 @@ class AgencyOperationsTests(unittest.TestCase):
         status=self.os.agency_ops.finance_status(self.org.id,self.owner.id,self.ws.id)
         self.assertEqual(status,{"status":"not_connected","mrr":None,"outstanding_revenue":None,"client_margin":None})
 
+    def test_revenue_and_invoice_reject_unsourced_or_invalid_values(self) -> None:
+        self.os.agency_ops.connect_finance(self.org.id,self.owner.id,"test-ledger")
+        for amount in (-1,float("nan"),float("inf")):
+            with self.subTest(kind="revenue",amount=amount), self.assertRaises(ValidationError):
+                self.os.agency_ops.record_revenue(self.org.id,self.ws.id,self.owner.id,amount,"2026-08-01","ledger")
+            with self.subTest(kind="invoice",amount=amount), self.assertRaises(ValidationError):
+                self.os.agency_ops.record_invoice(self.org.id,self.ws.id,self.owner.id,amount,"2026-08-01","2026-08-15","ledger")
+        with self.assertRaises(ValidationError):
+            self.os.agency_ops.record_revenue(self.org.id,self.ws.id,self.owner.id,100,"2026-08-01","   ")
+        with self.assertRaises(ValidationError):
+            self.os.agency_ops.record_invoice(self.org.id,self.ws.id,self.owner.id,100,"2026-08-15","2026-08-01","ledger")
+
     def test_capacity_reports_overload(self) -> None:
         self.os.agency_ops.set_availability(self.org.id,self.member.id,"2026-08-17",40)
         capacity=self.os.agency_ops.calculate_capacity(self.org.id,self.owner.id,self.member.id,"2026-08-17",48,44)
