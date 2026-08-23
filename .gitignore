@@ -18,3 +18,4 @@ build/
 *.egg-info/
 .env
 .DS_Store
+debug.log
