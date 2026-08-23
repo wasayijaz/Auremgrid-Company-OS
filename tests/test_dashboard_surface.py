@@ -199,7 +199,7 @@ class DashboardSurfaceTests(unittest.TestCase):
         for marker in ("id=\"finance-body\"", "renderFinanceSurface", "/finance?", "recognized_revenue", "outstanding_revenue"):
             self.assertIn(marker, self.html)
         self.assertNotIn('<div class="card"><span class="state off">Not connected</span>', self.html)
-        for marker in ("data-finance-connect", "data-finance-revenue", "data-finance-invoice", "/finance/connect", "/finance/revenue", "/finance/invoices"):
+        for marker in ("data-finance-connect", "FINANCE_ACTIONS407", "Record revenue", "Record invoice", "Record cost", "Set budget", "Record software cost", "Record AI usage", "Calculate client economics", "/finance/connect", "/finance/revenue", "/finance/invoices", "/finance/costs", "/finance/budgets", "/finance/software-costs", "/finance/ai-usage-costs", "/finance/economics/calculate"):
             self.assertIn(marker, self.html)
 
     def test_scope_surface_exposes_contract_allowance_usage_and_history_actions(self) -> None:
@@ -208,6 +208,21 @@ class DashboardSurfaceTests(unittest.TestCase):
         http = self.root.joinpath("http.py").read_text(encoding="utf-8")
         for path in ("/contracts", "/scope/allowances", "/scope/usage", "/finance/connect", "/finance/revenue", "/finance/invoices"):
             self.assertIn(path, http)
+
+    def test_dashboard_mutations_guard_double_submit_and_recover_on_failure(self) -> None:
+        for marker in (
+            "scopePost=async(button,path,payload)",
+            "catch(error){button.disabled=false;toast(`Scope unavailable",
+            "if(submit.disabled)return;submit.disabled=true",
+            "catch(error){submit.disabled=false;toast(`Project unavailable",
+            "if(add.disabled)return;add.disabled=true",
+            "catch(error){add.disabled=false;toast(`Deliverable unavailable",
+            "catch(error){submit.disabled=false;toast(`Finance unavailable",
+            "catch(error){button.disabled=false;toast(`Finance unavailable",
+            "if(confirm.disabled)return;confirm.disabled=true",
+            "catch(error){confirm.disabled=false;toast(error.message)",
+        ):
+            self.assertIn(marker, self.html)
 
     def test_marketing_surfaces_have_permission_aware_backend_create_flows(self) -> None:
         for marker in ("marketingFlows", "canOperateWorkspace", "renderMarketingModule", "openMarketingCreate"):

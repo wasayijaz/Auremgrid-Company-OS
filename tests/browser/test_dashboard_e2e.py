@@ -229,6 +229,24 @@ def test_disconnected_finance_and_integrations(owner_page: Page, dashboard_app: 
     wait_for_command_data(page)
     page.locator(".nav button[data-name='Finance']").click()
     expect(page.locator("#finance-body")).to_contain_text(re.compile("Not connected|No financial source is connected", re.I))
+    page.once("dialog", lambda dialog: dialog.accept("browser-ledger"))
+    with page.expect_response(lambda response: response.url.endswith("/finance/connect") and response.request.method == "POST"):
+        page.get_by_role("button", name="Connect source").click()
+    for label in ("Record revenue", "Record invoice", "Record cost", "Set budget", "Record software cost", "Record AI usage", "Calculate client economics"):
+        expect(page.get_by_role("button", name=label, exact=True)).to_be_visible()
+    page.get_by_role("button", name="Record revenue", exact=True).click()
+    finance_dialog = page.locator("#finance-action-dialog")
+    finance_dialog.locator("input[name=amount]").fill("42")
+    finance_dialog.locator("input[name=recognized_at]").fill("2026-08-01")
+    finance_dialog.locator("input[name=source]").fill("browser-failure-proof")
+    finance_dialog.locator("input[name=kind]").fill("service")
+    page.route("**/finance/revenue", lambda route: route.fulfill(status=503, content_type="application/json", body='{"message":"forced failure"}'))
+    save = finance_dialog.get_by_role("button", name="Save finance record")
+    with page.expect_response(lambda response: response.url.endswith("/finance/revenue") and response.request.method == "POST"):
+        save.click()
+    expect(page.locator("#toast")).to_contain_text("Finance unavailable")
+    expect(save).to_be_enabled()
+    finance_dialog.get_by_role("button", name="Cancel").click()
     page.locator(".nav button[data-name='Integrations']").click()
     expect(page.locator("#system-modules")).to_contain_text(re.compile("not connected|credentials", re.I))
 
