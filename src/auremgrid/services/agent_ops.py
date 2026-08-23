@@ -186,8 +186,8 @@ class AgentOperations:
             raise AuthorizationError("agent cannot access workspace")
         if not title.strip() or not instructions.strip():
             raise ValidationError("agent task title and instructions are required")
-        if priority < 0:
-            raise ValidationError("agent task priority cannot be negative")
+        if priority < 0 or priority > 100:
+            raise ValidationError("agent task priority must be between 0 and 100")
 
         tags = self.validate_capability_tags(intent_tags or ("execute",))
         recommended = self.resolve_level(tags)

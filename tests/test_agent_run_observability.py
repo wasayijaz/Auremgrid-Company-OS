@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from auremgrid.domain.errors import AuthorizationError, NotFoundError
+from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
 from auremgrid.services.brain import CompanyOS
 
 
@@ -111,6 +111,13 @@ class AgentRunObservabilityTests(unittest.TestCase):
         self.assertIsNone(self.os.agent_ops.claim_next_task(self.org.id, self.viewer.id, self.agent["id"]))
         with self.assertRaises(AuthorizationError):
             self.os.agent_ops.start_run(self.org.id, self.viewer.id, self.agent["id"], task["id"])
+
+    def test_queue_priority_is_bounded_to_dashboard_contract(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "between 0 and 100"):
+            self.os.agent_ops.enqueue_task(
+                self.org.id, self.owner.id, self.agent["id"], "Invalid priority", "Do not queue", self.primary.id,
+                priority=101,
+            )
 
     def test_dashboard_agent_surfaces_are_workspace_isolated(self) -> None:
         primary_task = self.os.agent_ops.enqueue_task(
