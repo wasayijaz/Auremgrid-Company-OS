@@ -15,6 +15,10 @@ The Google execution path expects the referenced environment value to be
 a JSON object containing exactly `client_id`, `client_secret`, and
 `refresh_token`. It refreshes an access token in memory, requires provider-
 reported granted scopes, and persists none of those four credential values.
+The packaged Google OAuth support is deliberately generic and fail-closed:
+operators must provide their own OAuth client registration, allowlisted
+redirect, deployment key, and token-exchange transport. No Google client
+credentials are bundled in the repository.
 
 ## Connection lifecycle
 
@@ -93,8 +97,14 @@ cursor.
 ## Current deployment boundary
 
 Credential binding is currently manual and environment-backed. Auremgrid does
-not yet claim an in-product OAuth installation or
-callback flow. That requires a write-capable external secret backend, OAuth
-state and PKCE validation, refresh-token rotation, and provider-account
-re-verification. CI uses injected transports and does not claim that a live
-customer account was connected.
+not yet claim bundled provider app registrations or managed installation for a
+customer account. Generic PKCE state, callback, local-vault storage, health,
+and revoke routes exist, but the default token-exchange transport raises rather
+than pretending to connect. Public webhook intake and refresh-token rotation
+are not part of the packaged demo. CI uses injected transports and does not
+claim that a live customer account was connected.
+
+Read-only Stripe Billing/accounting and Meta Ads adapters normalize injected
+provider pages into immutable provider import records with cursor/quarantine
+state. They are not live registered connector entries, do not appear as
+`live_enabled` catalog connectors, and never send or mutate provider data.

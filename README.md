@@ -18,7 +18,7 @@ Agency work is usually split across conversations, task boards, documents, desig
 - Durable jobs and connector sync that can restart without silently advancing a cursor or claiming a provider is healthy when it is not.
 - A modular local dashboard, REST API, MCP-style tools, CLI, and deterministic Intelligence service over the same policy and canonical ledger.
 
-This is an operating control plane, not a replacement for every specialist tool. Slack, ClickUp, Google Drive, Gmail, explicitly mapped Figma files, and a single mapped Fireflies account have credential-backed read synchronization with provider verification, durable backfill, fenced workers, and lifecycle-aware evidence. Figma polling is bounded to verified exact-file mappings; Fireflies polling is bounded to one verified account mapping. Intelligence outputs are read models: they cite visible evidence, explain uncertainty, and propose reversible next steps, but they do not silently execute work, approvals, connector writes, or external sends.
+This is an operating control plane, not a replacement for every specialist tool. Slack, ClickUp, Google Drive, Gmail, explicitly mapped Figma files, and a single mapped Fireflies account have credential-backed read synchronization with provider verification, durable backfill, fenced workers, and lifecycle-aware evidence. Google OAuth is a generic fail-closed PKCE/vault lifecycle only: the repository ships no Google client credentials and performs no real token exchange unless an operator injects the provider transport and secrets. Figma polling is bounded to verified exact-file mappings; Fireflies polling is bounded to one verified account mapping. Read-only Stripe Billing/accounting and Meta Ads import adapters exist behind injected transports for deterministic imports, but they are not live registered connectors and do not send or mutate provider data. Intelligence outputs are read models: they cite visible evidence, explain uncertainty, and propose reversible next steps, but they do not silently execute work, approvals, connector writes, external sends, or report delivery.
 
 ## Who it serves—and who it does not
 
@@ -32,7 +32,7 @@ This is an operating control plane, not a replacement for every specialist tool.
 ### Not the right first choice
 
 - A team seeking a hosted CRM, a full accounting system, or a general-purpose project-management replacement.
-- A company that requires managed multi-region availability, built-in OAuth installation, or guaranteed unattended production operations today.
+- A company that requires managed multi-region availability, bundled production OAuth client registrations, email/report sends, or guaranteed unattended production operations today.
 - A workload that needs high-volume event streaming or binary asset storage; Auremgrid records metadata, evidence, and links while asset backup remains a separate policy.
 
 ## Outcomes and use cases
@@ -85,10 +85,10 @@ workflow in this release.
 | Company Brain, search, citations, proposals, conflicts, Intelligence | Yes with deterministic local projections and human-gated proposals | Optional local model/Graphiti projections require already-installed models and explicit configuration | Autonomous writes or unsupervised promotion |
 | Sales pipeline | Yes for local prospects, proposals, append-only sales events, and idempotent proposal-to-client conversion | Proposal amounts and contract terms are operator-entered | CRM/provider sync, outbound proposal sending |
 | Campaigns, creative, content | Yes for lifecycle, review, and immutable versions | Metrics and campaign pacing require manually imported or connector-sourced snapshots; pacing is `insufficient_data` without budget and spend | Ads-platform sync and outbound content publishing |
-| Retainers and reports | Yes for retainer read-model calculations and internal report-pack request/approval/delivery history | Revenue, costs, scope usage, and report runs must already be recorded; report packs are internal delivery only | Client-facing report delivery or external sends |
+| Retainers and reports | Yes for retainer read-model calculations, internal report-pack approvals, and approved client-portal report versions | Revenue, costs, scope usage, and report runs must already be recorded; client report publication is portal-only and approval-gated | Email sends, ad/content publishing, or external report delivery |
 | Finance | Local ledger and authenticated controls are implemented | An organization admin must connect a finance state first; every revenue, invoice, cost, budget, software-cost, and AI-usage-cost row requires a source. Client economics/profit/margin are derived only from those rows | Accounting-provider sync and fabricated/default metrics |
 | Forecasts and capacity | Deterministic point-in-time forecasts from recorded contracts, revenue, and capacity snapshots | Historical data and correctly scoped workspace/contract dates are required | Guaranteed predictive accuracy or external planning-system sync |
-| Integrations and jobs | Local mappings, verification state, durable jobs, leases, retries, fencing, redaction, and recovery | Credential references, provider verification, mapped streams, and worker execution are manual; supported read sync is Slack, ClickUp, Drive, Gmail, exact-file Figma, and one Fireflies account | OAuth installation/callbacks, webhooks, multi-account installs, accounting/ads sync |
+| Integrations and jobs | Local mappings, verification state, generic fail-closed OAuth lifecycle records, durable jobs, leases, retries, fencing, redaction, and recovery | Credential references, provider verification, mapped streams, and worker execution are manual; supported read sync is Slack, ClickUp, Drive, Gmail, exact-file Figma, and one Fireflies account. Stripe Billing/accounting and Meta Ads have injected read-only import adapters, not live connector registrations | Bundled OAuth client credentials, public webhook ingestion routes, external sends, Google Ads/accounting live sync |
 | Deployment and operations | Local evaluation and controlled single-host SQLite operation | Operators provide durable storage, backups, restore rehearsal, secret manager, private network, and reverse proxy/TLS for non-local access | Packaged production deployment, managed observability backend, multi-region service |
 
 ### Finance controls (exact boundary)
@@ -99,8 +99,11 @@ organization owner/admin sets the finance connection state; until then
 fail. After connection, a writable workspace member (or an organization
 admin for organization-level rows) can record revenue, invoices, costs,
 budgets, software costs, and AI usage costs, but each row must include a
-non-empty source and valid dates/amounts. There is no accounting-provider or
-ads-provider import path. `POST /finance/economics/calculate` derives client
+non-empty source and valid dates/amounts. The read-only Stripe Billing/accounting
+and Meta Ads adapters normalize injected provider pages into immutable
+`provider_import_records` with cursor/quarantine metadata; they are testable
+import adapters, not bundled live connector registrations, and they do not
+write to Stripe, Meta, accounting, or ad platforms. `POST /finance/economics/calculate` derives client
 revenue, labor, software, AI, and other cost, gross contribution/profit, and
 margin for the requested period; it never estimates missing values.
 
@@ -112,8 +115,12 @@ the configured campaign budget with the latest sourced spend and reports
 `insufficient_data` when either is absent. The retainer read model derives
 recognized revenue, recorded costs, profit, margin, scope usage/utilization,
 and a bounded renewal signal from existing contracts and usage rows. Report
-packs have a request → approve/reject → `delivered_internal` lifecycle with an
-append-only event history; they do not publish or deliver to clients.
+packs have a request -> approve/reject -> `delivered_internal` lifecycle with an
+append-only event history. A completed report run can also be published to the
+client portal only after an approved `report.portal_publish` human approval;
+portal versions are immutable, supersede prior report-type versions, and record
+view/download/revoke events. There is still no email send, provider send, or
+outbound report dispatch.
 
 ## How the system hangs together
 
@@ -171,7 +178,7 @@ The dashboard is a zero-build local application served by the Python HTTP proces
 
 The interface specifies Gellix as its UI family and resolves it from the local machine so the repository does not redistribute a proprietary font. Install a licensed local Gellix family for exact typography; the CSS retains a generic sans-serif safety fallback when Gellix is unavailable.
 
-The dashboard currently includes Command, Clients, Client HQ, Client Portal, Work board/list, Projects and deliverables, Review Center, Campaigns, Content, Creative, Brain, Meetings, People/Capacity, Finance, Agents, Automations, Reports, Integrations, and Settings surfaces. Those screens call authenticated backend endpoints and preserve honest empty, disconnected, degraded, and permission-denied states. Visible actions either invoke a canonical authenticated route or are disabled with the backend-reported reason; the UI does not imply unsupported mutations. Unknown finance, campaign, or connector values remain unknown until sourced. Client HQ exposes explainable health, contract/scope consumption with period history, and auditable risk/opportunity lifecycles. Client Portal separates client requests and deliverable decisions from staff triage. Work capture records project, owner, priority, estimate, tags, brief, approved context, deadline, and financial value; transitions use server-granted legal transitions, optimistic versions, scoped idempotency, history, and permission checks. Campaign, content, and creative inspectors expose their legal lifecycle actions, immutable creative versions, review history, and sourced performance; outbound publishing remains explicitly disconnected. Finance can be connected by an organization administrator and records sourced revenue and invoices without inventing values. Integration onboarding stores only server-side environment references, never raw credentials. Agent task, claim, run, and detail views are fenced to the caller's visible workspaces and backed by scoped tasks, tool calls, traces, outputs, failures, and costs.
+The dashboard shell includes Command, Clients, Client HQ, Client Portal, Work board/list, Projects and deliverables, Review Center, Campaigns, Content, Creative, Brain, Meetings, People/Capacity, Finance, Agents, Automations, Reports, Integrations, and Settings surfaces. Those screens use authenticated backend endpoints and are designed to preserve honest empty, disconnected, degraded, and permission-denied states. Visible actions either invoke a canonical authenticated route or are disabled with the backend-reported reason; the UI does not imply unsupported mutations. Unknown finance, campaign, or connector values remain unknown until sourced. Client HQ read models cover explainable health, contract/scope consumption with period history, and auditable risk/opportunity lifecycles. Client Portal separates client requests and deliverable decisions from staff triage. Work capture records project, owner, priority, estimate, tags, brief, approved context, deadline, and financial value; transitions use server-granted legal transitions, optimistic versions, scoped idempotency, history, and permission checks. Campaign, content, and creative inspectors expose their legal lifecycle actions, immutable creative versions, review history, and sourced performance; outbound publishing remains explicitly disconnected. Finance can be connected by an organization administrator and records sourced revenue and invoices without inventing values. Integration onboarding stores only server-side environment references, never raw credentials. Agent task, claim, run, and detail views are fenced to the caller's visible workspaces and backed by scoped tasks, tool calls, traces, outputs, failures, and costs.
 
 The Intelligence rail calls `GET /dashboard/intelligence`; the Command overview also calls `GET /dashboard/intelligence/executive`. The engine composes permitted evidence and canonical operating records into findings with situation, changes, hypotheses, supporting/opposing evidence, scenarios, impact, recommendation, confidence, uncertainty, historical analogues, and decision-to-workflow-outcome-learning links where available. Expanded scenarios retain explicit new-client, staffing, leave, client economics, and keep/drop inputs without inventing missing values. Portfolio reads add ACL-scoped cross-workspace analogues and the executive brief ranks a sourced top-three narrative.
 
@@ -257,10 +264,12 @@ flowchart LR
     Live --> Google[Verified Google<br/>Drive + Gmail sync]
     Google --> Figma[Bounded Figma<br/>exact-file polling]
     Figma --> Fireflies[Bounded Fireflies<br/>single-account polling]
-    Live -. roadmap .-> Planned[Planned<br/>OAuth + webhooks + more providers]
+    Live -. roadmap .-> Planned[Planned<br/>managed OAuth apps + webhooks + more providers]
 ```
 
-The last line is a roadmap, not a current capability claim.
+The last line is a roadmap, not a current capability claim. The current OAuth
+surface is generic and fail-closed; it does not bundle provider app
+registrations, token-exchange transports, or customer account installation.
 
 ## Requirements
 
@@ -312,6 +321,21 @@ token. The browser keeps it only in that browser profile. Use **Sign out** befor
 leaving a shared device. If it expires or is revoked, an administrator issues a
 new session; the old plaintext value is never recoverable from the database.
 
+For first-run data, use the CSV preview-and-commit path rather than local
+folder ingestion. Print templates, review a dry run, then explicitly commit the
+approved batch:
+
+```text
+python scripts/auremgrid.py import-templates --db "C:\data\agency.sqlite"
+type clients.csv | python scripts/auremgrid.py import-preview --db "C:\data\agency.sqlite" --organization org_northwind_studio --person person_nora --type client_workspaces --idempotency-key clients-preview-001
+type campaigns.csv | python scripts/auremgrid.py import-preview --db "C:\data\agency.sqlite" --organization org_northwind_studio --workspace ws_northwind_studio --person person_nora --type campaigns --idempotency-key campaigns-preview-001
+python scripts/auremgrid.py import-commit --db "C:\data\agency.sqlite" --organization org_northwind_studio --person person_nora --batch import_batch_id --idempotency-key campaigns-commit-001
+```
+
+Previews write durable batch, row, error, and receipt records but do not create
+canonical business records. Commit retries with the same idempotency key replay
+the existing receipt; invalid rows remain quarantined.
+
 For a real team, create a separate person/principal/session for every operator.
 Never share the owner's token. Keep the service on localhost or a private
 network until it is behind HTTPS, a trusted reverse proxy, backups, a secret
@@ -328,29 +352,33 @@ proves recovery before any external connector is allowed to run.
    one-time local session. Start `serve`, connect the browser with that token,
    then issue one separate session per operator. Use `bootstrap-auth` only for
    an existing database whose identity and actor bindings are already present.
-2. **Client workspace.** Create each client workspace and associate it with the
+2. **CSV setup imports.** Use `import-templates`, `import-preview`, and
+   `import-commit` for client workspaces, campaigns, and campaign metrics.
+   Review quarantined rows before committing; uploads accept CSV content, not
+   local filesystem paths.
+3. **Client workspace.** Create each remaining client workspace and associate it with the
    organization. Keep the internal workspace separate from client workspaces;
    ACLs apply before lookup, counts, ranking, and aggregation.
-3. **Membership and roster.** Add people to the organization and only the
+4. **Membership and roster.** Add people to the organization and only the
    workspaces they may access. Record client account-roster roles and meeting
    responsibilities before assigning delivery work.
-4. **Project and workflow.** Create a project, work items, owners, dates, and
+5. **Project and workflow.** Create a project, work items, owners, dates, and
    approved context. Start a versioned workflow run, satisfy evidence gates,
    and use the review/approval routes for one-way decisions.
-5. **Finance and manual records.** An organization admin connects the finance
+6. **Finance and manual records.** An organization admin connects the finance
    state. Enter sourced revenue, invoices, costs, budgets, software costs, AI
    usage costs, and (when inputs are complete) calculate client economics. Add
    prospects/proposals, campaign budgets/metrics, retainer allowances, and
    internal report-pack requests only from real or clearly labelled fixture
    evidence; no values are inferred.
-6. **Backup rehearsal.** Run `backup` and `verify-backup`, inspect the manifest,
+7. **Backup rehearsal.** Run `backup` and `verify-backup`, inspect the manifest,
    and rehearse an offline restore to a separate destination. Keep the service
    in recovery mode until a human has reviewed pending jobs and outbound state.
-7. **Integrations.** Store only environment/secret references, verify one
+8. **Integrations.** Store only environment/secret references, verify one
    provider mapping at a time, and enqueue a read-sync job with a durable
    worker. Start with a private/local bind and confirm redaction, cursors,
    fencing, and degraded states before adding another connector.
-8. **Operate and review.** Schedule online backups and a separate worker,
+9. **Operate and review.** Schedule online backups and a separate worker,
    review report-pack approvals and finance sources, and keep unsupported sends,
    provider syncs, and hosted-login expectations outside the operating process.
 
@@ -360,7 +388,9 @@ proves recovery before any external connector is allowed to run.
 
 The image above is a deterministic SAMPLE DATA preview for GitHub. It is not
 embedded in the production dashboard and does not come from a customer
-database. To view the actual interactive dashboard locally, create a seeded
+database. It is generated only when the checked-in SVG already contains the
+expected `SAMPLE DATA`, `sample.invalid`, `Ledger healthy`, and `Not connected`
+markers. To view the actual interactive dashboard locally, create a seeded
 evaluation database, issue a local session token, start the server, then open
 `http://127.0.0.1:8791/`:
 
@@ -429,15 +459,15 @@ python -m pip install --no-build-isolation -e ".[browser]"
 
 The browser harness starts an isolated in-memory server on an available local port, seeds realistic agency workspaces, injects the session only into browser storage, and verifies authentication, workspace isolation, project and work creation, person assignment, board/list behavior, status transitions, review decisions, content lifecycle, Client Portal intake, integration onboarding, agent operations, inspectors, comments, Cosmo Intelligence, disconnected states, scroll regions, tile geometry, and responsive widths. It never places the token in a URL, screenshot, or log. Normal `unittest` discovery skips this optional gate cleanly when Playwright is not installed; the dedicated script fails with an actionable dependency message.
 
-Create a seeded evaluation database, issue its first local session, then start the server:
+For a blank agency database instead of the synthetic demo, create the agency,
+copy the one-time `session.token`, and then start the loopback server:
 
 ```text
-python scripts/auremgrid.py demo --db "C:\data\auremgrid-demo.sqlite"
-python scripts/auremgrid.py bootstrap-auth --db "C:\data\auremgrid-demo.sqlite" --organization org_demo --person person_demo_owner --email owner@demo.invalid --workspace ws_alpha --actor act_alpha_admin
-python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\auremgrid-demo.sqlite"
+python scripts/auremgrid.py setup-agency --db "C:\data\agency.sqlite" --agency "Northwind Studio" --admin-name "Nora Owner" --admin-email "nora@northwind.example"
+python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\agency.sqlite"
 ```
 
-The server prints `listening on http://127.0.0.1:8791`. Open `http://127.0.0.1:8791/` or `http://127.0.0.1:8791/dashboard`; both serve the same dashboard shell. The shell and `/dashboard-assets/*` load without a token, but all JSON data routes except `/health`, `/metrics`, and `/health/detailed` require bearer authentication.
+The server prints `listening on http://127.0.0.1:8791`. Open `http://127.0.0.1:8791/` or `http://127.0.0.1:8791/dashboard`; both serve the same dashboard shell. The default bind is loopback. If you put the dashboard on any non-local network, TLS termination, reverse proxy access policy, firewalling, backups, restore rehearsal, and secret handling are operator responsibilities; see `deploy/Caddyfile` and `deploy/docker-compose.yml` as templates, not managed production hosting. The shell and `/dashboard-assets/*` load without a token, but all JSON data routes except `/health`, `/metrics`, and `/health/detailed` require bearer authentication.
 
 The bootstrap command prints the session token once. The dashboard opens an in-page **Connect to Auremgrid** dialog where you enter that token; it then calls `/auth/me`, `/dashboard/data`, `/dashboard/settings`, `/dashboard/brain`, `/dashboard/intelligence`, and the other permitted module endpoints with `Authorization: Bearer <token>`. `setup-agency` is the recommended first-run path. Use `bootstrap-auth` only when the organization, person, membership, workspace, and actor binding targets already exist:
 
@@ -449,6 +479,7 @@ The token is not recoverable from the database. The dashboard stores the supplie
 
 ```text
 python scripts/auremgrid.py worker-once --db "C:\data\agency.sqlite" --organization <organization-id> --workspace <workspace-id> --worker-id local-worker-1
+python scripts/auremgrid.py worker-loop --db "C:\data\agency.sqlite" --organization <organization-id> --worker-id local-worker-loop
 ```
 
 Create and verify an online backup without copying a live WAL file:
@@ -564,6 +595,12 @@ intended for release evidence:
 python -m auremgrid.cli evaluate-intelligence
 ```
 
+The dashboard showcase asset has its own non-fabrication check:
+
+```text
+python scripts/dashboard_showcase_svg.py
+```
+
 It checks ACL-scoped citations, uncertainty, structured optional reasoning,
 approval descriptors, no unauthorized actions, and deterministic provider
 fallback. See [AutoGPT adoption decision](docs/autogpt-adoption.md) for the
@@ -573,17 +610,27 @@ The offline suite must not require Docker, provider credentials, a private vault
 
 ## Current limitations and roadmap
 
-- No in-product OAuth installation/callback flow, webhook ingestion, or refresh-token rotation; credential binding is manual and environment-backed.
-- Finance has no accounting-provider or advertising-provider sync. Revenue,
-  invoices, costs, budgets, software costs, and AI usage costs are connected-only
-  sourced records entered through authenticated controls; client economics,
-  profit, and margin are derived read models, not accounting truth.
+- Generic OAuth/PKCE lifecycle tables and routes exist, but they fail closed
+  without `AUREMGRID_DEPLOYMENT_KEY`, an allowlisted redirect, operator-owned
+  OAuth client credentials, and an injected token-exchange transport. The repo
+  does not bundle Google client credentials or provide a managed installation
+  callback. Public webhook ingestion and refresh-token rotation remain outside
+  the packaged demo.
+- Finance has no bundled live accounting-provider or advertising-provider sync.
+  Revenue, invoices, costs, budgets, software costs, and AI usage costs are
+  connected-only sourced records entered through authenticated controls.
+  Injected read-only Stripe Billing/accounting and Meta Ads import adapters can
+  normalize provider pages into immutable import records, but they are not live
+  connector registrations. Client economics, profit, and margin are derived
+  read models, not accounting truth.
 - Prospect/proposal conversion, campaign budget pacing, retainer read models,
   forecast generation, and report-pack approval history are local ledger
-  operations. Report packs stop at internal delivery; no client-facing report
-  send or outbound content publishing exists.
-- There is no CSV bulk-import wizard, hosted auth, client self-service login,
-  packaged production deployment, or managed observability backend. The
+  operations. Client report publication is portal-first and approval-gated;
+  no email send, client-facing external dispatch, or outbound content publishing
+  exists.
+- There is no hosted auth, client self-service login, packaged production
+  deployment, or managed observability backend. CSV setup imports are
+  preview-first and commit-gated, not a hosted self-service portal. The
   standard-library server and SQLite are intended for local/private or
   controlled single-host operation only.
 - Google Drive bootstraps from a captured changes token, walks mapped folders/shared drives through durable continuation tasks, reconciles parent chains and descendants after moves, and retires objects only after ancestry is resolved. Gmail captures a history baseline before label backfill and maintains label membership lifecycle. Objects that match mappings owned by different workspaces create an organization-level redacted quarantine, block cursor promotion, and write no workspace evidence.

@@ -120,6 +120,25 @@ class ExpandedApiTests(unittest.TestCase):
         self.assertIn(body["status"],{"no_snapshot","queued","running","failed","stale","ready"})
         self.assertIn("worker_command",body)
 
+    def test_provider_import_sync_without_transport_is_not_connected_over_http(self) -> None:
+        status,result=self.post("/provider-imports/sync",{"provider":"stripe_accounting","account_id":"acct","resource":"invoices","workspace_mappings":{"acct":"ws_alpha"}})
+        self.assertEqual(status,200)
+        self.assertEqual(result["status"],"not_connected")
+        status,body=self.get("/provider-imports/status")
+        self.assertEqual(status,200)
+        self.assertEqual(body["imports"][0]["status"],"not_connected")
+
+    def test_operator_pause_and_health_are_workspace_scoped_over_http(self) -> None:
+        status,alpha=self.post("/operator/pause",{"workspace_id":"ws_alpha","worker_id":"shared-worker"})
+        self.assertEqual(status,200)
+        self.assertTrue(alpha["paused"])
+        status,alpha_health=self.get("/operator/health?workspace_id=ws_alpha&worker_id=shared-worker")
+        self.assertEqual(status,200)
+        self.assertTrue(alpha_health["paused"])
+        status,beta_health=self.get("/operator/health?workspace_id=ws_beta&worker_id=shared-worker")
+        self.assertEqual(status,200)
+        self.assertFalse(beta_health["paused"])
+
     def test_expanded_mcp_names_share_permissioned_domains(self) -> None:
         router=McpToolRouter(self.os,self.identity); common={"organization_id":"org_demo","person_id":"person_demo_owner"}
         advertised={tool["name"] for tool in router.list_tools()}

@@ -2773,6 +2773,377 @@ MIGRATIONS = (
         CREATE TRIGGER IF NOT EXISTS report_pack_events_no_delete BEFORE DELETE ON report_pack_events BEGIN SELECT RAISE(ABORT,'report pack events are append-only'); END;
         """,
     ),
+    Migration(
+        36,
+        "onboarding_csv_imports",
+        """
+        CREATE TABLE IF NOT EXISTS onboarding_import_batches (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            person_id TEXT NOT NULL,
+            import_type TEXT NOT NULL CHECK(import_type IN ('client_workspaces','campaigns','campaign_metrics')),
+            idempotency_key TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            template_version TEXT NOT NULL,
+            total_rows INTEGER NOT NULL CHECK(total_rows >= 0),
+            valid_rows INTEGER NOT NULL CHECK(valid_rows >= 0),
+            invalid_rows INTEGER NOT NULL CHECK(invalid_rows >= 0),
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(person_id) REFERENCES people(id),
+            UNIQUE(organization_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_onboarding_batches_scope
+            ON onboarding_import_batches(organization_id, workspace_id, created_at);
+        CREATE TABLE IF NOT EXISTS onboarding_import_rows (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            row_number INTEGER NOT NULL CHECK(row_number > 0),
+            row_hash TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('preview_valid','quarantined')),
+            raw_json TEXT NOT NULL,
+            normalized_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(batch_id) REFERENCES onboarding_import_batches(id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            UNIQUE(batch_id, row_number)
+        );
+        CREATE INDEX IF NOT EXISTS idx_onboarding_rows_batch
+            ON onboarding_import_rows(batch_id, status, row_number);
+        CREATE TABLE IF NOT EXISTS onboarding_import_errors (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL,
+            row_id TEXT,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            row_number INTEGER NOT NULL CHECK(row_number > 0),
+            field TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(batch_id) REFERENCES onboarding_import_batches(id),
+            FOREIGN KEY(row_id) REFERENCES onboarding_import_rows(id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_onboarding_errors_batch
+            ON onboarding_import_errors(batch_id, row_number);
+        CREATE TABLE IF NOT EXISTS onboarding_import_receipts (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            person_id TEXT NOT NULL,
+            phase TEXT NOT NULL CHECK(phase IN ('preview','commit')),
+            status TEXT NOT NULL CHECK(status IN ('previewed','committed','committed_with_errors','failed','replayed')),
+            idempotency_key TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            summary_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(batch_id) REFERENCES onboarding_import_batches(id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(person_id) REFERENCES people(id),
+            UNIQUE(organization_id, phase, idempotency_key)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_onboarding_commit_once
+            ON onboarding_import_receipts(batch_id, phase)
+            WHERE phase='commit' AND status='committed';
+        CREATE INDEX IF NOT EXISTS idx_onboarding_receipts_scope
+            ON onboarding_import_receipts(organization_id, workspace_id, created_at);
+        CREATE TRIGGER IF NOT EXISTS onboarding_import_batches_no_update BEFORE UPDATE ON onboarding_import_batches BEGIN
+            SELECT RAISE(ABORT, 'onboarding import batches are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS onboarding_import_batches_no_delete BEFORE DELETE ON onboarding_import_batches BEGIN
+            SELECT RAISE(ABORT, 'onboarding import batches are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS onboarding_import_rows_no_update BEFORE UPDATE ON onboarding_import_rows BEGIN
+            SELECT RAISE(ABORT, 'onboarding import rows are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS onboarding_import_rows_no_delete BEFORE DELETE ON onboarding_import_rows BEGIN
+            SELECT RAISE(ABORT, 'onboarding import rows are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS onboarding_import_errors_no_update BEFORE UPDATE ON onboarding_import_errors BEGIN
+            SELECT RAISE(ABORT, 'onboarding import errors are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS onboarding_import_errors_no_delete BEFORE DELETE ON onboarding_import_errors BEGIN
+            SELECT RAISE(ABORT, 'onboarding import errors are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS onboarding_import_receipts_no_update BEFORE UPDATE ON onboarding_import_receipts BEGIN
+            SELECT RAISE(ABORT, 'onboarding import receipts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS onboarding_import_receipts_no_delete BEFORE DELETE ON onboarding_import_receipts BEGIN
+            SELECT RAISE(ABORT, 'onboarding import receipts are append-only');
+        END;
+        """,
+    ),
+    Migration(
+        37,
+        "brain_customization_controls",
+        """
+        CREATE TABLE IF NOT EXISTS brain_customization_versions (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            scope_type TEXT NOT NULL CHECK(scope_type IN ('organization','workspace')),
+            kind TEXT NOT NULL CHECK(kind IN ('instructions','policy','settings')),
+            version INTEGER NOT NULL CHECK(version > 0),
+            name TEXT NOT NULL,
+            body TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(created_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_customization_versions_scope
+            ON brain_customization_versions(organization_id, workspace_id, scope_type, kind, version);
+        CREATE TABLE IF NOT EXISTS brain_customization_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            scope_type TEXT NOT NULL CHECK(scope_type IN ('organization','workspace')),
+            kind TEXT NOT NULL CHECK(kind IN ('instructions','policy','settings')),
+            target_version_id TEXT NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('created','activated','rolled_back')),
+            reason TEXT NOT NULL,
+            active_version_id TEXT,
+            previous_version_id TEXT,
+            actor_principal_id TEXT NOT NULL,
+            actor_person_id TEXT NOT NULL,
+            event_sequence INTEGER NOT NULL CHECK(event_sequence > 0),
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(target_version_id) REFERENCES brain_customization_versions(id),
+            FOREIGN KEY(active_version_id) REFERENCES brain_customization_versions(id),
+            FOREIGN KEY(previous_version_id) REFERENCES brain_customization_versions(id),
+            FOREIGN KEY(actor_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brain_customization_events_active
+            ON brain_customization_events(organization_id, workspace_id, scope_type, kind, event_sequence);
+        CREATE TRIGGER IF NOT EXISTS brain_customization_versions_no_update BEFORE UPDATE ON brain_customization_versions BEGIN
+            SELECT RAISE(ABORT, 'brain customization versions are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS brain_customization_versions_no_delete BEFORE DELETE ON brain_customization_versions BEGIN
+            SELECT RAISE(ABORT, 'brain customization versions are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS brain_customization_events_no_update BEFORE UPDATE ON brain_customization_events BEGIN
+            SELECT RAISE(ABORT, 'brain customization events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS brain_customization_events_no_delete BEFORE DELETE ON brain_customization_events BEGIN
+            SELECT RAISE(ABORT, 'brain customization events are append-only');
+        END;
+        """,
+    ),
+    Migration(
+        38,
+        "read_only_provider_imports",
+        """
+        CREATE TABLE IF NOT EXISTS provider_import_records (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            provider TEXT NOT NULL CHECK(provider IN ('stripe_accounting','meta_ads')),
+            object_type TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            occurred_at TEXT,
+            amount REAL,
+            currency TEXT,
+            payload_hash TEXT NOT NULL,
+            source TEXT NOT NULL,
+            imported_at TEXT NOT NULL,
+            UNIQUE(organization_id, provider, object_type, external_id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_import_records_scope
+            ON provider_import_records(organization_id, workspace_id, provider, object_type, imported_at);
+        CREATE TABLE IF NOT EXISTS provider_import_quarantines (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            object_type TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            evidence_digest TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_import_quarantine_scope
+            ON provider_import_quarantines(organization_id, provider, created_at);
+        CREATE TABLE IF NOT EXISTS provider_import_cursors (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            resource TEXT NOT NULL,
+            cursor_value TEXT,
+            status TEXT NOT NULL CHECK(status IN ('not_connected','configured','syncing','degraded')),
+            last_error TEXT,
+            updated_at TEXT NOT NULL,
+            UNIQUE(organization_id, workspace_id, provider, account_id, resource),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE TRIGGER IF NOT EXISTS provider_import_records_no_update BEFORE UPDATE ON provider_import_records BEGIN
+            SELECT RAISE(ABORT, 'provider import records are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_import_records_no_delete BEFORE DELETE ON provider_import_records BEGIN
+            SELECT RAISE(ABORT, 'provider import records are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_import_quarantines_no_update BEFORE UPDATE ON provider_import_quarantines BEGIN
+            SELECT RAISE(ABORT, 'provider import quarantines are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_import_quarantines_no_delete BEFORE DELETE ON provider_import_quarantines BEGIN
+            SELECT RAISE(ABORT, 'provider import quarantines are append-only');
+        END;
+        """,
+    ),
+    Migration(
+        39,
+        "portal_report_delivery",
+        """
+        CREATE TABLE IF NOT EXISTS portal_report_versions (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            report_run_id TEXT NOT NULL,
+            version INTEGER NOT NULL CHECK(version > 0),
+            title TEXT NOT NULL,
+            report_type TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            approval_request_id TEXT NOT NULL,
+            published_by_person_id TEXT NOT NULL,
+            supersedes_version_id TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(report_run_id) REFERENCES report_runs(id),
+            FOREIGN KEY(approval_request_id) REFERENCES approval_requests(id),
+            FOREIGN KEY(published_by_person_id) REFERENCES people(id),
+            FOREIGN KEY(supersedes_version_id) REFERENCES portal_report_versions(id),
+            UNIQUE(organization_id, workspace_id, report_type, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_portal_report_versions_scope
+            ON portal_report_versions(organization_id, workspace_id, report_type, version);
+        CREATE TABLE IF NOT EXISTS portal_report_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            portal_report_version_id TEXT NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('published','superseded','revoked','viewed','downloaded')),
+            actor_person_id TEXT NOT NULL,
+            actor_role TEXT NOT NULL CHECK(actor_role IN ('staff','client')),
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(portal_report_version_id) REFERENCES portal_report_versions(id),
+            FOREIGN KEY(actor_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_portal_report_events_version
+            ON portal_report_events(portal_report_version_id, created_at, id);
+        CREATE INDEX IF NOT EXISTS idx_portal_report_events_scope
+            ON portal_report_events(organization_id, workspace_id, created_at);
+        CREATE TRIGGER IF NOT EXISTS portal_report_versions_no_update BEFORE UPDATE ON portal_report_versions BEGIN
+            SELECT RAISE(ABORT, 'portal report versions are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS portal_report_versions_no_delete BEFORE DELETE ON portal_report_versions BEGIN
+            SELECT RAISE(ABORT, 'portal report versions are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS portal_report_events_no_update BEFORE UPDATE ON portal_report_events BEGIN
+            SELECT RAISE(ABORT, 'portal report events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS portal_report_events_no_delete BEFORE DELETE ON portal_report_events BEGIN
+            SELECT RAISE(ABORT, 'portal report events are append-only');
+        END;
+        """,
+    ),
+    Migration(
+        40,
+        "durable_scheduler_operator_health",
+        """
+        CREATE TABLE IF NOT EXISTS scheduler_heartbeats (
+            worker_id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            status TEXT NOT NULL CHECK(status IN ('running','idle','completed','paused','stopped','degraded','never_started')),
+            heartbeat_at TEXT NOT NULL,
+            last_result TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_scheduler_heartbeats_scope
+            ON scheduler_heartbeats(organization_id, workspace_id, updated_at);
+        CREATE TABLE IF NOT EXISTS scheduler_controls (
+            organization_id TEXT PRIMARY KEY,
+            workspace_id TEXT,
+            paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0,1)),
+            reason TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        """,
+    ),
+    Migration(
+        41,
+        "release_blocker_scoped_scheduler_and_import_quarantines",
+        """
+        ALTER TABLE provider_import_quarantines ADD COLUMN quarantine_details TEXT;
+
+        ALTER TABLE scheduler_heartbeats RENAME TO scheduler_heartbeats_v40;
+        CREATE TABLE scheduler_heartbeats (
+            worker_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            scope_key TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('running','idle','completed','paused','stopped','degraded','never_started')),
+            heartbeat_at TEXT NOT NULL,
+            last_result TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(worker_id, organization_id, scope_key),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        INSERT INTO scheduler_heartbeats(worker_id,organization_id,workspace_id,scope_key,status,heartbeat_at,last_result,last_error,updated_at)
+            SELECT worker_id,organization_id,workspace_id,COALESCE(workspace_id,'__organization__'),status,heartbeat_at,last_result,last_error,updated_at
+            FROM scheduler_heartbeats_v40;
+        DROP TABLE scheduler_heartbeats_v40;
+        CREATE INDEX IF NOT EXISTS idx_scheduler_heartbeats_scope
+            ON scheduler_heartbeats(organization_id, workspace_id, updated_at);
+
+        ALTER TABLE scheduler_controls RENAME TO scheduler_controls_v40;
+        CREATE TABLE scheduler_controls (
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            scope_key TEXT NOT NULL,
+            paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0,1)),
+            reason TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(organization_id, scope_key),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        INSERT INTO scheduler_controls(organization_id,workspace_id,scope_key,paused,reason,updated_at)
+            SELECT organization_id,workspace_id,COALESCE(workspace_id,'__organization__'),paused,reason,updated_at
+            FROM scheduler_controls_v40;
+        DROP TABLE scheduler_controls_v40;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
@@ -2892,6 +3263,10 @@ def migrate(conn: sqlite3.Connection) -> int:
             ):
                 if column in task_columns:
                     sql = sql.replace(f"ALTER TABLE agent_tasks ADD COLUMN {column} {definition};", "")
+        if migration.version == 41:
+            quarantine_columns = {row[1] for row in conn.execute("PRAGMA table_info(provider_import_quarantines)").fetchall()}
+            if "quarantine_details" in quarantine_columns:
+                sql = sql.replace("ALTER TABLE provider_import_quarantines ADD COLUMN quarantine_details TEXT;", "")
         with conn:
             conn.executescript(sql)
             if migration.version == 19:

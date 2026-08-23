@@ -30,6 +30,7 @@ CAPABILITIES: tuple[str, ...] = (
     "brain_read",
     "brain_propose",
     "brain_promote",
+    "brain_configure",
     "external_send",
     "external_publish",
     "job_manage",

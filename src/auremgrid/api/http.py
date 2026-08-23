@@ -10,6 +10,7 @@ from auremgrid.api.mcp import McpToolRouter, _mcp_capability
 from auremgrid.domain.errors import AuthenticationError, AuremgridError, AuthorizationError, NotFoundError, ValidationError
 from auremgrid.domain.security import AuthenticatedIdentity
 from auremgrid.services.brain import CompanyOS
+from auremgrid.connectors.catalog import connector_catalog
 from pathlib import Path
 
 
@@ -28,17 +29,24 @@ def _route_capability(path: str, method: str) -> str:
         if path.startswith("/sales/") or path in {"/campaigns/budget-pacing","/client-hq/retainer","/report-packs"}: return "workspace_read"
         if path.startswith("/jobs"): return "job_manage"
         if path == "/client-portal/intake/queue": return "people_manage"
+        if path in {"/client-portal/reports", "/client-portal/reports/view", "/client-portal/reports/download"}: return "client_portal"
         if path == "/auth/me": return "workspace_read"
         if path == "/reports": return "workspace_read"
         if path == "/finance": return "finance_read"
         if path == "/capacity": return "workspace_read"
         if path in {"/agents", "/agents/detail"} or path.startswith("/agents/runs"): return "agent_run"
         if path in {"/integrations"}: return "integration_configure"
+        if path == "/connectors/catalog": return "workspace_read"
+        if path == "/operator/health": return "workspace_read"
+        if path in {"/operator/pause", "/operator/resume"}: return "job_manage"
+        if path == "/onboarding/templates" or path.startswith("/onboarding/imports"): return "workspace_read"
+        if path.startswith("/oauth/install/") and path.endswith("/health"): return "integration_sync"
         if path.startswith("/workflows"): return "workspace_read"
         if path == "/entity/candidates": return "brain_propose"
         if path in {"/knowledge-health", "/memory-proposals", "/search", "/entity", "/history", "/neighbors", "/sources", "/recent", "/brief"}: return "brain_read"
         if path == "/dashboard/brain" or path.startswith("/dashboard/intelligence"): return "brain_read"
         if path == "/dashboard/settings": return "workspace_read"
+        if path == "/brain/customizations/active": return "brain_read"
         if path == "/reviews/annotations": return "workspace_read"
         return "workspace_read"
     if path in {"/approvals/decide", "/workflows/approvals/decide"}: return "approval_decide"
@@ -53,8 +61,14 @@ def _route_capability(path: str, method: str) -> str:
     if path.startswith("/workflows/approvals/decide"): return "approval_decide"
     if path.startswith("/workflows"): return "workflow_run"
     if path == "/integrations/credentials": return "secret_bind"
+    if path == "/connectors/catalog": return "workspace_read"
+    if path == "/provider-imports/preview": return "integration_sync"
+    if path == "/provider-imports/sync": return "integration_sync"
+    if path in {"/oauth/begin", "/oauth/callback", "/oauth/revoke"}: return "integration_configure"
+    if path.startswith("/oauth/install/") and path.endswith("/health"): return "integration_sync"
     if path in {"/integrations/verify","/integrations/sync"}: return "integration_sync"
     if path == "/integrations": return "integration_configure"
+    if path.startswith("/onboarding/imports"): return "workspace_write"
     if path.startswith("/agents/runs") or path == "/agents/tasks": return "agent_run"
     if path == "/reports/generate": return "workspace_write"
     if path.startswith("/agents"): return "agent_configure"
@@ -63,10 +77,12 @@ def _route_capability(path: str, method: str) -> str:
     if path == "/memory-proposals/review": return "brain_promote"
     if path in {"/brain/promote", "/brain/conflicts/resolve"}: return "brain_promote"
     if path == "/brain/propose": return "brain_propose"
+    if path.startswith("/brain/customizations"): return "brain_configure"
     if path in {"/memory-proposals", "/remember"}: return "brain_propose"
     if path in {"/people", "/workspace-memberships"}: return "people_manage"
     if path in {"/clients/roster", "/meetings/responsibilities"} and method == "POST": return "people_manage"
     if path in {"/client-portal/intake/accept", "/client-portal/intake/decline"}: return "people_manage"
+    if path.startswith("/reports/portal"): return "workspace_write"
     if path in {"/client-portal/intake", "/client-portal/reviews/comment", "/client-portal/reviews/decide"} and method == "POST": return "client_portal"
     if path in {"/reviews/annotations", "/reviews/annotations/resolve", "/reviews/annotations/supersede"}: return "workspace_write"
     if path in {"/organizations", "/workspaces"}: return "organization_manage"
@@ -84,7 +100,7 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
         params = {key: values[0] for key, values in parse_qs(parsed.query).items()}
         try:
             identity = None
-            if parsed.path not in {"/", "/dashboard", "/health", "/metrics", "/health/detailed"} and not parsed.path.startswith("/dashboard-assets/"):
+            if parsed.path not in {"/", "/dashboard", "/health", "/metrics", "/health/detailed", "/oauth/callback"} and not parsed.path.startswith("/dashboard-assets/"):
                 identity = self._authenticate_request(parsed.path, "GET", params)
             if parsed.path == "/health":
                 self._json(200, {"ok": True, "schema_version": self.os.store.schema_version})
@@ -107,6 +123,8 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/auth/me":
                 assert identity is not None
                 self._json(200, identity.to_dict()); return
+            if parsed.path == "/onboarding/templates":
+                self._json(200, self.os.onboarding.templates()); return
             if parsed.path in {"/", "/dashboard"}:
                 self._html(200, _dashboard_html())
                 return
@@ -194,6 +212,14 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 items = self.os.company.list_workspaces(_need(params, "organization_id"))
                 self._json(200, {"workspaces": items})
                 return
+            if parsed.path == "/onboarding/imports":
+                assert identity is not None
+                self._json(200, self.os.onboarding.list_import_batches(
+                    identity.organization_id,
+                    _optional_str(params.get("workspace_id")),
+                    identity.person_id,
+                    _int(params.get("limit", "10"), "limit"),
+                )); return
             if parsed.path == "/people":
                 organization_id,person_id=_need(params,"organization_id"),_need(params,"person_id")
                 membership = self.os.company.org_membership(organization_id, person_id)
@@ -298,6 +324,14 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 assert identity is not None
                 organization_id, workspace_id, person_id = _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
                 self._json(200, self.os.dashboard.brain(identity, organization_id, workspace_id, person_id, _optional_dt(params.get("as_of")))); return
+            if parsed.path == "/brain/customizations/active":
+                assert identity is not None
+                scoped_workspace = _optional_str(params.get("workspace_id"))
+                scoped = self.os.auth.scope_identity(identity, scoped_workspace) if scoped_workspace else identity
+                self._json(200, self.os.brain_customizations.active(
+                    scoped, _need(params, "organization_id"), scoped_workspace,
+                    _optional_str(params.get("kind")), _optional_dt(params.get("as_of")),
+                )); return
             if parsed.path == "/dashboard/intelligence":
                 assert identity is not None
                 organization_id, workspace_id, person_id = _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
@@ -482,6 +516,30 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/integrations":
                 assert identity is not None
                 self._json(200,{"integrations":self.os.integrations.list(identity)}); return
+            if parsed.path == "/connectors/catalog":
+                self._json(200, {"connectors": connector_catalog()}); return
+            if parsed.path == "/operator/health":
+                assert identity is not None
+                worker_id = params.get("worker_id", "default")
+                self._json(200, self.os.scheduler(identity.organization_id, params.get("workspace_id"), worker_id).health()); return
+            if parsed.path == "/provider-imports/status":
+                assert identity is not None
+                rows = self.os.store.conn.execute(
+                    "SELECT * FROM provider_import_cursors WHERE organization_id=? ORDER BY updated_at DESC",
+                    (identity.organization_id,),
+                ).fetchall()
+                quarantines = self.os.store.conn.execute("SELECT provider,object_type,external_id,reason,evidence_digest,created_at FROM provider_import_quarantines WHERE organization_id=? ORDER BY created_at DESC LIMIT 50", (identity.organization_id,)).fetchall()
+                self._json(200, {"imports": [dict(row) for row in rows], "quarantines": [dict(row) for row in quarantines]}); return
+            if parsed.path == "/oauth/callback":
+                if "code_verifier" in params:
+                    raise ValidationError("code_verifier is not accepted on OAuth callback")
+                item = self.os.oauth_service().complete(_need(params,"state"), _need(params,"code"),
+                    None, _need(params,"redirect_uri"), _need(params,"provider"))
+                self._json(200, item); return
+            if parsed.path.startswith("/oauth/install/") and parsed.path.endswith("/health"):
+                assert identity is not None
+                installation_id = parsed.path.split("/")[3]
+                self._json(200, self.os.oauth_service().health(identity, installation_id)); return
             if parsed.path == "/memory-proposals":
                 assert identity is not None
                 workspace_id = params.get("workspace_id")
@@ -540,6 +598,21 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 organization_id,workspace_id,person_id=_need(params,"organization_id"),_need(params,"workspace_id"),_need(params,"person_id")
                 items=self.os.client_portal.list_client_reviews(organization_id,workspace_id,person_id)
                 self._json(200,{"reviews":items}); return
+            if parsed.path == "/client-portal/reports":
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, {"reports": self.os.report_delivery.portal_list(
+                    scoped, scoped.organization_id, workspace_id
+                )}); return
+            if parsed.path in {"/client-portal/reports/view", "/client-portal/reports/download"}:
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                handler = self.os.report_delivery.portal_download if parsed.path.endswith("/download") else self.os.report_delivery.portal_view
+                self._json(200, handler(
+                    scoped, scoped.organization_id, workspace_id, _need(params, "portal_report_version_id")
+                )); return
             if parsed.path == "/feedback/patterns":
                 assert identity is not None
                 org, ws, person_id = identity.organization_id, _need(params, "workspace_id"), identity.person_id
@@ -568,6 +641,12 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             payload = self._read_json()
+            if parsed.path == "/oauth/callback":
+                if "code_verifier" in payload:
+                    raise ValidationError("code_verifier is not accepted on OAuth callback")
+                item = self.os.oauth_service().complete(_need(payload,"state"), _need(payload,"code"),
+                    None, _need(payload,"redirect_uri"), _need(payload,"provider"))
+                self._json(200, item); return
             if parsed.path == "/tools/call":
                 arguments = payload.get("arguments") or {}
                 if not isinstance(arguments, dict): raise ValidationError("arguments must be an object")
@@ -658,6 +737,26 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                     _need(payload, "person_id"), str(payload.get("role", "operator")),
                 )
                 self._json(201, item.to_dict())
+                return
+            if parsed.path == "/onboarding/imports/preview":
+                result = self.os.onboarding.preview_csv_import(
+                    _need(payload, "organization_id"),
+                    _optional_str(payload.get("workspace_id")),
+                    _need(payload, "person_id"),
+                    _need(payload, "import_type"),
+                    _need(payload, "csv_text"),
+                    _need(payload, "idempotency_key"),
+                )
+                self._json(201, result)
+                return
+            if parsed.path == "/onboarding/imports/commit":
+                result = self.os.onboarding.commit_csv_import(
+                    _need(payload, "organization_id"),
+                    _need(payload, "batch_id"),
+                    _need(payload, "person_id"),
+                    _need(payload, "idempotency_key"),
+                )
+                self._json(200, result)
                 return
             if parsed.path == "/projects":
                 item = self.os.create_project(
@@ -914,6 +1013,36 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 item=self.os.integrations.configure(identity,_need(payload,"source"),_need(payload,"expected_account_id"),payload.get("workspace_mappings") or {},
                     [str(x) for x in payload.get("permissions",[])])
                 self._json(201,item); return
+            if parsed.path == "/oauth/begin":
+                item = self.os.oauth_service().begin(identity, _need(payload,"organization_id"),
+                    _optional_str(payload.get("workspace_id")), _need(payload,"provider"),
+                    _need(payload,"client_id"), _need(payload,"redirect_uri"), _need(payload,"scope"),
+                    _optional_str(payload.get("installation_id")))
+                item.pop("code_verifier", None)
+                self._json(200, item); return
+            if parsed.path == "/oauth/callback":
+                if "code_verifier" in payload:
+                    raise ValidationError("code_verifier is not accepted on OAuth callback")
+                item = self.os.oauth_service().complete(_need(payload,"state"), _need(payload,"code"),
+                    None, _need(payload,"redirect_uri"), _need(payload,"provider"))
+                self._json(200, item); return
+            if parsed.path == "/oauth/revoke":
+                item = self.os.oauth_service().revoke(identity, _need(payload,"installation_id"))
+                self._json(200, item); return
+            if parsed.path in {"/provider-imports/preview", "/provider-imports/sync"}:
+                mappings = payload.get("workspace_mappings") or {}
+                adapter = None
+                if parsed.path.endswith("preview"):
+                    from auremgrid.connectors.financial import MetaAdsReadOnlyAdapter, StripeReadOnlyAdapter
+                    provider = _need(payload, "provider")
+                    transport = payload.get("_transport")
+                    adapter = {"stripe_accounting": StripeReadOnlyAdapter(transport), "meta_ads": MetaAdsReadOnlyAdapter(transport)}.get(provider)
+                result = self.os.provider_imports.pull(identity, _need(payload,"provider"), _need(payload,"account_id"), mappings,
+                    _need(payload,"resource"), _optional_str(payload.get("cursor")), adapter)
+                self._json(200, result); return
+            if parsed.path in {"/operator/pause", "/operator/resume"}:
+                scheduler = self.os.scheduler(identity.organization_id, _optional_str(payload.get("workspace_id")), _need(payload, "worker_id"))
+                self._json(200, scheduler.set_paused(parsed.path.endswith("pause"))); return
             if parsed.path == "/integrations/credentials":
                 item=self.os.integrations.bind_credential(identity,_need(payload,"integration_id"),_need(payload,"name"),
                     _need(payload,"reference"),[str(x) for x in payload.get("scopes",[])])
@@ -927,6 +1056,23 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(202,{"jobs":items}); return
             if parsed.path == "/reports/generate":
                 self._json(201,self.os.agent_ops.generate_report(_need(payload,"organization_id"),_need(payload,"person_id"),_need(payload,"type"),_optional_str(payload.get("workspace_id")))); return
+            if parsed.path == "/reports/portal-publish":
+                assert identity is not None
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(201, self.os.report_delivery.publish(
+                    scoped, scoped.organization_id, workspace_id, _need(payload, "report_run_id"),
+                    _need(payload, "approval_request_id"), _need(payload, "title"),
+                    str(payload.get("reason", "")),
+                )); return
+            if parsed.path == "/reports/portal-revoke":
+                assert identity is not None
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, self.os.report_delivery.revoke(
+                    scoped, scoped.organization_id, workspace_id,
+                    _need(payload, "portal_report_version_id"), _need(payload, "reason"),
+                )); return
             if parsed.path == "/agents/seed":
                 self._json(201,{"agents":self.os.agent_ops.seed_primary_agents(_need(payload,"organization_id"),_need(payload,"person_id"))});return
             if parsed.path == "/agents/tasks":
@@ -1003,6 +1149,27 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 workspace_id = _need(payload, "workspace_id")
                 scoped = self.os.auth.scope_identity(identity, workspace_id)
                 self._json(200, self.os.brain_ops.resolve_fact_conflict(scoped, _need(payload,"conflict_group"), _need(payload,"winner_fact_id"))); return
+            if parsed.path == "/brain/customizations":
+                assert identity is not None
+                workspace_id = _optional_str(payload.get("workspace_id"))
+                scoped = self.os.auth.scope_identity(identity, workspace_id) if workspace_id else identity
+                self._json(201, self.os.brain_customizations.create_version(
+                    scoped, _need(payload, "organization_id"), _need(payload, "scope_type"),
+                    _need(payload, "kind"), _need(payload, "name"), _need(payload, "body"),
+                    payload.get("payload") or {}, workspace_id, str(payload.get("reason", "")),
+                )); return
+            if parsed.path == "/brain/customizations/activate":
+                assert identity is not None
+                self._json(200, self.os.brain_customizations.activate_version(
+                    identity, _need(payload, "organization_id"), _need(payload, "version_id"),
+                    _need(payload, "reason"),
+                )); return
+            if parsed.path == "/brain/customizations/rollback":
+                assert identity is not None
+                self._json(200, self.os.brain_customizations.rollback(
+                    identity, _need(payload, "organization_id"), _need(payload, "target_version_id"),
+                    _need(payload, "reason"),
+                )); return
             if parsed.path == "/initiatives":
                 self._json(201,self.os.create_initiative(_need(payload,"organization_id"),_need(payload,"workspace_id"),_need(payload,"person_id"),_need(payload,"project_id"),_need(payload,"name"),str(payload.get("description","")))); return
             if parsed.path == "/deliverables/version":

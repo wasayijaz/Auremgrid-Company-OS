@@ -89,6 +89,7 @@ class _ExistingDashboardService:
             "finance_status":finance["status"],"open_work":open_work,"overdue_work":overdue,"in_review":review,"active_workflows":active_workflows,"agents_running":sum(a["status"]=="running" for a in agents),
             "automations_today":automation_count,"open_risks":risks},"attention":attention,"clients":clients,"agents":agents,"pulse":pulse,
             "workspaces":[dict(row) for row in workspaces],
+            "onboarding": self.os.onboarding.latest_status(organization_id, ids),
             "identity": self._identity_view(organization_id, person_id),
             "ledger_health": self._ledger_health(organization_id, person_id),
             "capability_summary": self._capability_summary(organization_id, person_id),
@@ -312,8 +313,26 @@ class _ExistingDashboardService:
             "permissions": {"capabilities": sorted(identity.capabilities), "scopes": sorted(identity.scopes)},
             "approvals": {"pending": pending_approvals, "pending_count": len(pending_approvals)},
             "integrations": integrations,
+            "brain_customization": self._brain_customization_surface(identity, organization_id, workspace_id),
             "health": self._ledger_health(organization_id, identity.person_id),
         }
+
+    def _brain_customization_surface(
+        self, identity: AuthenticatedIdentity, organization_id: str, workspace_id: str | None
+    ) -> dict[str, Any]:
+        try:
+            return self.os.brain_customizations.surface(identity, organization_id, workspace_id)
+        except Exception as exc:
+            if "brain_customization" not in str(exc):
+                raise
+            return {
+                "status": "schema_pending",
+                "active": [],
+                "versions": [],
+                "events": [],
+                "can_manage": identity.can("brain_configure"),
+                "allowed_actions": [],
+            }
 
     def client_hq(
         self, identity: AuthenticatedIdentity, organization_id: str, workspace_id: str, person_id: str,
@@ -395,6 +414,12 @@ class _ExistingDashboardService:
                WHERE organization_id=? AND workspace_id=? ORDER BY recorded_at DESC LIMIT 50""",
             (organization_id, workspace_id),
         ).fetchall()]
+        caller_membership = self.os.company.workspace_membership(workspace_id, identity.person_id)
+        portal_reports = (
+            self.os.report_delivery.portal_list(identity, organization_id, workspace_id)
+            if caller_membership is not None and caller_membership.role == "client"
+            else self.os.report_delivery.staff_list(identity, organization_id, workspace_id)
+        )
         insights = {
             "performance": [dict(r) for r in self.conn.execute(
                 """SELECT * FROM performance_insights WHERE organization_id=? AND workspace_id=?
@@ -551,6 +576,7 @@ class _ExistingDashboardService:
             "decisions": decisions, "campaigns": campaigns, "content": content, "creative": creative,
             "workflows": workflows, "files": files, "meetings": meetings, "messages": messages,
             "people": workspace_people + contacts, "activity": activity, "insights": insights,
+            "portal_reports": portal_reports,
             "finance": (
                 self.os.agency_ops.finance_status(organization_id, person_id, workspace_id)
                 if identity.can("finance_read") else {"status": "not_authorized"}

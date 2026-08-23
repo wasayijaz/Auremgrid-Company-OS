@@ -2,7 +2,7 @@
 
 All responses are JSON except the dashboard. Errors use error and message fields with 400 validation, 403 authorization, 404 not found, or 500 internal status.
 
-Read routes include /health, /search, /entity, /entity/candidates, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /reviews/annotations, /decisions, /people, /capacity, /clients/roster, /meetings/responsibilities, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /memory-proposals, /knowledge-health, /dashboard/data, /dashboard/client, /dashboard/brain, /dashboard/intelligence, /dashboard/intelligence/portfolio, /dashboard/intelligence/executive, /dashboard/intelligence/snapshots, /dashboard/intelligence/attention, and /dashboard/workflows.
+Read routes include /health, /search, /entity, /entity/candidates, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /reviews/annotations, /decisions, /people, /capacity, /clients/roster, /meetings/responsibilities, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /onboarding/templates, /onboarding/imports, /memory-proposals, /knowledge-health, /dashboard/data, /dashboard/client, /dashboard/brain, /dashboard/intelligence, /dashboard/intelligence/portfolio, /dashboard/intelligence/executive, /dashboard/intelligence/snapshots, /dashboard/intelligence/attention, and /dashboard/workflows.
 
 `GET /dashboard/intelligence` requires `organization_id`, `workspace_id`, and `person_id`, accepts optional `query` and timezone-aware `as_of`, and enforces the bearer identity's organization, workspace, person, capability, and source ACL. It returns a derived read model rather than new canonical truth. The response exposes status, degraded reason, evidence-backed findings, confidence, changes, hypotheses, scenarios, impact, recommendation, and proposed action descriptors. If `CompanyOS` is constructed with an injected strategic-reasoning provider, `deliberation` may additionally contain validated `hypotheses`, `options`, `scenarios`, `recommendation`, `confidence`, and `dissent`; `provider_metadata` contains only provider identity, evidence references/counts, hashes, and fallback status. Provider failures or malformed output retain deterministic deliberation. Unknown queries return `insufficient_evidence`; historical reads and read-only memberships return no mutation actions.
 
@@ -30,7 +30,18 @@ no credentials, provider error details, or episode content.
 
 `GET /capacity` returns a derived weekly capacity board. It requires `week_start` (an ISO Monday), and accepts optional `workspace_id` and `as_of`. Organization and person are always derived from the bearer session; inaccessible workspaces are omitted.
 
-Write/action routes include /organizations, /workspaces, /people, /workspace-memberships, /clients/roster, /meetings/responsibilities, /projects, /deliverables, /reviews, /reviews/decide, /reviews/annotations, /reviews/annotations/resolve, /reviews/annotations/supersede, /decisions, /signals, /signals/route, /risks, /opportunities, /health/calculate, /campaigns, /campaigns/metrics, /creative, /content, /content/advance, /approvals, /approvals/decide, /integrations, /integrations/credentials, /integrations/verify, /integrations/sync, /reports/generate, /memory-proposals, /brain/propose, and the /work action routes. Rich review annotations are append-only and support general comments plus source-gated image points/regions, document pages/regions, and video timestamps/ranges. `POST /reviews/annotations` accepts an optional `idempotency_key`; resolve/supersede add immutable annotation events rather than overwriting history. `POST /clients/roster` accepts `roles` and optional `effective_at`/`note`; `POST /meetings/responsibilities` accepts a meeting ID and optional facilitator/note-taker IDs. These writes require `people_manage`. `POST /brain/propose` derives scope and proposer from the bearer identity and creates a pending alias/merge resolution proposal only; it never merges. `POST /memory-proposals` derives the proposer and scope from the bearer identity; the former `/memory-proposals/review` route is retired with 404. Use the authenticated MCP `brain.promote` service path for proposal decisions.
+Write/action routes include /organizations, /workspaces, /people, /workspace-memberships, /clients/roster, /meetings/responsibilities, /projects, /deliverables, /reviews, /reviews/decide, /reviews/annotations, /reviews/annotations/resolve, /reviews/annotations/supersede, /decisions, /signals, /signals/route, /risks, /opportunities, /health/calculate, /campaigns, /campaigns/metrics, /creative, /content, /content/advance, /approvals, /approvals/decide, /integrations, /integrations/credentials, /integrations/verify, /integrations/sync, /provider-imports/preview, /provider-imports/sync, /reports/generate, /reports/portal-publish, /reports/portal-revoke, /memory-proposals, /brain/propose, and the /work action routes. Rich review annotations are append-only and support general comments plus source-gated image points/regions, document pages/regions, and video timestamps/ranges. `POST /reviews/annotations` accepts an optional `idempotency_key`; resolve/supersede add immutable annotation events rather than overwriting history. `POST /clients/roster` accepts `roles` and optional `effective_at`/`note`; `POST /meetings/responsibilities` accepts a meeting ID and optional facilitator/note-taker IDs. These writes require `people_manage`. `POST /brain/propose` derives scope and proposer from the bearer identity and creates a pending alias/merge resolution proposal only; it never merges. `POST /memory-proposals` derives the proposer and scope from the bearer identity; the former `/memory-proposals/review` route is retired with 404. Use the authenticated MCP `brain.promote` service path for proposal decisions.
+
+CSV onboarding routes are preview-first and append-only. `GET
+/onboarding/templates` returns the supported `client_workspaces`, `campaigns`,
+and `campaign_metrics` headers. `POST /onboarding/imports/preview` accepts
+`import_type`, optional `workspace_id` for workspace-scoped imports,
+`csv_text`, and `idempotency_key`; it parses with the standard CSV format,
+records a durable dry-run batch, quarantines invalid rows, and writes no
+canonical business records. `POST /onboarding/imports/commit` accepts
+`batch_id` and a separate `idempotency_key`; it commits only valid preview rows
+through existing public business methods and records an immutable receipt.
+Uploads never accept arbitrary local filesystem paths.
 
 Connector configuration requires the expected provider account ID and never accepts a connection state. Credential responses
 contain metadata and fingerprints only. Verification earns `authorized`; the
@@ -52,6 +63,34 @@ bundle with exactly `client_id`, `client_secret`, and `refresh_token`. The
 execution path refreshes access in memory and fails when Google does
 not return authoritative granted-scope evidence; credential components and
 ephemeral access tokens are not returned or persisted.
+
+Generic OAuth routes exist for a fail-closed lifecycle. `/oauth/begin` creates
+a single-use PKCE state only for an allowlisted redirect and caller-provided
+client ID. `/oauth/callback` does not ship a Google token exchange; it succeeds
+only when `CompanyOS` has an injected exchange transport and the local vault can
+seal the resulting token with `AUREMGRID_DEPLOYMENT_KEY` or an explicit
+deployment key. `/oauth/install/{id}/health` reports stored-token health without
+returning token material, and `/oauth/revoke` revokes the local vault entry.
+The repository does not bundle provider client credentials.
+
+`POST /provider-imports/preview` and `/provider-imports/sync` are read-only
+normalization paths for injected Stripe Billing/accounting and Meta Ads pages.
+They require `integration_sync`, an account-to-workspace mapping, and a
+supported resource. Preview uses fixture/injected pages only; sync writes
+append-only `provider_import_records`, cursor state, and quarantine records.
+These routes are not live registered connectors and never send or mutate
+provider data.
+
+Portal report routes are publication gates, not sends. `POST
+/reports/portal-publish` requires a completed report run and an approved human
+`report.portal_publish` approval request whose payload matches the report run.
+It creates an immutable portal report version and supersedes the previous
+version of that report type for the workspace. `POST /reports/portal-revoke`
+records a portal revoke event. Client identities use `GET
+/client-portal/reports`, `/client-portal/reports/view`, and
+`/client-portal/reports/download`; those reads record portal view/download
+events and return the approved snapshot only. No route emails, uploads, or
+dispatches the report externally.
 
 Organization-domain routes require organization_id and person_id. Evidence/legacy work routes require workspace_id and actor_id.
 

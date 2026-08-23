@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from os import environ
 
 from auremgrid.adapters.semantic import embedding_provider_from_config
@@ -89,8 +90,25 @@ def main(argv: list[str] | None = None) -> int:
     onboard.add_argument("--workspace", required=True)
     onboard.add_argument("--admin", required=True)
     onboard.add_argument("--operator")
-    onboard.add_argument("--source-dir")
     onboard.add_argument("--db", default="auremgrid.sqlite")
+
+    import_templates = sub.add_parser("import-templates", help="print CSV templates for first-run imports")
+    import_templates.add_argument("--db", default="auremgrid.sqlite")
+
+    import_preview = sub.add_parser("import-preview", help="validate CSV import data and record a dry-run preview")
+    import_preview.add_argument("--db", default="auremgrid.sqlite")
+    import_preview.add_argument("--organization", required=True)
+    import_preview.add_argument("--workspace")
+    import_preview.add_argument("--person", required=True)
+    import_preview.add_argument("--type", required=True, choices=["client_workspaces", "campaigns", "campaign_metrics"])
+    import_preview.add_argument("--idempotency-key", required=True)
+
+    import_commit = sub.add_parser("import-commit", help="commit a previously previewed CSV import batch")
+    import_commit.add_argument("--db", default="auremgrid.sqlite")
+    import_commit.add_argument("--organization", required=True)
+    import_commit.add_argument("--batch", required=True)
+    import_commit.add_argument("--person", required=True)
+    import_commit.add_argument("--idempotency-key", required=True)
 
     setup_agency = sub.add_parser(
         "setup-agency",
@@ -104,7 +122,6 @@ def main(argv: list[str] | None = None) -> int:
     setup_agency.add_argument("--workspace", help="optional first workspace id")
     setup_agency.add_argument("--person", help="optional owner person id")
     setup_agency.add_argument("--operator", help="optional operator display name")
-    setup_agency.add_argument("--source-dir", help="optional folder of Markdown knowledge sources")
     setup_agency.add_argument(
         "--dashboard-url", default="http://127.0.0.1:8787/", help="dashboard address shown in next steps"
     )
@@ -140,12 +157,18 @@ def main(argv: list[str] | None = None) -> int:
     worker.add_argument("--organization", required=True)
     worker.add_argument("--workspace")
     worker.add_argument("--worker-id", required=True)
+    worker_loop = sub.add_parser("worker-loop", help="run the durable worker loop until interrupted")
+    worker_loop.add_argument("--db", required=True)
+    worker_loop.add_argument("--organization", required=True)
+    worker_loop.add_argument("--workspace")
+    worker_loop.add_argument("--worker-id", required=True)
+    worker_loop.add_argument("--poll-seconds", type=float, default=1.0)
     sub.add_parser(
         "evaluate-intelligence",
         help="run the offline Intelligence contract evaluation scenarios",
     )
 
-    for command in (demo, agency_demo, brief, serve_cmd, sync, onboard, setup_agency, backup, bootstrap_auth, worker):
+    for command in (demo, agency_demo, brief, serve_cmd, sync, onboard, import_templates, import_preview, import_commit, setup_agency, backup, bootstrap_auth, worker, worker_loop):
         _add_semantic_options(command)
 
     args = parser.parse_args(argv)
@@ -197,7 +220,35 @@ def main(argv: list[str] | None = None) -> int:
             workspace_id=args.workspace,
             admin_name=args.admin,
             operator_name=args.operator,
-            source_dir=args.source_dir,
+        )
+        print(json.dumps(result, indent=2))
+        os.close()
+        return 0
+    if args.command == "import-templates":
+        os = _company_os(args)
+        print(json.dumps(os.onboarding.templates(), indent=2))
+        os.close()
+        return 0
+    if args.command == "import-preview":
+        os = _company_os(args)
+        result = os.onboarding.preview_csv_import(
+            args.organization,
+            args.workspace,
+            args.person,
+            args.type,
+            sys.stdin.read(),
+            args.idempotency_key,
+        )
+        print(json.dumps(result, indent=2))
+        os.close()
+        return 0
+    if args.command == "import-commit":
+        os = _company_os(args)
+        result = os.onboarding.commit_csv_import(
+            args.organization,
+            args.batch,
+            args.person,
+            args.idempotency_key,
         )
         print(json.dumps(result, indent=2))
         os.close()
@@ -218,7 +269,6 @@ def main(argv: list[str] | None = None) -> int:
                 workspace_id=workspace_id,
                 admin_name=args.admin_name,
                 operator_name=args.operator,
-                source_dir=args.source_dir,
             )
             os.create_organization_workspace(organization.id, args.agency, "internal", workspace_id)
             owner = os.create_person(
@@ -250,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
                     "Start the server with the same --db file.",
                     "Open dashboard_url in a browser.",
                     "Paste session.token into Connect to Auremgrid.",
+                    "Use import-templates, import-preview, and import-commit for CSV-first setup data.",
                     "Keep the token private; use Sign out on shared devices.",
                 ],
             }, indent=2))
@@ -300,6 +351,16 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             conn.close()
         print(json.dumps(result, indent=2))
+        return 0
+    if args.command == "worker-loop":
+        os = _company_os(args)
+        try:
+            scheduler = os.scheduler(args.organization, args.workspace, args.worker_id, args.poll_seconds)
+            scheduler.run_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            os.close()
         return 0
     if args.command == "demo-agency":
         os = _company_os(args)

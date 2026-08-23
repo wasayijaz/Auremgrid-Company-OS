@@ -14,6 +14,12 @@ Copy the one-time `session.token` from the setup receipt, open
 Use `bootstrap-auth` only for an existing owner/person and actor binding. JSON
 endpoints do not trust query/body person or actor identifiers.
 
+First-run business data is CSV-first. Generate templates with
+`import-templates`, export or save spreadsheet tabs as CSV, run
+`import-preview`, review quarantined rows, and then run `import-commit` with a
+separate idempotency key. The importer accepts CSV text and durable batches; it
+does not read arbitrary local spreadsheet paths.
+
 The dashboard keeps the supplied token in browser `localStorage`. It is a
 temporary login credential, not an AI key or shared agency password. Use one
 session per person on a trusted browser profile; never paste it into chat,
@@ -33,6 +39,11 @@ Keep the SQLite database on durable storage. Use the online `backup` and
 durable jobs with a separate `worker-once` process. Secrets belong in an
 external environment or secret manager and enter SQLite only as references and
 fingerprints, never values.
+
+The generic OAuth routes need an operator-owned provider app registration,
+allowlisted redirect, deployment key, and injected token-exchange transport.
+No Google client credentials are bundled, and the default completion path fails
+closed rather than pretending to connect.
 
 ## Optional local semantic model
 

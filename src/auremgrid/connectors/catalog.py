@@ -18,12 +18,14 @@ class ConnectorDefinition:
     permission_scopes: tuple[str, ...]
     default_status: str = "not_connected"
     live_enabled: bool = False
+    install_mode: str = "manual"
+    oauth_provider: str | None = None
 
 
 TARGET_CONNECTORS = (
     ConnectorDefinition("slack","Slack",("messages","threads","participants"),("channels:read","channels:history"),live_enabled=True),
-    ConnectorDefinition("google_drive","Google Drive",("files","documents","permissions"),("https://www.googleapis.com/auth/drive.readonly",),live_enabled=True),
-    ConnectorDefinition("gmail","Gmail",("threads","messages","participants"),("https://www.googleapis.com/auth/gmail.readonly",),live_enabled=True),
+    ConnectorDefinition("google_drive","Google Drive",("files","documents","permissions"),("https://www.googleapis.com/auth/drive.readonly",),live_enabled=True,install_mode="oauth",oauth_provider="google"),
+    ConnectorDefinition("gmail","Gmail",("threads","messages","participants"),("https://www.googleapis.com/auth/gmail.readonly",),live_enabled=True,install_mode="oauth",oauth_provider="google"),
     ConnectorDefinition("clickup","ClickUp",("projects","tasks","comments"),("authorized_team",),live_enabled=True),
     ConnectorDefinition("figma","Figma",("files",),("current_user:read","file_metadata:read","file_content:read"),live_enabled=True),
     ConnectorDefinition("github","GitHub",("repositories","issues","pull_requests"),("repo:read",)),
@@ -58,7 +60,10 @@ class ConfiguredConnector:
 def connector_catalog() -> list[dict[str,object]]:
     return [{"source":item.source,"label":item.label,"object_types":list(item.object_types),
         "permission_scopes":list(item.permission_scopes),"status":item.default_status,
-        "live_enabled":item.live_enabled} for item in TARGET_CONNECTORS]
+        "live_enabled":item.live_enabled,"install_mode":item.install_mode,
+        "oauth_provider":item.oauth_provider,
+        "oauth": {"provider": item.oauth_provider, "pkce": True, "revoke": True,
+                   "health": True} if item.install_mode == "oauth" else None} for item in TARGET_CONNECTORS]
 
 
     ConnectorDefinition("notion","Notion",("pages","databases","blocks"),("read_content",)),

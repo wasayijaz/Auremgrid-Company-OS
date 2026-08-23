@@ -1,0 +1,24 @@
+services:
+  web:
+    build: ..
+    command: ["python", "-m", "auremgrid", "serve", "--db", "/data/auremgrid.sqlite", "--host", "127.0.0.1", "--port", "8791"]
+    env_file: .env
+    volumes: ["auremgrid-data:/data"]
+    expose: ["8791"]
+    restart: unless-stopped
+  worker:
+    build: ..
+    command: ["python", "-m", "auremgrid", "worker-loop", "--db", "/data/auremgrid.sqlite", "--organization", "${AUREMGRID_ORGANIZATION_ID}", "--worker-id", "worker-1"]
+    env_file: .env
+    volumes: ["auremgrid-data:/data"]
+    restart: unless-stopped
+  proxy:
+    image: caddy:2-alpine
+    depends_on: [web]
+    ports: ["443:443"]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy-data:/data", "caddy-config:/config"]
+    restart: unless-stopped
+volumes:
+  auremgrid-data:
+  caddy-data:
+  caddy-config:

@@ -51,6 +51,7 @@ from auremgrid.services.agency_ops import AgencyOperations
 from auremgrid.services.agent_ops import AgentOperations
 from auremgrid.services.capacity import CapacityService
 from auremgrid.services.brain_ops import BrainOperations
+from auremgrid.services.brain_customization import BrainCustomizationService
 from auremgrid.services.dashboard import DashboardService
 from auremgrid.services.work_ops import WorkOperations
 from auremgrid.services.workflow_catalog import load_workflow_catalog
@@ -58,6 +59,9 @@ from auremgrid.services.workflow_ops import WorkflowOperations
 from auremgrid.services.auth import AuthService
 from auremgrid.services.job_ops import JobOperations
 from auremgrid.services.secrets import EnvironmentSecretStore, SecretBindingService
+from auremgrid.services.integration_security import OAuthConnectorService
+from auremgrid.services.provider_imports import ProviderImportService
+from auremgrid.services.scheduler import DurableScheduler
 from auremgrid.services.integration_ops import IntegrationOperations
 from auremgrid.services.client_portal import ClientPortalOperations
 from auremgrid.services.feedback_ops import FeedbackOperations
@@ -67,6 +71,8 @@ from auremgrid.services.revenue_ops import RevenueOperations
 from auremgrid.services.retention_ops import RetentionOperations
 from auremgrid.services.intelligence import IntelligenceService
 from auremgrid.services.proactive_intelligence import ProactiveIntelligenceService
+from auremgrid.services.onboarding import OnboardingService
+from auremgrid.services.report_delivery import ReportDeliveryService
 from auremgrid.adapters.semantic import (
     DeterministicFallbackEmbeddingProvider,
     EmbeddingProvider,
@@ -141,6 +147,7 @@ class CompanyOS:
         self.strategic_reasoning_provider = strategic_reasoning_provider
         self.stack = OpenSourceStack()
         self.brain_ops = BrainOperations(self)
+        self.brain_customizations = BrainCustomizationService(self, new_id)
         self.dashboard = DashboardService(self)
         self.work_ops = WorkOperations(self.store,self.company,new_id,self._require_person_access)
         self.work_ops.company_os = self
@@ -149,7 +156,11 @@ class CompanyOS:
         self.auth = AuthService(self.store.conn, new_id)
         self.jobs = JobOperations(self.store.conn, new_id)
         self.secrets = SecretBindingService(self.store.conn, new_id, EnvironmentSecretStore())
+        # OAuth vault is constructed lazily so manual env-backed installs remain
+        # fully usable when no deployment encryption key is configured.
+        self._oauth_service: OAuthConnectorService | None = None
         self.integrations = IntegrationOperations(self)
+        self.provider_imports = ProviderImportService(self)
         self.client_portal = ClientPortalOperations(self.store, self.company, new_id)
         self.feedback = FeedbackOperations(
             self.store.conn,
@@ -163,9 +174,20 @@ class CompanyOS:
         self.retention = RetentionOperations(self.store.conn, new_id, self._require_scope_access)
         self.intelligence = IntelligenceService(self)
         self.proactive_intelligence = ProactiveIntelligenceService(self)
+        self.onboarding = OnboardingService(self, self.store.conn, new_id, self._require_person_access)
+        self.report_delivery = ReportDeliveryService(self, new_id)
         self.rebuild_projections(rebuild_graph=graph_projection is None)
         if graph_projection is not None:
             self._restore_durable_graph_generations()
+
+    def oauth_service(self) -> OAuthConnectorService:
+        if self._oauth_service is None:
+            allowlist = {"google": {"https://app.test/callback", "http://localhost:8000/oauth/callback"}}
+            self._oauth_service = OAuthConnectorService(self.store.conn, new_id, None, allowlist)
+        return self._oauth_service
+
+    def scheduler(self, organization_id: str, workspace_id: str | None, worker_id: str, poll_seconds: float = 1.0) -> DurableScheduler:
+        return DurableScheduler(self, organization_id, workspace_id, worker_id, poll_seconds)
 
     def _restore_durable_graph_generations(self) -> None:
         """Make an injected persistent provider serve SQLite's durable generation."""
@@ -1714,41 +1736,8 @@ class CompanyOS:
         workspace_id: str,
         admin_name: str,
         operator_name: str | None = None,
-        source_dir: str | Path | None = None,
     ) -> dict[str, Any]:
-        workspace = self.create_workspace(agency_name, workspace_id=workspace_id)
-        admin = self.create_actor(workspace.id, admin_name, "admin", f"act_{workspace.id}_admin")
-        operator = self.create_actor(
-            workspace.id,
-            operator_name or f"{agency_name} Operator",
-            "operator",
-            f"act_{workspace.id}_operator",
-        )
-        agent = self.create_actor(workspace.id, f"{agency_name} Agent", "agent", f"act_{workspace.id}_agent")
-        self.stack.bind_agent(workspace.id, agent.id)
-        ingested = 0
-        if source_dir:
-            root = Path(source_dir)
-            for path in sorted(root.glob("*.md")):
-                self.ingest_path(workspace.id, admin.id, path)
-                ingested += 1
-        self.upsert_client_brain(
-            workspace.id,
-            admin.id,
-            snapshot=f"{agency_name} workspace. Fill this brain before starting client work.",
-            brand_rules="Add approved visual and voice rules here.",
-            dos=["Cite current approved facts", "Capture work before producing"],
-            donts=["Do not invent prices or brand rules"],
-            open_loops=["Complete the first client brain"],
-        )
-        return {
-            "workspace": workspace.to_dict(),
-            "admin": admin.to_dict(),
-            "operator": operator.to_dict(),
-            "agent": agent.to_dict(),
-            "ingested_sources": ingested,
-            "engines": [item["name"] for item in self.stack.contributions(workspace.id, agency_name, agent.id)],
-        }
+        return self.onboarding.onboard_agency(agency_name, workspace_id, admin_name, operator_name)
 
     def engine_status(self, workspace_id: str, actor_id: str, query: str) -> dict[str, Any]:
         self._require_actor(workspace_id, actor_id)

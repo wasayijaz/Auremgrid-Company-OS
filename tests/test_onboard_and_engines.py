@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -26,20 +25,14 @@ class OnboardAndEngineTests(unittest.TestCase):
 
     def test_any_agency_can_onboard_without_demo_names(self) -> None:
         os = CompanyOS(":memory:")
-        with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "brand.md"
-            source.write_text(
-                "META: valid_from=2026-01-01T00:00:00+00:00\nFACT: Northwind Studio | visual_rule | charcoal only\n",
-                encoding="utf-8",
-            )
-            result = os.onboard_agency(
-                "Northwind Studio",
-                "ws_northwind",
-                "Northwind Admin",
-                source_dir=tmp,
-            )
+        result = os.onboard_agency(
+            "Northwind Studio",
+            "ws_northwind",
+            "Northwind Admin",
+        )
         self.assertEqual(result["workspace"]["id"], "ws_northwind")
-        self.assertEqual(result["ingested_sources"], 1)
+        self.assertEqual(result["ingested_sources"], 0)
+        self.assertIn("client_workspaces", result["import_templates"]["templates"])
         self.assertGreaterEqual(len(result["engines"]), 8)
         names = {engine for engine in result["engines"]}
         self.assertTrue({
@@ -48,7 +41,7 @@ class OnboardAndEngineTests(unittest.TestCase):
             "local_graphrag_style_projection", "local_letta_style_projection",
         } <= names)
         brief = os.account_brief("ws_northwind", result["operator"]["id"], query="charcoal")
-        self.assertFalse(brief.evidence["unknown"])
+        self.assertTrue(brief.evidence["unknown"])
         os.close()
 
     def test_engines_stay_workspace_scoped(self) -> None:
