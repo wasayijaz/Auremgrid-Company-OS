@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -350,32 +351,38 @@ class AgencyOperations:
     def record_invoice(self, organization_id: str, workspace_id: str, person_id: str, amount: float,
         issued_at: str, due_at: str, source: str, currency: str = "USD", external_id: str | None = None,
         status: str = "issued") -> dict[str,Any]:
-        self.authorize(organization_id,workspace_id,person_id,write=True)
-        connection=self.conn.execute("SELECT status FROM finance_connections WHERE organization_id=?",(organization_id,)).fetchone()
-        if connection is None or connection[0]!="connected": raise ValidationError("finance is not connected")
+        self._authorize_finance_write(organization_id,workspace_id,person_id)
+        self._validate_finance_amount(amount,currency,source)
+        issued_at = self._validate_finance_date(issued_at, "invoice issue date is required")
+        due_at = self._validate_finance_date(due_at, "invoice due date is required")
+        if due_at < issued_at: raise ValidationError("invoice due date must not precede issue date")
+        if status not in {"issued","paid","overdue","void"}: raise ValidationError("invalid invoice status")
         item={"id":self.new_id("invoice"),"organization_id":organization_id,"workspace_id":workspace_id,"external_id":external_id,
-            "amount":amount,"currency":currency,"status":status,"issued_at":issued_at,"due_at":due_at,"paid_at":None,"source":source}
+            "amount":amount,"currency":currency.strip(),"status":status,"issued_at":issued_at,"due_at":due_at,"paid_at":None,"source":source.strip()}
         self.conn.execute("INSERT INTO invoices VALUES (?,?,?,?,?,?,?,?,?,?,?)",tuple(item.values()));self.conn.commit();return item
 
     def record_revenue(self, organization_id: str, workspace_id: str | None, person_id: str, amount: float,
         recognized_at: str, source: str, kind: str = "retainer", currency: str = "USD", project_id: str | None = None) -> dict[str,Any]:
-        if workspace_id:self.authorize(organization_id,workspace_id,person_id,write=True)
-        elif self.company.org_membership(organization_id,person_id) is None:raise AuthorizationError("organization membership required")
-        connection=self.conn.execute("SELECT status FROM finance_connections WHERE organization_id=?",(organization_id,)).fetchone()
-        if connection is None or connection[0]!="connected": raise ValidationError("finance is not connected")
+        self._authorize_finance_write(organization_id,workspace_id,person_id)
+        self._validate_finance_amount(amount,currency,source)
+        recognized_at = self._validate_finance_date(recognized_at, "revenue recognition date is required")
+        if not isinstance(kind, str) or not kind.strip(): raise ValidationError("revenue kind is required")
+        kind = kind.strip()
+        if project_id and (workspace_id is None or self.company.get_project(workspace_id,project_id) is None): raise NotFoundError("project not found")
         item={"id":self.new_id("revenue"),"organization_id":organization_id,"workspace_id":workspace_id,"project_id":project_id,
-            "amount":amount,"currency":currency,"kind":kind,"recognized_at":recognized_at,"source":source}
+            "amount":amount,"currency":currency.strip(),"kind":kind,"recognized_at":recognized_at,"source":source.strip()}
         self.conn.execute("INSERT INTO revenues VALUES (?,?,?,?,?,?,?,?,?)",tuple(item.values()));self.conn.commit();return item
 
     def record_cost(self, organization_id: str, workspace_id: str | None, person_id: str, amount: float,
         category: str, incurred_at: str, source: str, currency: str = "USD") -> dict[str, Any]:
         self._authorize_finance_write(organization_id, workspace_id, person_id)
         self._validate_finance_amount(amount, currency, source)
-        if not category.strip():
+        if not isinstance(category, str) or not category.strip():
             raise ValidationError("cost category is required")
+        incurred_at = self._validate_finance_date(incurred_at, "cost incurred date is required")
         item = {
             "id": self.new_id("cost"), "organization_id": organization_id, "workspace_id": workspace_id,
-            "amount": amount, "currency": currency, "category": category.strip(),
+            "amount": amount, "currency": currency.strip(), "category": category.strip(),
             "incurred_at": incurred_at, "source": source.strip(),
         }
         self.conn.execute("INSERT INTO costs VALUES (?,?,?,?,?,?,?,?)", tuple(item.values()))
@@ -386,13 +393,15 @@ class AgencyOperations:
         period_start: str, period_end: str, currency: str = "USD", project_id: str | None = None) -> dict[str, Any]:
         self._authorize_finance_write(organization_id, workspace_id, person_id)
         self._validate_finance_amount(amount, currency, "budget")
+        period_start = self._validate_finance_date(period_start, "budget period start is required")
+        period_end = self._validate_finance_date(period_end, "budget period end is required")
         if period_end < period_start:
             raise ValidationError("budget period end must not precede period start")
         if project_id and (workspace_id is None or self.company.get_project(workspace_id, project_id) is None):
             raise NotFoundError("project not found")
         item = {
             "id": self.new_id("budget"), "organization_id": organization_id, "workspace_id": workspace_id,
-            "project_id": project_id, "amount": amount, "currency": currency,
+            "project_id": project_id, "amount": amount, "currency": currency.strip(),
             "period_start": period_start, "period_end": period_end,
         }
         self.conn.execute("INSERT INTO budgets VALUES (?,?,?,?,?,?,?,?)", tuple(item.values()))
@@ -403,12 +412,13 @@ class AgencyOperations:
         vendor: str, amount: float, period_start: str, source: str, currency: str = "USD") -> dict[str, Any]:
         self._authorize_finance_write(organization_id, workspace_id, person_id)
         self._validate_finance_amount(amount, currency, source)
-        if not vendor.strip():
+        period_start = self._validate_finance_date(period_start, "software cost period start is required")
+        if not isinstance(vendor, str) or not vendor.strip():
             raise ValidationError("software vendor is required")
         item = {
             "id": self.new_id("software_cost"), "organization_id": organization_id,
             "workspace_id": workspace_id, "vendor": vendor.strip(), "amount": amount,
-            "currency": currency, "period_start": period_start, "source": source.strip(),
+            "currency": currency.strip(), "period_start": period_start, "source": source.strip(),
         }
         self.conn.execute("INSERT INTO software_costs VALUES (?,?,?,?,?,?,?,?)", tuple(item.values()))
         self.conn.commit()
@@ -419,7 +429,10 @@ class AgencyOperations:
         currency: str = "USD", agent_id: str | None = None) -> dict[str, Any]:
         self._authorize_finance_write(organization_id, workspace_id, person_id)
         self._validate_finance_amount(amount, currency, source)
-        if tokens < 0 or not provider.strip() or not model.strip():
+        occurred_at = self._validate_finance_date(occurred_at, "AI usage date is required")
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+            raise ValidationError("AI provider, model, and non-negative token count are required")
+        if not isinstance(provider, str) or not provider.strip() or not isinstance(model, str) or not model.strip():
             raise ValidationError("AI provider, model, and non-negative token count are required")
         if agent_id and not self.conn.execute(
             "SELECT 1 FROM agents WHERE organization_id=? AND id=?", (organization_id, agent_id)
@@ -428,7 +441,7 @@ class AgencyOperations:
         item = {
             "id": self.new_id("ai_cost"), "organization_id": organization_id,
             "workspace_id": workspace_id, "agent_id": agent_id, "provider": provider.strip(),
-            "model": model.strip(), "tokens": tokens, "amount": amount, "currency": currency,
+            "model": model.strip(), "tokens": tokens, "amount": amount, "currency": currency.strip(),
             "occurred_at": occurred_at, "source": source.strip(),
         }
         self.conn.execute("INSERT INTO ai_usage_costs VALUES (?,?,?,?,?,?,?,?,?,?,?)", tuple(item.values()))
@@ -438,6 +451,8 @@ class AgencyOperations:
     def calculate_client_economics(self, organization_id: str, workspace_id: str, person_id: str,
         period_start: str, period_end: str) -> dict[str, Any]:
         self._authorize_finance_write(organization_id, workspace_id, person_id)
+        period_start = self._validate_finance_date(period_start, "economics period start is required")
+        period_end = self._validate_finance_date(period_end, "economics period end is required")
         if period_end < period_start:
             raise ValidationError("economics period end must not precede period start")
         base = (organization_id, workspace_id, period_start, period_end)
@@ -487,10 +502,14 @@ class AgencyOperations:
 
     def _authorize_finance_write(self, organization_id: str, workspace_id: str | None,
         person_id: str) -> None:
-        if workspace_id:
+        if workspace_id is not None:
             self.authorize(organization_id, workspace_id, person_id, write=True)
-        elif self.company.org_membership(organization_id, person_id) is None:
-            raise AuthorizationError("organization membership required")
+        else:
+            membership = self.company.org_membership(organization_id, person_id)
+            if membership is None:
+                raise AuthorizationError("organization membership required")
+            if membership.role not in {"owner", "admin"}:
+                raise AuthorizationError("organization admin required")
         connection = self.conn.execute(
             "SELECT status FROM finance_connections WHERE organization_id=?", (organization_id,)
         ).fetchone()
@@ -499,10 +518,26 @@ class AgencyOperations:
 
     @staticmethod
     def _validate_finance_amount(amount: float, currency: str, source: str) -> None:
-        if amount < 0:
-            raise ValidationError("finance amount cannot be negative")
-        if not currency.strip() or not source.strip():
+        try:
+            finite = math.isfinite(amount)
+            negative = amount < 0
+        except (TypeError, ValueError):
+            raise ValidationError("finance amount must be finite and non-negative")
+        if isinstance(amount, bool) or not finite or negative:
+            raise ValidationError("finance amount must be finite and non-negative")
+        if not isinstance(currency, str) or not currency.strip() or not isinstance(source, str) or not source.strip():
             raise ValidationError("finance currency and source are required")
+
+    @staticmethod
+    def _validate_finance_date(value: str, message: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValidationError(message)
+        normalized = value.strip()
+        try:
+            datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValidationError("invalid finance date") from exc
+        return normalized
 
     def request_approval(self, organization_id: str, requested_by_type: str, requested_by_id: str,
         requested_for: str, action_type: str, payload: dict[str, Any], reason: str, policy: str = "human",
