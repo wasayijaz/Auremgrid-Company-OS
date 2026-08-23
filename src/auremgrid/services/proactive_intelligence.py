@@ -40,6 +40,7 @@ class ProactiveIntelligenceService:
         workspace_id: str | None = None,
         idempotency_key: str | None = None,
         priority: int = 0,
+        runbook_id: str | None = None,
     ) -> dict[str, Any]:
         snapshot_type = self._snapshot_type(snapshot_type)
         if snapshot_type == "workspace" and not workspace_id:
@@ -58,7 +59,7 @@ class ProactiveIntelligenceService:
             workspace_id,
             scoped.principal_id,
             "proactive_intelligence.refresh",
-            {"snapshot_type": snapshot_type, "workspace_id": workspace_id},
+            {"snapshot_type": snapshot_type, "workspace_id": workspace_id, "runbook_id": runbook_id},
             priority=int(priority),
             max_attempts=3,
             idempotency_key=key,
@@ -72,6 +73,7 @@ class ProactiveIntelligenceService:
         workspace_id: str | None = None,
         actor_id: str | None = None,
         as_of: datetime | None = None,
+        runbook_id: str | None = None,
     ) -> dict[str, Any]:
         snapshot_type = self._snapshot_type(snapshot_type)
         if snapshot_type == "executive":
@@ -88,6 +90,15 @@ class ProactiveIntelligenceService:
                 organization_id, workspace_id, person_id, actor_id=actor_id, as_of=as_of,
                 use_reasoning_provider=False,
             )
+            if runbook_id and hasattr(self.os, "intelligence_orchestrator"):
+                orchestration = self.os.intelligence_orchestrator.run(
+                    organization_id, workspace_id, person_id, actor_id=actor_id,
+                    runbook_id=runbook_id, as_of=as_of,
+                )
+                payload["orchestration"] = orchestration
+                payload["trace_id"] = orchestration.get("trace_id")
+                payload["recommendation_id"] = orchestration.get("recommendation_id")
+                payload["runbook_route"] = orchestration.get("runbook_route")
         generated_at = str(payload.get("generated_at") or _now().isoformat())
         status = self._snapshot_status(payload)
         degraded_reason = payload.get("degraded_reason")
@@ -140,9 +151,82 @@ class ProactiveIntelligenceService:
                         item["status"], _json_dump(item["evidence_refs"]), generated_at,
                         snapshot["created_at"],
                     ),
-                )
+                    )
+            self._sync_attention_lifecycle(snapshot, attention, payload)
         snapshot["attention"] = attention
         return snapshot
+
+    def _sync_attention_lifecycle(self, snapshot: dict[str, Any], attention: list[dict[str, Any]], payload: dict[str, Any]) -> None:
+        """Dedupe attention across snapshots while preserving lifecycle state."""
+        trace_id = payload.get("trace_id") or (payload.get("deliberation") or {}).get("trace_id")
+        recommendation_id = payload.get("recommendation_id")
+        for item in attention:
+            fingerprint = hashlib.sha256(_json_dump({
+                "title": item["title"], "narrative": item["narrative"], "evidence": item["evidence_refs"],
+            }).encode("utf-8")).hexdigest()
+            prior = self.conn.execute(
+                "SELECT * FROM proactive_intelligence_attention_lifecycle WHERE organization_id=? AND workspace_id IS ? AND person_id=? AND fingerprint=?",
+                (snapshot["organization_id"], snapshot.get("workspace_id"), snapshot["person_id"], fingerprint),
+            ).fetchone()
+            status = "resurfaced" if prior and prior["status"] in {"resolved", "dismissed"} else (prior["status"] if prior else "new")
+            now = _now().isoformat()
+            if prior is None:
+                self.conn.execute(
+                    "INSERT INTO proactive_intelligence_attention_lifecycle VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (self.os.jobs.new_id("intelcycle"), snapshot["organization_id"], snapshot.get("workspace_id"), snapshot["person_id"], fingerprint, snapshot["id"], item["id"], status, trace_id, recommendation_id, _json_dump(item.get("action_descriptor") or {}), None, "new projection", now, now),
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE proactive_intelligence_attention_lifecycle SET snapshot_id=?,attention_item_id=?,status=?,trace_id=?,recommendation_id=?,updated_at=? WHERE id=?",
+                    (snapshot["id"], item["id"], status, trace_id, recommendation_id, now, prior["id"]),
+                )
+
+    def update_attention_status(self, identity: AuthenticatedIdentity, fingerprint: str, status: str, reason: str = "") -> dict[str, Any]:
+        if status not in {"acknowledged", "acted_on", "resolved", "dismissed"}:
+            raise ValidationError("unsupported attention lifecycle status")
+        identity.require("brain_read")
+        row = self.conn.execute(
+            "SELECT * FROM proactive_intelligence_attention_lifecycle WHERE organization_id=? AND person_id=? AND fingerprint=?",
+            (identity.organization_id, identity.person_id, fingerprint),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("attention lifecycle item not found")
+        if row["workspace_id"] is not None:
+            self.os.auth.scope_identity(identity, row["workspace_id"]).require("brain_read")
+        now = _now().isoformat()
+        self.conn.execute("UPDATE proactive_intelligence_attention_lifecycle SET status=?,reason=?,updated_at=? WHERE id=?", (status, reason, now, row["id"]))
+        self.conn.commit()
+        return dict(self.conn.execute("SELECT * FROM proactive_intelligence_attention_lifecycle WHERE id=?", (row["id"],)).fetchone())
+
+    def attention_lifecycle(self, identity: AuthenticatedIdentity, workspace_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        scoped = identity if workspace_id is None else self.os.auth.scope_identity(identity, workspace_id)
+        scoped.require("brain_read")
+        rows = self.conn.execute(
+            "SELECT * FROM proactive_intelligence_attention_lifecycle WHERE organization_id=? AND person_id=? AND workspace_id IS ? ORDER BY updated_at DESC LIMIT ?",
+            (scoped.organization_id, scoped.person_id, workspace_id, int(limit)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_action_acted_on(self, identity: AuthenticatedIdentity, fingerprint: str, approval_request_id: str, reason: str = "approved action") -> dict[str, Any]:
+        identity.require("brain_read")
+        row = self.conn.execute(
+            "SELECT * FROM proactive_intelligence_attention_lifecycle WHERE organization_id=? AND person_id=? AND fingerprint=?",
+            (identity.organization_id, identity.person_id, fingerprint),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("attention lifecycle item not found")
+        approval = self.conn.execute(
+            "SELECT * FROM approval_requests WHERE organization_id=? AND id=? AND workspace_id IS ?",
+            (identity.organization_id, approval_request_id, row["workspace_id"]),
+        ).fetchone()
+        if approval is None or approval["status"] != "approved":
+            raise AuthorizationError("approved canonical action required")
+        if row["workspace_id"] is not None:
+            self.os.auth.scope_identity(identity, row["workspace_id"]).require("workspace_write")
+        now = _now().isoformat()
+        self.conn.execute("UPDATE proactive_intelligence_attention_lifecycle SET status='acted_on',approval_request_id=?,reason=?,updated_at=? WHERE id=?", (approval_request_id, reason, now, row["id"]))
+        self.conn.commit()
+        return dict(self.conn.execute("SELECT * FROM proactive_intelligence_attention_lifecycle WHERE id=?", (row["id"],)).fetchone())
 
     def latest_snapshot(
         self,
@@ -397,6 +481,7 @@ class ProactiveIntelligenceService:
                 "title": title,
                 "narrative": narrative,
                 "status": status,
+                "action_descriptor": (item.get("action_descriptors") or item.get("actions") or [None])[0],
                 "evidence_refs": evidence_refs,
                 "generated_at": snapshot["generated_at"],
                 "created_at": snapshot["created_at"],

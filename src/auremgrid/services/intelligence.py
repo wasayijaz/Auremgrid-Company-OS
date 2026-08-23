@@ -950,8 +950,18 @@ class IntelligenceService:
         for row in prior_risks:
             if str(row.get("id")) in current_risk_ids:
                 continue
-            overlap = len(current_terms & _tokens(f"{row.get('type')} {row.get('evidence')}"))
+            candidate_terms = _tokens(f"{row.get('type')} {row.get('evidence')}")
+            overlap = len(current_terms & candidate_terms)
             if overlap:
+                similarity = round(overlap / max(1, len(current_terms | candidate_terms)), 3)
+                metadata = self._analogue_metadata(
+                    current_terms, candidate_terms,
+                    matching_dimensions=["signal_terms"],
+                    different_dimensions=["resolution_state"] if row.get("status") != "open" else [],
+                    intervention=row.get("resolution") or "No recorded intervention.",
+                    subsequent_outcome=row.get("resolution") or row.get("status"),
+                    similarity=similarity,
+                )
                 analogues.append({
                     "kind": "risk_pattern",
                     "source": self._ref("risks", row["id"]),
@@ -966,6 +976,7 @@ class IntelligenceService:
                     },
                     "evidence": [self._ref("risks", row["id"])],
                     "confidence": _confidence(min(0.9, 0.48 + overlap * 0.12)),
+                    **metadata,
                 })
         prior_events = self._optional_rows(
             """SELECT id,work_item_id,action,detail,recorded_at FROM work_events
@@ -975,8 +986,18 @@ class IntelligenceService:
         for row in prior_events:
             if str(row.get("work_item_id")) in current_work_ids:
                 continue
-            overlap = len(current_terms & _tokens(f"{row.get('action')} {row.get('detail')}"))
+            candidate_terms = _tokens(f"{row.get('action')} {row.get('detail')}")
+            overlap = len(current_terms & candidate_terms)
             if overlap:
+                similarity = round(overlap / max(1, len(current_terms | candidate_terms)), 3)
+                metadata = self._analogue_metadata(
+                    current_terms, candidate_terms,
+                    matching_dimensions=["signal_terms", "delivery_action"],
+                    different_dimensions=["current_work_item"] if row.get("work_item_id") not in current_work_ids else [],
+                    intervention=row.get("detail") or row.get("action"),
+                    subsequent_outcome=row.get("to_status") or row.get("action"),
+                    similarity=similarity,
+                )
                 analogues.append({
                     "kind": "delivery_pattern",
                     "source": self._ref("work_events", row["id"]),
@@ -991,8 +1012,30 @@ class IntelligenceService:
                     },
                     "evidence": [self._ref("work_events", row["id"])],
                     "confidence": _confidence(min(0.82, 0.42 + overlap * 0.1)),
+                    **metadata,
                 })
         return analogues[:8]
+
+    @staticmethod
+    def _analogue_metadata(
+        current_terms: set[str],
+        candidate_terms: set[str],
+        *,
+        matching_dimensions: list[str],
+        different_dimensions: list[str],
+        intervention: Any,
+        subsequent_outcome: Any,
+        similarity: float,
+    ) -> dict[str, Any]:
+        """Describe only dimensions supported by the compared canonical rows."""
+        return {
+            "matching_dimensions": matching_dimensions,
+            "different_dimensions": different_dimensions,
+            "intervention": intervention,
+            "subsequent_outcome": subsequent_outcome,
+            "similarity": _confidence(similarity),
+            "evidence_status": "available" if candidate_terms else "unavailable",
+        }
 
     def _portfolio_analogues(
         self,
@@ -1059,6 +1102,8 @@ class IntelligenceService:
         for item in sorted(candidates, key=lambda entry: (-int(entry["overlap"]), str(entry["row"].get("id"))))[:12]:
             row = item["row"]
             resolved = item in resolved_rows
+            candidate_terms = _tokens(f"{row.get('type')} {row.get('evidence')} {row.get('action')} {row.get('detail')}")
+            reader_terms = current_terms.get(str(item["matched_readers"][0]), set())
             analogues.append({
                 "kind": item["kind"],
                 "source": {"type": "risk" if item["kind"] == "risk_pattern" else "work_event", "id": str(row.get("id")), "workspace_id": str(row.get("workspace_id")), "workspace_name": names.get(str(row.get("workspace_id")), str(row.get("workspace_id")))},
@@ -1072,6 +1117,11 @@ class IntelligenceService:
                 },
                 "evidence": [self._ref("risks" if item["kind"] == "risk_pattern" else "work_events", str(row.get("id")))],
                 "confidence": _confidence(min(0.9, 0.48 + int(item["overlap"]) * 0.08)),
+                "matching_dimensions": ["signal_terms"],
+                "different_dimensions": ["workspace_scope"],
+                "intervention": row.get("resolution") or row.get("detail") or row.get("action") or "No recorded intervention.",
+                "subsequent_outcome": row.get("resolution") or row.get("status") or row.get("action"),
+                "similarity": _confidence(round(int(item["overlap"]) / max(1, len(reader_terms | candidate_terms)), 3)),
             })
         return analogues
 
@@ -1639,6 +1689,58 @@ class IntelligenceService:
                 "downside": "The scenario is incomplete when client economics or capacity hours are not connected.",
                 "confidence": _confidence(0.56 if configured else 0.28),
                 "evidence": evidence[:8],
+            })
+        # Scenario v2 branches are additive: retain legacy names above while
+        # exposing four explicit decision branches with honest missing-data
+        # and sensitivity metadata.
+        retained = scenario_inputs.get("retained_inputs", {})
+        has_inputs = any(value not in (None, "", 0, 0.0) for key, value in retained.items() if key != "client_action")
+        baseline_projection = {
+            "capacity": projection.get("capacity_remaining_hours"),
+            "delivery": projection.get("work_demand_hours"),
+            "finance": projection.get("recognized_revenue"),
+            "client_health": projected_health,
+            "campaign": None,
+        }
+        missing = [key for key, value in baseline_projection.items() if value is None]
+        v2 = [
+            ("baseline", {}, "Observe current canonical state without intervention."),
+            ("option_a", {"capacity_hours_delta": retained.get("capacity_hours_delta", 0.0)}, "Add or protect capacity using only supplied hours."),
+            ("option_b", {"work_hours_delta": retained.get("work_hours_delta", 0.0)}, "Change delivery demand using only supplied work hours."),
+            ("option_c", {"client_action": retained.get("client_action")}, "Change client scope only when an explicit client action is supplied."),
+        ]
+        for name, changed, summary in v2:
+            branch_inputs = {key: value for key, value in changed.items() if value not in (None, "", 0, 0.0)}
+            branch_missing = list(missing)
+            if name == "option_c" and not branch_inputs:
+                branch_missing.append("client_action")
+            sensitivity = None
+            if has_inputs and branch_inputs:
+                sensitivity = {
+                    "status": "bounded",
+                    "basis": sorted(branch_inputs),
+                    "direction": "improves_capacity_or_delivery" if name in {"option_a", "option_b"} else "depends_on_client_economics",
+                }
+            scenarios.append({
+                "name": name,
+                "summary": summary,
+                "assumptions": ["Only retained read-time inputs are changed", "Unobserved market and causal factors remain unknown"],
+                "changed_inputs": branch_inputs,
+                "retained_inputs": retained,
+                "domain_impacts": {
+                    "capacity": baseline_projection["capacity"] if name == "baseline" else ("unknown" if "capacity" in branch_missing else baseline_projection["capacity"]),
+                    "delivery": baseline_projection["delivery"],
+                    "finance": baseline_projection["finance"],
+                    "client_health": baseline_projection["client_health"],
+                    "campaign": baseline_projection["campaign"],
+                },
+                "risks": ["Branch is directional and requires a measured canonical outcome."],
+                "missing_data": branch_missing,
+                "sensitivity": sensitivity,
+                "confidence": _confidence(0.62 if branch_inputs and not branch_missing else 0.32),
+                "constraints": ["No metrics are fabricated", *scenario_inputs["constraints"]],
+                "mitigations": ["Convert an approved branch into canonical work before acting", "Measure the next outcome"],
+                "evidence": evidence[:6],
             })
         return scenarios
 

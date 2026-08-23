@@ -73,6 +73,19 @@ class McpToolRouter:
             {"name": "integrations.credentials.bind", "description": "Bind an external secret reference to an integration."},
             {"name": "integrations.verify", "description": "Verify a bound credential with its provider."},
             {"name": "integrations.sync", "description": "Enqueue durable synchronization for a verified integration."},
+            {"name": "intelligence.profiles.list", "description": "List ACL-scoped immutable expert profiles."},
+            {"name": "intelligence.profiles.get", "description": "Get one ACL-scoped immutable expert profile."},
+            {"name": "intelligence.runbooks.list", "description": "List ACL-scoped immutable intelligence runbooks."},
+            {"name": "intelligence.runbooks.get", "description": "Get one ACL-scoped immutable intelligence runbook."},
+            {"name": "intelligence.orchestrator.run", "description": "Run a bounded, read-only expert orchestration over visible intelligence."},
+            {"name": "intelligence.orchestrator.result", "description": "Get a previously returned read-only orchestration result by scoped trace id."},
+            {"name": "intelligence.learning.get", "description": "Read workspace-scoped hypotheses, recommendations, and recommendation lifecycle events."},
+            {"name": "intelligence.hypotheses.record", "description": "Record a workspace-scoped interpretation hypothesis without promoting facts."},
+            {"name": "intelligence.recommendations.record", "description": "Record a workspace-scoped recommendation for human lifecycle review."},
+            {"name": "intelligence.recommendations.lifecycle", "description": "Append an accepted/rejected/chosen/evaluated lifecycle event to a recommendation."},
+            {"name": "intelligence.evaluation_safety.get", "description": "Read shadow evaluation and circuit-breaker status."},
+            {"name": "intelligence.evaluation.start", "description": "Start a shadow-only intelligence evaluation record."},
+            {"name": "intelligence.evaluation.complete", "description": "Complete a scoped shadow-only intelligence evaluation record."},
         ]
         namespaced = {
             "brain.search":"Search cited evidence.","brain.entity":"Get a brain entity.","brain.entity.candidates":"Discover scoped entity-resolution candidates.","brain.history":"Get temporal fact history.",
@@ -101,7 +114,12 @@ class McpToolRouter:
                 "workflows.templates","workflows.runs.get","workflows.runs.create","workflows.stages.start",
                 "workflows.stages.complete","workflows.evidence.add","workflows.approvals.request",
                 "workflows.approvals.decide","workflows.handoffs.acknowledge","integrations.list",
-                "integrations.configure","integrations.credentials.bind","integrations.verify","integrations.sync"}
+                "integrations.configure","integrations.credentials.bind","integrations.verify","integrations.sync",
+                "intelligence.profiles.list","intelligence.profiles.get","intelligence.runbooks.list",
+                "intelligence.runbooks.get","intelligence.orchestrator.run","intelligence.orchestrator.result",
+                "intelligence.learning.get","intelligence.hypotheses.record","intelligence.recommendations.record",
+                "intelligence.recommendations.lifecycle","intelligence.evaluation_safety.get",
+                "intelligence.evaluation.start","intelligence.evaluation.complete"}
             if name in company_tools:
                 return self._call_company_tool(name, arguments)
             workspace_id = _required(arguments, "workspace_id")
@@ -460,6 +478,147 @@ class McpToolRouter:
             return {"jobs":self.os.integrations.enqueue_sync(self.identity,integration_id,
                 int(arguments.get("priority",0)),int(arguments.get("max_attempts",5)),
                 _optional_str(arguments.get("idempotency_key")))}
+        if name == "intelligence.profiles.list":
+            workspace = _required(arguments, "workspace_id")
+            return {"profiles": list(self.os.intelligence_contracts.list_profiles(
+                organization_id, workspace, person_id,
+                domain=_optional_str(arguments.get("domain")),
+                capability_level=_optional_str(arguments.get("capability_level")),
+                capabilities=self.identity.capabilities,
+            ))}
+        if name == "intelligence.profiles.get":
+            workspace = _required(arguments, "workspace_id")
+            return {"profile": self.os.intelligence_contracts.get_profile(
+                organization_id, workspace, person_id, _required(arguments, "profile_id"),
+                version=_optional_int(arguments.get("version")),
+                capabilities=self.identity.capabilities,
+            )}
+        if name == "intelligence.runbooks.list":
+            workspace = _required(arguments, "workspace_id")
+            return {"runbooks": list(self.os.intelligence_contracts.list_runbooks(
+                organization_id, workspace, person_id,
+                domain=_optional_str(arguments.get("domain")),
+                profile_id=_optional_str(arguments.get("profile_id")),
+                capabilities=self.identity.capabilities,
+            ))}
+        if name == "intelligence.runbooks.get":
+            workspace = _required(arguments, "workspace_id")
+            return {"runbook": self.os.intelligence_contracts.get_runbook(
+                organization_id, workspace, person_id, _required(arguments, "runbook_id"),
+                version=_optional_int(arguments.get("version")),
+                capabilities=self.identity.capabilities,
+            )}
+        if name == "intelligence.orchestrator.run":
+            workspace = _required(arguments, "workspace_id")
+            actor_id = None
+            try:
+                actor_id = self.os.auth.actor_for_identity(self.identity, workspace)
+            except AuthorizationError:
+                actor_id = None
+            return {"result": self.os.intelligence_orchestrator.run(
+                organization_id,
+                workspace,
+                person_id,
+                actor_id=actor_id,
+                runbook_id=_optional_str(arguments.get("runbook_id")),
+                profile_ids=_optional_string_sequence(arguments.get("profile_ids"), "profile_ids"),
+                query=_optional_str(arguments.get("query")),
+                as_of=_optional_dt(arguments.get("as_of")),
+                capabilities=self.identity.capabilities,
+                iterations=int(arguments.get("iterations", 1)),
+            )}
+        if name == "intelligence.orchestrator.result":
+            workspace = _required(arguments, "workspace_id")
+            result = self.os.intelligence_orchestrator.get_run(
+                _required(arguments, "trace_id"), organization_id, workspace, person_id,
+            )
+            if result is None:
+                raise AuremgridError("orchestrator result not found")
+            return {"result": result}
+        if name == "intelligence.learning.get":
+            workspace = _required(arguments, "workspace_id")
+            return self.os.intelligence_learning.workspace_learning(organization_id, workspace, person_id)
+        if name == "intelligence.hypotheses.record":
+            workspace = _required(arguments, "workspace_id")
+            return {"hypothesis": self.os.intelligence_learning.record_hypothesis(
+                organization_id, workspace, person_id, _required(arguments, "text"),
+                evidence_for_refs=arguments.get("evidence_for_refs"),
+                evidence_against_refs=arguments.get("evidence_against_refs"),
+                status=str(arguments.get("status") or "proposed"),
+                confidence=float(arguments.get("confidence", 0.5)),
+                assumptions=arguments.get("assumptions"),
+                generated_by=arguments.get("generated_by"),
+                resolution=_optional_str(arguments.get("resolution")),
+                outcome=arguments.get("outcome"),
+                supersedes_hypothesis_id=_optional_str(arguments.get("supersedes_hypothesis_id")),
+                idempotency_key=_optional_str(arguments.get("idempotency_key")),
+            )}
+        if name == "intelligence.recommendations.record":
+            workspace = _required(arguments, "workspace_id")
+            return {"recommendation": self.os.intelligence_learning.record_recommendation(
+                organization_id, workspace, person_id, _required(arguments, "summary"),
+                runbook_id=_required(arguments, "runbook_id"),
+                runbook_version=int(arguments.get("runbook_version")),
+                profile_contributors=_required_list(arguments.get("profile_contributors"), "profile_contributors"),
+                confidence=float(arguments.get("confidence", 0.5)),
+                options=_required_list(arguments.get("options"), "options"),
+                recommended_option_id=_optional_str(arguments.get("recommended_option_id")),
+                evidence_refs=_required_list(arguments.get("evidence_refs"), "evidence_refs"),
+                evaluation_window_start=_required(arguments, "evaluation_window_start"),
+                evaluation_window_end=_required(arguments, "evaluation_window_end"),
+                generated_by=arguments.get("generated_by"),
+                idempotency_key=_optional_str(arguments.get("idempotency_key")),
+            )}
+        if name == "intelligence.recommendations.lifecycle":
+            workspace = _required(arguments, "workspace_id")
+            return {"event": self.os.intelligence_learning.append_recommendation_event(
+                organization_id, workspace, person_id, _required(arguments, "recommendation_id"),
+                _required(arguments, "event_type"),
+                chosen_option_id=_optional_str(arguments.get("chosen_option_id")),
+                measured_outcomes=arguments.get("measured_outcomes"),
+                score=None if arguments.get("score") is None else float(arguments.get("score")),
+                lessons=str(arguments.get("lessons") or ""),
+                evidence_refs=arguments.get("evidence_refs"),
+                evaluation_window_start=_optional_str(arguments.get("evaluation_window_start")),
+                evaluation_window_end=_optional_str(arguments.get("evaluation_window_end")),
+                idempotency_key=_optional_str(arguments.get("idempotency_key")),
+            )}
+        if name == "intelligence.evaluation_safety.get":
+            workspace = _required(arguments, "workspace_id")
+            return _evaluation_safety_status(
+                self.os, organization_id, workspace, person_id,
+                _optional_str(arguments.get("task_class")) or "reasoning",
+            )
+        if name == "intelligence.evaluation.start":
+            workspace = _required(arguments, "workspace_id")
+            return {"evaluation": self.os.intelligence_evaluation_safety.start(
+                organization_id, person_id, _required(arguments, "task_class"),
+                workspace_id=workspace,
+                provider=_optional_str(arguments.get("provider")),
+                model=_optional_str(arguments.get("model")),
+                specialist_profile_id=_optional_str(arguments.get("specialist_profile_id")),
+                runbook_id=_optional_str(arguments.get("runbook_id")),
+                runbook_version=_optional_int(arguments.get("runbook_version")),
+                trace_id=_optional_str(arguments.get("trace_id")),
+                agent_run_id=_optional_str(arguments.get("agent_run_id")),
+            )}
+        if name == "intelligence.evaluation.complete":
+            workspace = _required(arguments, "workspace_id")
+            evaluation_id = _required(arguments, "evaluation_id")
+            _require_evaluation_scope(self.os, organization_id, workspace, evaluation_id)
+            return {"evaluation": self.os.intelligence_evaluation_safety.complete(
+                organization_id, person_id, evaluation_id,
+                input_tokens=_optional_int(arguments.get("input_tokens")),
+                output_tokens=_optional_int(arguments.get("output_tokens")),
+                cost_amount=None if arguments.get("cost_amount") is None else float(arguments.get("cost_amount")),
+                cost_currency=_optional_str(arguments.get("cost_currency")),
+                evidence_completeness=None if arguments.get("evidence_completeness") is None else float(arguments.get("evidence_completeness")),
+                evaluator_score=None if arguments.get("evaluator_score") is None else float(arguments.get("evaluator_score")),
+                human_acceptance=arguments.get("human_acceptance") if isinstance(arguments.get("human_acceptance"), bool) else None,
+                revision_count=int(arguments.get("revision_count", 0)),
+                downstream_outcome_score=None if arguments.get("downstream_outcome_score") is None else float(arguments.get("downstream_outcome_score")),
+                metadata=arguments.get("metadata") if isinstance(arguments.get("metadata"), dict) else None,
+            )}
         raise AuremgridError(f"unknown tool: {name}")
 
 
@@ -486,6 +645,60 @@ def _optional_int(value: Any) -> int | None:
     return int(value) if value is not None else None
 
 
+def _optional_string_sequence(value: Any, key: str) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise AuremgridError(f"{key} must be a list")
+    return [str(item) for item in value]
+
+
+def _required_list(value: Any, key: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise AuremgridError(f"{key} must be a list")
+    return value
+
+
+def _evaluation_safety_status(
+    os: CompanyOS, organization_id: str, workspace_id: str, person_id: str, task_class: str
+) -> dict[str, Any]:
+    decision = os.intelligence_evaluation_safety.can_start(organization_id, person_id, task_class)
+    rows = [
+        dict(row)
+        for row in os.store.conn.execute(
+            """SELECT * FROM intelligence_evaluation_runs
+               WHERE organization_id=? AND (workspace_id IS NULL OR workspace_id=?)
+               ORDER BY created_at DESC,id DESC LIMIT 20""",
+            (organization_id, workspace_id),
+        ).fetchall()
+    ]
+    events = [
+        dict(row)
+        for row in os.store.conn.execute(
+            """SELECT * FROM intelligence_evaluation_circuit_events
+               WHERE organization_id=? AND task_class=?
+               ORDER BY created_at DESC,id DESC LIMIT 20""",
+            (organization_id, task_class),
+        ).fetchall()
+    ]
+    return {
+        "scope": {"organization_id": organization_id, "workspace_id": workspace_id, "person_id": person_id},
+        "task_class": task_class,
+        "circuit": decision,
+        "evaluations": rows,
+        "circuit_events": events,
+    }
+
+
+def _require_evaluation_scope(os: CompanyOS, organization_id: str, workspace_id: str, evaluation_id: str) -> None:
+    row = os.store.conn.execute(
+        "SELECT workspace_id FROM intelligence_evaluation_runs WHERE organization_id=? AND id=?",
+        (organization_id, evaluation_id),
+    ).fetchone()
+    if row is None or row["workspace_id"] != workspace_id:
+        raise AuremgridError("evaluation not found")
+
+
 def _mcp_capability(name: str) -> str:
     # Keep the public namespaced candidate tool on the proposal capability
     # before McpToolRouter aliases it to the internal handler name.  The HTTP
@@ -494,7 +707,11 @@ def _mcp_capability(name: str) -> str:
     if name in {"brain.propose", "brain.entity.candidates", "entity_candidates"}: return "brain_propose"
     if name in {"brain.promote"}: return "brain_promote"
     if name in {"brain.resolve_conflict"}: return "brain_promote"
-    if name in {"search","entity","history","neighbors","sources","recent","brief","engines"} or name.startswith("brain."):
+    if name in {"intelligence.hypotheses.record", "intelligence.recommendations.record", "intelligence.evaluation.start"}:
+        return "brain_propose"
+    if name in {"intelligence.recommendations.lifecycle", "intelligence.evaluation.complete"}:
+        return "brain_promote"
+    if name in {"search","entity","history","neighbors","sources","recent","brief","engines"} or name.startswith("brain.") or name.startswith("intelligence."):
         return "brain_read"
     if name == "remember": return "brain_propose"
     if name in {"decisions.create"}: return "brain_promote"

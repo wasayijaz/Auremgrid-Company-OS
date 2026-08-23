@@ -3144,6 +3144,325 @@ MIGRATIONS = (
         DROP TABLE scheduler_controls_v40;
         """,
     ),
+    Migration(
+        42,
+        "intelligence_expert_runbook_foundation",
+        """
+        CREATE TABLE IF NOT EXISTS expert_profiles (
+            id TEXT NOT NULL,
+            version INTEGER NOT NULL CHECK(version > 0),
+            name TEXT NOT NULL,
+            specialty TEXT NOT NULL,
+            mission TEXT NOT NULL,
+            required_inputs_json TEXT NOT NULL,
+            allowed_domains_json TEXT NOT NULL,
+            allowed_tools_json TEXT NOT NULL,
+            required_evidence_json TEXT NOT NULL,
+            reasoning_method TEXT NOT NULL,
+            output_schema_json TEXT NOT NULL,
+            evaluation_criteria_json TEXT NOT NULL,
+            escalation_policy TEXT NOT NULL,
+            fallback_policy TEXT NOT NULL,
+            max_context INTEGER NOT NULL CHECK(max_context > 0),
+            max_iterations INTEGER NOT NULL CHECK(max_iterations > 0),
+            capability_level TEXT NOT NULL CHECK(capability_level IN ('L0','L1','L2','L3')),
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            domains_json TEXT NOT NULL,
+            allowed_tool_refs_json TEXT NOT NULL,
+            reasoning_methods_json TEXT NOT NULL,
+            activation_triggers_json TEXT NOT NULL,
+            outputs_json TEXT NOT NULL,
+            handoff_targets_json TEXT NOT NULL,
+            quality_gates_json TEXT NOT NULL,
+            constraints_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('active','retired')),
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(id, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_expert_profiles_active
+            ON expert_profiles(status, name, id);
+        CREATE TRIGGER IF NOT EXISTS expert_profiles_no_update BEFORE UPDATE ON expert_profiles BEGIN
+            SELECT RAISE(ABORT, 'expert profiles are immutable versioned contracts');
+        END;
+        CREATE TRIGGER IF NOT EXISTS expert_profiles_no_delete BEFORE DELETE ON expert_profiles BEGIN
+            SELECT RAISE(ABORT, 'expert profiles are immutable versioned contracts');
+        END;
+
+        CREATE TABLE IF NOT EXISTS intelligence_runbooks (
+            id TEXT NOT NULL,
+            version INTEGER NOT NULL CHECK(version > 0),
+            name TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            required_domains_json TEXT NOT NULL,
+            required_evidence_json TEXT NOT NULL,
+            specialists_json TEXT NOT NULL,
+            topology TEXT NOT NULL,
+            stages_json TEXT NOT NULL,
+            quality_gates_json TEXT NOT NULL,
+            contradiction_policy TEXT NOT NULL,
+            scenario_policy TEXT NOT NULL,
+            escalation_policy TEXT NOT NULL,
+            max_iterations INTEGER NOT NULL CHECK(max_iterations > 0),
+            output_contract_json TEXT NOT NULL,
+            capability_level TEXT NOT NULL CHECK(capability_level IN ('L0','L1','L2','L3')),
+            summary TEXT NOT NULL,
+            intent TEXT NOT NULL,
+            domains_json TEXT NOT NULL,
+            profile_ids_json TEXT NOT NULL,
+            activation_sequence_json TEXT NOT NULL,
+            steps_json TEXT NOT NULL,
+            handoff_gates_json TEXT NOT NULL,
+            required_inputs_json TEXT NOT NULL,
+            outputs_json TEXT NOT NULL,
+            stop_conditions_json TEXT NOT NULL,
+            allowed_tool_refs_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('active','retired')),
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(id, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_intelligence_runbooks_active
+            ON intelligence_runbooks(status, name, id);
+        CREATE TRIGGER IF NOT EXISTS intelligence_runbooks_no_update BEFORE UPDATE ON intelligence_runbooks BEGIN
+            SELECT RAISE(ABORT, 'intelligence runbooks are immutable versioned contracts');
+        END;
+        CREATE TRIGGER IF NOT EXISTS intelligence_runbooks_no_delete BEFORE DELETE ON intelligence_runbooks BEGIN
+            SELECT RAISE(ABORT, 'intelligence runbooks are immutable versioned contracts');
+        END;
+        """,
+    ),
+    Migration(
+        43,
+        "intelligence_learning_persistence",
+        """
+        CREATE TABLE IF NOT EXISTS intelligence_hypotheses (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            evidence_for_refs_json TEXT NOT NULL,
+            evidence_against_refs_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('proposed','supported','challenged','refuted','resolved','retired')),
+            confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+            assumptions_json TEXT NOT NULL,
+            generated_by_type TEXT NOT NULL CHECK(generated_by_type IN ('person','agent','expert_profile','runbook','model','system')),
+            generated_by_id TEXT NOT NULL,
+            recorded_by_person_id TEXT NOT NULL,
+            supersedes_hypothesis_id TEXT,
+            resolution TEXT,
+            outcome_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(recorded_by_person_id) REFERENCES people(id),
+            FOREIGN KEY(supersedes_hypothesis_id) REFERENCES intelligence_hypotheses(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_intelligence_hypotheses_scope
+            ON intelligence_hypotheses(organization_id, workspace_id, created_at, id);
+        CREATE TRIGGER IF NOT EXISTS intelligence_hypotheses_no_update BEFORE UPDATE ON intelligence_hypotheses BEGIN
+            SELECT RAISE(ABORT, 'intelligence hypotheses are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS intelligence_hypotheses_no_delete BEFORE DELETE ON intelligence_hypotheses BEGIN
+            SELECT RAISE(ABORT, 'intelligence hypotheses are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS audit_intelligence_hypotheses_insert AFTER INSERT ON intelligence_hypotheses BEGIN
+            INSERT INTO ledger_audit VALUES ('audit_'||lower(hex(randomblob(8))),NEW.organization_id,NEW.workspace_id,'person',NEW.recorded_by_person_id,'create','intelligence_hypothesis',NEW.id,NEW.status,CURRENT_TIMESTAMP);
+        END;
+
+        CREATE TABLE IF NOT EXISTS intelligence_recommendations (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            runbook_id TEXT NOT NULL,
+            runbook_version INTEGER NOT NULL CHECK(runbook_version > 0),
+            profile_contributors_json TEXT NOT NULL,
+            confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+            options_json TEXT NOT NULL,
+            recommended_option_id TEXT,
+            evidence_refs_json TEXT NOT NULL,
+            generated_by_type TEXT NOT NULL CHECK(generated_by_type IN ('person','agent','expert_profile','runbook','model','system')),
+            generated_by_id TEXT NOT NULL,
+            recorded_by_person_id TEXT NOT NULL,
+            evaluation_window_start TEXT NOT NULL,
+            evaluation_window_end TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(recorded_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_intelligence_recommendations_scope
+            ON intelligence_recommendations(organization_id, workspace_id, created_at, id);
+        CREATE TRIGGER IF NOT EXISTS intelligence_recommendations_no_update BEFORE UPDATE ON intelligence_recommendations BEGIN
+            SELECT RAISE(ABORT, 'intelligence recommendations are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS intelligence_recommendations_no_delete BEFORE DELETE ON intelligence_recommendations BEGIN
+            SELECT RAISE(ABORT, 'intelligence recommendations are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS audit_intelligence_recommendations_insert AFTER INSERT ON intelligence_recommendations BEGIN
+            INSERT INTO ledger_audit VALUES ('audit_'||lower(hex(randomblob(8))),NEW.organization_id,NEW.workspace_id,'person',NEW.recorded_by_person_id,'create','intelligence_recommendation',NEW.id,NEW.runbook_id,CURRENT_TIMESTAMP);
+        END;
+
+        CREATE TABLE IF NOT EXISTS intelligence_recommendation_lifecycle (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            recommendation_id TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK(event_type IN ('accepted','rejected','chosen','evaluated')),
+            accepted INTEGER CHECK(accepted IN (0,1)),
+            rejected INTEGER CHECK(rejected IN (0,1)),
+            chosen_option_id TEXT,
+            evaluation_window_start TEXT,
+            evaluation_window_end TEXT,
+            measured_outcomes_json TEXT NOT NULL,
+            score REAL CHECK(score IS NULL OR (score >= 0 AND score <= 1)),
+            lessons TEXT NOT NULL,
+            evidence_refs_json TEXT NOT NULL,
+            recorded_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(recommendation_id) REFERENCES intelligence_recommendations(id),
+            FOREIGN KEY(recorded_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_intelligence_recommendation_lifecycle
+            ON intelligence_recommendation_lifecycle(organization_id, workspace_id, recommendation_id, created_at, id);
+        CREATE TRIGGER IF NOT EXISTS intelligence_recommendation_lifecycle_no_update BEFORE UPDATE ON intelligence_recommendation_lifecycle BEGIN
+            SELECT RAISE(ABORT, 'intelligence recommendation lifecycle is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS intelligence_recommendation_lifecycle_no_delete BEFORE DELETE ON intelligence_recommendation_lifecycle BEGIN
+            SELECT RAISE(ABORT, 'intelligence recommendation lifecycle is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS audit_intelligence_recommendation_lifecycle_insert AFTER INSERT ON intelligence_recommendation_lifecycle BEGIN
+            INSERT INTO ledger_audit VALUES ('audit_'||lower(hex(randomblob(8))),NEW.organization_id,NEW.workspace_id,'person',NEW.recorded_by_person_id,NEW.event_type,'intelligence_recommendation',NEW.recommendation_id,NEW.id,CURRENT_TIMESTAMP);
+        END;
+
+        CREATE TABLE IF NOT EXISTS intelligence_learning_idempotency_keys (
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            response TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(organization_id, workspace_id, key, operation),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        """,
+    ),
+    Migration(
+        44,
+        "intelligence_evaluation_safety",
+        """
+        CREATE TABLE IF NOT EXISTS intelligence_evaluation_runs (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            agent_run_id TEXT,
+            trace_id TEXT,
+            task_class TEXT NOT NULL,
+            provider TEXT,
+            model TEXT,
+            specialist_profile_id TEXT,
+            runbook_id TEXT,
+            runbook_version INTEGER,
+            status TEXT NOT NULL CHECK(status IN ('running','completed','capped','failed','shadow_only')),
+            shadow_only INTEGER NOT NULL CHECK(shadow_only IN (0,1)),
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            latency_ms INTEGER,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            cost_amount REAL,
+            cost_currency TEXT,
+            evidence_completeness REAL CHECK(evidence_completeness IS NULL OR (evidence_completeness >= 0 AND evidence_completeness <= 1)),
+            evaluator_score REAL CHECK(evaluator_score IS NULL OR (evaluator_score >= 0 AND evaluator_score <= 1)),
+            human_acceptance INTEGER CHECK(human_acceptance IS NULL OR human_acceptance IN (0,1)),
+            revision_count INTEGER NOT NULL DEFAULT 0,
+            downstream_outcome_score REAL CHECK(downstream_outcome_score IS NULL OR (downstream_outcome_score >= 0 AND downstream_outcome_score <= 1)),
+            cap_reason TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(agent_run_id) REFERENCES agent_runs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_intelligence_evaluation_scope
+            ON intelligence_evaluation_runs(organization_id, workspace_id, task_class, created_at DESC);
+        CREATE TABLE IF NOT EXISTS intelligence_evaluation_policies (
+            organization_id TEXT NOT NULL,
+            task_class TEXT NOT NULL,
+            max_runtime_ms INTEGER NOT NULL,
+            max_cost_amount REAL NOT NULL,
+            max_tokens INTEGER NOT NULL,
+            breaker_threshold INTEGER NOT NULL,
+            breaker_window_seconds INTEGER NOT NULL,
+            breaker_open_seconds INTEGER NOT NULL,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            breaker_open_until TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(organization_id, task_class),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE TABLE IF NOT EXISTS intelligence_evaluation_circuit_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            task_class TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK(event_type IN ('opened','closed','cap_exceeded','failure')),
+            evaluation_id TEXT,
+            detail TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(evaluation_id) REFERENCES intelligence_evaluation_runs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_intelligence_evaluation_circuit
+            ON intelligence_evaluation_circuit_events(organization_id, task_class, created_at DESC);
+        CREATE TRIGGER IF NOT EXISTS intelligence_evaluation_circuit_no_update BEFORE UPDATE ON intelligence_evaluation_circuit_events BEGIN
+            SELECT RAISE(ABORT, 'intelligence evaluation circuit events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS intelligence_evaluation_circuit_no_delete BEFORE DELETE ON intelligence_evaluation_circuit_events BEGIN
+            SELECT RAISE(ABORT, 'intelligence evaluation circuit events are append-only');
+        END;
+        """,
+    ),
+    Migration(
+        45,
+        "proactive_intelligence_attention_lifecycle",
+        """
+        CREATE TABLE IF NOT EXISTS proactive_intelligence_attention_lifecycle (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            person_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL,
+            attention_item_id TEXT,
+            status TEXT NOT NULL CHECK(status IN ('new','acknowledged','acted_on','resolved','dismissed','resurfaced')),
+            trace_id TEXT,
+            recommendation_id TEXT,
+            action_descriptor_json TEXT NOT NULL DEFAULT '{}',
+            approval_request_id TEXT,
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(person_id) REFERENCES people(id),
+            FOREIGN KEY(snapshot_id) REFERENCES proactive_intelligence_snapshots(id),
+            FOREIGN KEY(attention_item_id) REFERENCES proactive_intelligence_attention_items(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_proactive_attention_lifecycle_current
+            ON proactive_intelligence_attention_lifecycle(organization_id, COALESCE(workspace_id,''), person_id, fingerprint);
+        CREATE INDEX IF NOT EXISTS idx_proactive_attention_lifecycle_scope
+            ON proactive_intelligence_attention_lifecycle(organization_id, COALESCE(workspace_id,''), person_id, updated_at DESC);
+        CREATE TRIGGER IF NOT EXISTS proactive_attention_lifecycle_no_delete BEFORE DELETE ON proactive_intelligence_attention_lifecycle BEGIN
+            SELECT RAISE(ABORT, 'proactive attention lifecycle is append-only');
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

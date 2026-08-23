@@ -170,6 +170,33 @@ class IntelligenceEngineTests(unittest.TestCase):
         self.assertTrue(all("assumptions" in item and "domain_impacts" in item and "confidence" in item for item in finding["scenarios"]))
         self.assertTrue(all("retained_inputs" in item and "constraints" in item and "mitigations" in item for item in finding["scenarios"]))
 
+    def test_scenario_v2_branches_are_honest_and_sensitivity_is_gated(self) -> None:
+        result = self.os.intelligence.workspace("org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin")
+        scenarios = {item["name"]: item for finding in result["findings"] for item in finding["scenarios"]}
+        self.assertTrue({"baseline", "option_a", "option_b", "option_c"} <= set(scenarios))
+        for name in ("baseline", "option_a", "option_b", "option_c"):
+            self.assertIn("missing_data", scenarios[name])
+            self.assertIn("changed_inputs", scenarios[name])
+            self.assertIn("risks", scenarios[name])
+        self.assertIsNone(scenarios["baseline"]["sensitivity"])
+        modeled = self.os.intelligence.workspace(
+            "org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin",
+            what_if={"capacity_hours_delta": 4},
+        )
+        modeled_scenarios = {item["name"]: item for finding in modeled["findings"] for item in finding["scenarios"]}
+        self.assertEqual(modeled_scenarios["option_a"]["sensitivity"]["status"], "bounded")
+
+    def test_analogue_metadata_is_explicit_and_workspace_scoped(self) -> None:
+        result = self.os.intelligence.workspace("org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin")
+        for analogue in result["historical_analogues"]:
+            self.assertIn("matching_dimensions", analogue)
+            self.assertIn("different_dimensions", analogue)
+            self.assertIn("intervention", analogue)
+            self.assertIn("subsequent_outcome", analogue)
+            self.assertIn("similarity", analogue)
+            self.assertIn("evidence", analogue)
+            self.assertNotEqual(analogue.get("source", {}).get("workspace_id"), "hidden-workspace")
+
     def test_parameterized_what_if_context_plan_and_calibration_are_explicit(self) -> None:
         result = self.os.intelligence.workspace(
             "org_demo",

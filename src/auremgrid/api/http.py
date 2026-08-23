@@ -54,7 +54,11 @@ def _route_capability(path: str, method: str) -> str:
         return "workspace_write"
     if path.startswith("/jobs"): return "job_manage"
     if path in {"/auth/sessions/rotate", "/auth/revoke"}: return "workspace_read"
-    if path in {"/dashboard/intelligence/refresh"}: return "brain_read"
+    if path in {"/dashboard/intelligence/refresh", "/dashboard/intelligence/orchestrator/run"}: return "brain_read"
+    if path in {"/dashboard/intelligence/hypotheses", "/dashboard/intelligence/recommendations", "/dashboard/intelligence/evaluation/start"}:
+        return "brain_propose"
+    if path in {"/dashboard/intelligence/recommendations/lifecycle", "/dashboard/intelligence/evaluation/complete"}:
+        return "brain_promote"
     if path.startswith("/auth/"): return "auth_manage"
     if path.startswith("/workflows/stages") or path == "/workflows/evidence": return "workflow_run"
     if path.startswith("/workflows/approvals/request") or path.startswith("/workflows/handoffs"): return "workflow_gate"
@@ -389,6 +393,69 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                     str(params.get("snapshot_type") or ("workspace" if params.get("workspace_id") else "executive")),
                     _optional_str(params.get("workspace_id")),
                 )); return
+            if parsed.path == "/dashboard/intelligence/profiles":
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, {"profiles": list(self.os.intelligence_contracts.list_profiles(
+                    scoped.organization_id, workspace_id, scoped.person_id,
+                    domain=_optional_str(params.get("domain")),
+                    capability_level=_optional_str(params.get("capability_level")),
+                    capabilities=scoped.capabilities,
+                ))}); return
+            if parsed.path == "/dashboard/intelligence/profiles/get":
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, {"profile": self.os.intelligence_contracts.get_profile(
+                    scoped.organization_id, workspace_id, scoped.person_id, _need(params, "profile_id"),
+                    version=_optional_int(params.get("version")),
+                    capabilities=scoped.capabilities,
+                )}); return
+            if parsed.path == "/dashboard/intelligence/runbooks":
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, {"runbooks": list(self.os.intelligence_contracts.list_runbooks(
+                    scoped.organization_id, workspace_id, scoped.person_id,
+                    domain=_optional_str(params.get("domain")),
+                    profile_id=_optional_str(params.get("profile_id")),
+                    capabilities=scoped.capabilities,
+                ))}); return
+            if parsed.path == "/dashboard/intelligence/runbooks/get":
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, {"runbook": self.os.intelligence_contracts.get_runbook(
+                    scoped.organization_id, workspace_id, scoped.person_id, _need(params, "runbook_id"),
+                    version=_optional_int(params.get("version")),
+                    capabilities=scoped.capabilities,
+                )}); return
+            if parsed.path == "/dashboard/intelligence/orchestrator/result":
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                result = self.os.intelligence_orchestrator.get_run(
+                    _need(params, "trace_id"), scoped.organization_id, workspace_id, scoped.person_id,
+                )
+                if result is None:
+                    raise NotFoundError("orchestrator result not found")
+                self._json(200, {"result": result}); return
+            if parsed.path == "/dashboard/intelligence/learning":
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, self.os.intelligence_learning.workspace_learning(
+                    scoped.organization_id, workspace_id, scoped.person_id,
+                )); return
+            if parsed.path == "/dashboard/intelligence/evaluation-safety":
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, _evaluation_safety_status(
+                    self.os, scoped.organization_id, workspace_id, scoped.person_id,
+                    _optional_str(params.get("task_class")) or "reasoning",
+                )); return
             if parsed.path == "/dashboard/workflows":
                 assert identity is not None
                 organization_id, workspace_id, person_id = _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
@@ -692,6 +759,106 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                     int(payload.get("priority", 0)),
                 )
                 self._json(202, {"job": item}); return
+            if parsed.path == "/dashboard/intelligence/orchestrator/run":
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                actor_id = None
+                try:
+                    actor_id = self.os.auth.actor_for_identity(scoped, workspace_id)
+                except AuthorizationError:
+                    actor_id = None
+                result = self.os.intelligence_orchestrator.run(
+                    scoped.organization_id,
+                    workspace_id,
+                    scoped.person_id,
+                    actor_id=actor_id,
+                    runbook_id=_optional_str(payload.get("runbook_id")),
+                    profile_ids=_optional_string_sequence(payload.get("profile_ids"), "profile_ids"),
+                    query=_optional_str(payload.get("query")),
+                    as_of=_optional_dt(payload.get("as_of")),
+                    capabilities=scoped.capabilities,
+                    iterations=_int(payload.get("iterations", 1), "iterations"),
+                )
+                self._json(200, {"result": result}); return
+            if parsed.path == "/dashboard/intelligence/hypotheses":
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(201, {"hypothesis": self.os.intelligence_learning.record_hypothesis(
+                    scoped.organization_id, workspace_id, scoped.person_id, _need(payload, "text"),
+                    evidence_for_refs=payload.get("evidence_for_refs"),
+                    evidence_against_refs=payload.get("evidence_against_refs"),
+                    status=str(payload.get("status") or "proposed"),
+                    confidence=float(payload.get("confidence", 0.5)),
+                    assumptions=payload.get("assumptions"),
+                    generated_by=payload.get("generated_by"),
+                    resolution=_optional_str(payload.get("resolution")),
+                    outcome=payload.get("outcome"),
+                    supersedes_hypothesis_id=_optional_str(payload.get("supersedes_hypothesis_id")),
+                    idempotency_key=_optional_str(payload.get("idempotency_key")),
+                )}); return
+            if parsed.path == "/dashboard/intelligence/recommendations":
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(201, {"recommendation": self.os.intelligence_learning.record_recommendation(
+                    scoped.organization_id, workspace_id, scoped.person_id, _need(payload, "summary"),
+                    runbook_id=_need(payload, "runbook_id"),
+                    runbook_version=_int(payload.get("runbook_version"), "runbook_version"),
+                    profile_contributors=_required_list(payload.get("profile_contributors"), "profile_contributors"),
+                    confidence=float(payload.get("confidence", 0.5)),
+                    options=_required_list(payload.get("options"), "options"),
+                    recommended_option_id=_optional_str(payload.get("recommended_option_id")),
+                    evidence_refs=_required_list(payload.get("evidence_refs"), "evidence_refs"),
+                    evaluation_window_start=_need(payload, "evaluation_window_start"),
+                    evaluation_window_end=_need(payload, "evaluation_window_end"),
+                    generated_by=payload.get("generated_by"),
+                    idempotency_key=_optional_str(payload.get("idempotency_key")),
+                )}); return
+            if parsed.path == "/dashboard/intelligence/recommendations/lifecycle":
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(201, {"event": self.os.intelligence_learning.append_recommendation_event(
+                    scoped.organization_id, workspace_id, scoped.person_id,
+                    _need(payload, "recommendation_id"), _need(payload, "event_type"),
+                    chosen_option_id=_optional_str(payload.get("chosen_option_id")),
+                    measured_outcomes=payload.get("measured_outcomes"),
+                    score=None if payload.get("score") is None else float(payload.get("score")),
+                    lessons=str(payload.get("lessons") or ""),
+                    evidence_refs=payload.get("evidence_refs"),
+                    evaluation_window_start=_optional_str(payload.get("evaluation_window_start")),
+                    evaluation_window_end=_optional_str(payload.get("evaluation_window_end")),
+                    idempotency_key=_optional_str(payload.get("idempotency_key")),
+                )}); return
+            if parsed.path == "/dashboard/intelligence/evaluation/start":
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(201, {"evaluation": self.os.intelligence_evaluation_safety.start(
+                    scoped.organization_id, scoped.person_id, _need(payload, "task_class"),
+                    workspace_id=workspace_id,
+                    provider=_optional_str(payload.get("provider")),
+                    model=_optional_str(payload.get("model")),
+                    specialist_profile_id=_optional_str(payload.get("specialist_profile_id")),
+                    runbook_id=_optional_str(payload.get("runbook_id")),
+                    runbook_version=_optional_int(payload.get("runbook_version")),
+                    trace_id=_optional_str(payload.get("trace_id")),
+                    agent_run_id=_optional_str(payload.get("agent_run_id")),
+                )}); return
+            if parsed.path == "/dashboard/intelligence/evaluation/complete":
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                _require_evaluation_scope(self.os, scoped.organization_id, workspace_id, _need(payload, "evaluation_id"))
+                self._json(200, {"evaluation": self.os.intelligence_evaluation_safety.complete(
+                    scoped.organization_id, scoped.person_id, _need(payload, "evaluation_id"),
+                    input_tokens=_optional_int(payload.get("input_tokens")),
+                    output_tokens=_optional_int(payload.get("output_tokens")),
+                    cost_amount=None if payload.get("cost_amount") is None else float(payload.get("cost_amount")),
+                    cost_currency=_optional_str(payload.get("cost_currency")),
+                    evidence_completeness=None if payload.get("evidence_completeness") is None else float(payload.get("evidence_completeness")),
+                    evaluator_score=None if payload.get("evaluator_score") is None else float(payload.get("evaluator_score")),
+                    human_acceptance=payload.get("human_acceptance") if isinstance(payload.get("human_acceptance"), bool) else None,
+                    revision_count=_int(payload.get("revision_count", 0), "revision_count"),
+                    downstream_outcome_score=None if payload.get("downstream_outcome_score") is None else float(payload.get("downstream_outcome_score")),
+                    metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+                )}); return
             if parsed.path == "/search":
                 bundle = self.os.search(
                     _need(payload, "workspace_id"),
@@ -1500,6 +1667,20 @@ def _optional_str_list(value: Any) -> list[str] | None:
     return [str(item) for item in value]
 
 
+def _optional_string_sequence(value: Any, key: str) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValidationError(f"{key} must be a list")
+    return [str(item) for item in value]
+
+
+def _required_list(value: Any, key: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise ValidationError(f"{key} must be a list")
+    return value
+
+
 def _int(value: Any, key: str) -> int:
     try:
         return int(value)
@@ -1576,6 +1757,46 @@ def _what_if_params(params: dict[str, str]) -> dict[str, float | str] | None:
             raise ValidationError("what_if_client_action must be keep or drop")
         result["client_action"] = normalized
     return result or None
+
+
+def _evaluation_safety_status(
+    os: CompanyOS, organization_id: str, workspace_id: str, person_id: str, task_class: str
+) -> dict[str, Any]:
+    decision = os.intelligence_evaluation_safety.can_start(organization_id, person_id, task_class)
+    rows = [
+        dict(row)
+        for row in os.store.conn.execute(
+            """SELECT * FROM intelligence_evaluation_runs
+               WHERE organization_id=? AND (workspace_id IS NULL OR workspace_id=?)
+               ORDER BY created_at DESC,id DESC LIMIT 20""",
+            (organization_id, workspace_id),
+        ).fetchall()
+    ]
+    events = [
+        dict(row)
+        for row in os.store.conn.execute(
+            """SELECT * FROM intelligence_evaluation_circuit_events
+               WHERE organization_id=? AND task_class=?
+               ORDER BY created_at DESC,id DESC LIMIT 20""",
+            (organization_id, task_class),
+        ).fetchall()
+    ]
+    return {
+        "scope": {"organization_id": organization_id, "workspace_id": workspace_id, "person_id": person_id},
+        "task_class": task_class,
+        "circuit": decision,
+        "evaluations": rows,
+        "circuit_events": events,
+    }
+
+
+def _require_evaluation_scope(os: CompanyOS, organization_id: str, workspace_id: str, evaluation_id: str) -> None:
+    row = os.store.conn.execute(
+        "SELECT workspace_id FROM intelligence_evaluation_runs WHERE organization_id=? AND id=?",
+        (organization_id, evaluation_id),
+    ).fetchone()
+    if row is None or row["workspace_id"] != workspace_id:
+        raise NotFoundError("evaluation not found")
 
 def _required_dt(value: Any, key: str) -> Any:
     if not value: raise ValidationError(f"{key} is required")

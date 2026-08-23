@@ -70,6 +70,10 @@ from auremgrid.services.forecast_ops import ForecastOperations
 from auremgrid.services.revenue_ops import RevenueOperations
 from auremgrid.services.retention_ops import RetentionOperations
 from auremgrid.services.intelligence import IntelligenceService
+from auremgrid.services.intelligence_contracts import IntelligenceContractService
+from auremgrid.services.intelligence_learning import IntelligenceLearningService
+from auremgrid.services.intelligence_orchestrator import IntelligenceOrchestrator
+from auremgrid.services.intelligence_evaluation_safety import IntelligenceEvaluationSafety
 from auremgrid.services.proactive_intelligence import ProactiveIntelligenceService
 from auremgrid.services.onboarding import OnboardingService
 from auremgrid.services.report_delivery import ReportDeliveryService
@@ -173,6 +177,11 @@ class CompanyOS:
         self.revenue = RevenueOperations(self.store.conn, new_id, self._require_person_access, self.company)
         self.retention = RetentionOperations(self.store.conn, new_id, self._require_scope_access)
         self.intelligence = IntelligenceService(self)
+        self.intelligence_contracts = IntelligenceContractService(self)
+        self.intelligence_contracts.seed_defaults()
+        self.intelligence_learning = IntelligenceLearningService(self, new_id)
+        self.intelligence_orchestrator = IntelligenceOrchestrator(self)
+        self.intelligence_evaluation_safety = IntelligenceEvaluationSafety(self)
         self.proactive_intelligence = ProactiveIntelligenceService(self)
         self.onboarding = OnboardingService(self, self.store.conn, new_id, self._require_person_access)
         self.report_delivery = ReportDeliveryService(self, new_id)

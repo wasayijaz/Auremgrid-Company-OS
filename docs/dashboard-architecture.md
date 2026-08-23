@@ -8,4 +8,14 @@ The command payload is produced by DashboardService after organization and works
 
 Ask Cosmo uses `GET /dashboard/intelligence`, which composes permitted evidence and canonical operating records into inspectable situation, change, hypothesis, scenario, impact, and recommendation fields. Every finding carries confidence, citations, uncertainty/degraded state, and proposed action descriptors. Historical briefs are read-only; viewers receive no mutation actions. Query retrieval never claims causation from relevance alone. Work capture uses the same validated operating service as REST and MCP.
 
+The Intelligence rail also exposes the immutable ExpertProfile and Runbook
+catalog for the selected workspace through `/dashboard/intelligence/profiles`
+and `/dashboard/intelligence/runbooks`. The “Run expert review” control calls
+the real read-only `/dashboard/intelligence/orchestrator/run` route and then
+loads the scoped `/dashboard/intelligence/orchestrator/result` by `trace_id`.
+The panel renders contributors, `runbook_route`, trace stages,
+contradictions, and degraded status from the backend response. Action buttons
+appear only when the response carries a safe descriptor with a backend route;
+otherwise the control is visibly disabled.
+
 The Command overview also loads `GET /dashboard/intelligence/executive` for its portfolio brief. The permanent Intelligence rail exposes causal links, supporting and opposing hypotheses, modeled scenarios, historical analogues, and decision-to-outcome learning when those structures are supported. These remain derived read models; suggested operations travel through canonical, permission-checked routes and are never silently executed.

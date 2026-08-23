@@ -1,7 +1,7 @@
 # Upgrade guide
 
 Opening a database runs ordered, append-only schema migrations recorded in
-`schema_migrations`. The current schema version is **40** (`durable_scheduler_operator_health`).
+`schema_migrations`. The current schema version is **45** (`proactive_intelligence_attention_lifecycle`).
 
 Before upgrading:
 
@@ -10,7 +10,7 @@ Before upgrading:
 3. Run the full test suite against a copy.
 4. Start Auremgrid; migrations apply in order.
 5. Check `/health` (or `/health/detailed`) for the schema version; a healthy
-   current installation reports `40`.
+   current installation reports `45`.
 6. Rebuild local projections with CompanyOS.rebuild_projections when required.
 
 Migrations preserve canonical rows. Obsolete API compatibility layers are not
@@ -28,8 +28,11 @@ proposals, conversions, pacing signals, retainer reads, internal report-pack
 approvals/delivery history, append-only onboarding CSV import batches, rows,
 errors, and receipts, brain-customization controls, read-only provider import
 records for injected Stripe Billing/accounting and Meta Ads adapters, approved
-portal-only client report versions/events, and durable scheduler/operator
-heartbeat and pause-state records.
+portal-only client report versions/events, scoped scheduler/operator heartbeat
+and pause-state records, richer provider-import quarantine details, immutable
+Intelligence expert profiles/runbooks, append-only Intelligence hypotheses and
+recommendation lifecycle records, shadow-only Intelligence evaluation/circuit
+breaker records, and proactive Intelligence attention lifecycle state.
 
 Schema 11-era databases also need the authenticated identity bootstrap. After
 migration, use the local `bootstrap-auth` command for an existing organization
@@ -41,4 +44,7 @@ revenue, invoices, costs, budgets, software/AI costs, or client economics.
 Portal reports remain snapshots of completed report runs and require an
 approved `report.portal_publish` request before becoming visible to client
 portal identities; no migration creates sends or external delivery.
+Intelligence migrations add contracts, learning, evaluation safety, and
+proactive lifecycle records only; they do not promote hypotheses into facts,
+change agent routing, or execute recommendation descriptors.
 

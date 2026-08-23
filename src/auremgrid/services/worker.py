@@ -55,6 +55,7 @@ def run_one_job(
                 str(payload.get("snapshot_type", "executive")),
                 workspace_id,
                 actor_id=actor_id,
+                runbook_id=payload.get("runbook_id"),
             )
             result = {
                 "snapshot_id": snapshot["id"],

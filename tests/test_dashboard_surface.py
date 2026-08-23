@@ -241,6 +241,39 @@ class DashboardSurfaceTests(unittest.TestCase):
         self.assertIn("grid-template-columns:248px minmax(0,1fr) 372px", self.html)
         self.assertIn("There is not enough permitted evidence", self.html)
 
+    def test_intelligence_contract_workspace_uses_real_backend_routes(self) -> None:
+        for marker in (
+            "data-intelligence-contracts",
+            "/dashboard/intelligence/profiles",
+            "/dashboard/intelligence/runbooks",
+            "/dashboard/intelligence/orchestrator/run",
+            "/dashboard/intelligence/orchestrator/result",
+            "intelligence-contributors",
+            "intelligence-trace",
+            "intelligence-contradictions",
+            "runbook_route",
+            "No evidence action descriptor returned",
+        ):
+            self.assertIn(marker, self.html)
+
+    def test_intelligence_learning_and_safety_are_truthful_readouts(self) -> None:
+        for marker in (
+            "data-intelligence-learning",
+            "/dashboard/intelligence/learning",
+            "/dashboard/intelligence/evaluation-safety",
+            "canReadStaffIntelligence",
+            "Staff Intelligence contracts are unavailable for this portal identity",
+            "Staff Intelligence learning and evaluation safety are unavailable for this portal identity",
+            "Hypotheses — not facts",
+            "intelligence-hypotheses",
+            "intelligence-recommendation-lifecycle",
+            "intelligence-evaluation-safety",
+            "Shadow evaluation / circuit status",
+            "pending_review",
+            "No learning action descriptor returned",
+        ):
+            self.assertIn(marker, self.html)
+
     def test_every_visible_static_dashboard_control_is_wired(self) -> None:
         handlers = {
             "command-form": '$("command-form").onsubmit',

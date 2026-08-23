@@ -2,11 +2,48 @@
 
 All responses are JSON except the dashboard. Errors use error and message fields with 400 validation, 403 authorization, 404 not found, or 500 internal status.
 
-Read routes include /health, /search, /entity, /entity/candidates, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /reviews/annotations, /decisions, /people, /capacity, /clients/roster, /meetings/responsibilities, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /onboarding/templates, /onboarding/imports, /memory-proposals, /knowledge-health, /dashboard/data, /dashboard/client, /dashboard/brain, /dashboard/intelligence, /dashboard/intelligence/portfolio, /dashboard/intelligence/executive, /dashboard/intelligence/snapshots, /dashboard/intelligence/attention, and /dashboard/workflows.
+Read routes include /health, /search, /entity, /entity/candidates, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /reviews/annotations, /decisions, /people, /capacity, /clients/roster, /meetings/responsibilities, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /onboarding/templates, /onboarding/imports, /memory-proposals, /knowledge-health, /dashboard/data, /dashboard/client, /dashboard/brain, /dashboard/intelligence, /dashboard/intelligence/portfolio, /dashboard/intelligence/executive, /dashboard/intelligence/profiles, /dashboard/intelligence/profiles/get, /dashboard/intelligence/runbooks, /dashboard/intelligence/runbooks/get, /dashboard/intelligence/orchestrator/result, /dashboard/intelligence/learning, /dashboard/intelligence/evaluation-safety, /dashboard/intelligence/snapshots, /dashboard/intelligence/attention, and /dashboard/workflows.
 
 `GET /dashboard/intelligence` requires `organization_id`, `workspace_id`, and `person_id`, accepts optional `query` and timezone-aware `as_of`, and enforces the bearer identity's organization, workspace, person, capability, and source ACL. It returns a derived read model rather than new canonical truth. The response exposes status, degraded reason, evidence-backed findings, confidence, changes, hypotheses, scenarios, impact, recommendation, and proposed action descriptors. If `CompanyOS` is constructed with an injected strategic-reasoning provider, `deliberation` may additionally contain validated `hypotheses`, `options`, `scenarios`, `recommendation`, `confidence`, and `dissent`; `provider_metadata` contains only provider identity, evidence references/counts, hashes, and fallback status. Provider failures or malformed output retain deterministic deliberation. Unknown queries return `insufficient_evidence`; historical reads and read-only memberships return no mutation actions.
 
 `GET /dashboard/intelligence/portfolio` and `GET /dashboard/intelligence/executive` require `organization_id` and `person_id`. They aggregate only workspaces visible to that membership. The executive response adds attention, client-health, and downside-constraint sections. Finance remains explicitly `not_connected` with null values unless canonical connected finance evidence exists.
+
+`GET /dashboard/intelligence/profiles` and
+`/dashboard/intelligence/runbooks` require `organization_id`,
+`workspace_id`, and `person_id`; they return immutable ExpertProfile and
+Runbook definitions filtered to the bearer identity's workspace access and
+capabilities. Profile lists accept optional `domain` and `capability_level`;
+runbook lists accept optional `domain` and `profile_id`. The `/get` variants
+also require `profile_id` or `runbook_id` and accept optional `version`.
+
+`POST /dashboard/intelligence/orchestrator/run` requires
+`organization_id`, `workspace_id`, and `person_id`, with optional `query`,
+`runbook_id`, `profile_ids`, timezone-aware `as_of`, and bounded
+`iterations`. It performs a read-only expert orchestration over the scoped
+Intelligence projection and returns a result with `trace_id`, `status`,
+`runbook_route`, contributing profiles, contradictions, trace, limits, and
+scope. `GET /dashboard/intelligence/orchestrator/result` requires the same
+scope plus `trace_id` and uses the scoped orchestrator lookup; mismatched
+workspaces or people are denied without leaking the run. These routes do not
+enqueue proactive jobs, execute recommendations, or write canonical truth.
+
+`GET /dashboard/intelligence/learning` returns workspace-scoped
+interpretation hypotheses, recommendations, and recommendation lifecycle
+events. Hypotheses are displayed separately from facts and are never promoted
+to canonical truth by these routes. `POST /dashboard/intelligence/hypotheses`
+and `/dashboard/intelligence/recommendations` require `brain_propose` and
+write only append-only learning records through the existing service gates.
+`POST /dashboard/intelligence/recommendations/lifecycle` requires
+`brain_promote` and appends accepted, rejected, chosen, or evaluated events;
+it does not execute the recommendation.
+
+`GET /dashboard/intelligence/evaluation-safety` returns the shadow-only
+evaluation decision, policy/circuit state, recent scoped evaluation runs, and
+circuit events. `POST /dashboard/intelligence/evaluation/start` requires
+`brain_propose`; `/dashboard/intelligence/evaluation/complete` requires
+`brain_promote` and verifies the evaluation belongs to the supplied workspace.
+Evaluation safety records telemetry and breaker state only; it does not alter
+agent routing.
 
 `POST /dashboard/intelligence/refresh` enqueues a read-only durable refresh for
 an `executive` or workspace snapshot. `GET /dashboard/intelligence/snapshots`

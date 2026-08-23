@@ -25,9 +25,27 @@ lookup. It exposes:
 - workflows.handoffs.acknowledge
 - integrations.list, integrations.configure, integrations.credentials.bind
 - integrations.verify, integrations.sync
+- intelligence.profiles.list, intelligence.profiles.get
+- intelligence.runbooks.list, intelligence.runbooks.get
+- intelligence.orchestrator.run, intelligence.orchestrator.result
+- intelligence.learning.get, intelligence.hypotheses.record
+- intelligence.recommendations.record, intelligence.recommendations.lifecycle
+- intelligence.evaluation_safety.get, intelligence.evaluation.start, intelligence.evaluation.complete
 
 The original short tool names remain internal aliases for the same handlers. Brain mutation tools use explicit proposal/promotion capabilities; they never fall back to `brain_read`. Proposer, reviewer, organization, person, workspace, and actor identity are derived or checked from the authenticated identity. Permissions are enforced by the service layer, not by tool naming.
 `brain.read` returns the scoped canonical Brain view; `brain.health` returns its sanitized counts and provider-health subset. Both require `brain_read`, accept optional `as_of`, and never expose provider error details. `brain.entity.candidates` requires `brain_propose`; it returns only visible, citeable deterministic candidates and never creates a proposal or merge. Fact results from search, entity, and history include canonical `effective_state`; history and neighbors accept the same temporal fence.
+
+The `intelligence.*` tools require `brain_read`. Profile and runbook tools
+expose immutable ExpertProfile and Runbook contracts for the authenticated
+workspace; optional filters mirror the REST API. `intelligence.orchestrator.run`
+performs the bounded read-only orchestration over permitted Intelligence and
+returns the trace, contributors, runbook route, contradictions, and degraded
+state exactly as produced. `intelligence.orchestrator.result` retrieves a prior
+result only through the scoped `trace_id` lookup. Learning tools persist
+append-only hypotheses, recommendations, and lifecycle events behind
+`brain_propose`/`brain_promote`; evaluation tools record shadow-only telemetry
+and circuit state without changing agent routing. These tools do not execute
+recommendations, enqueue proactive jobs, or mutate contract definitions.
 
 The graph provider is local by default. An explicitly configured Graphiti/Neo4j
 projection is queried only for full-workspace source access; partial ACLs skip
