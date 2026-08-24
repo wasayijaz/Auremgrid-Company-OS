@@ -13,6 +13,9 @@ class PrivateSingleHostDeployTests(unittest.TestCase):
     def test_dockerfile_packages_non_root_python_312_without_secret_material(self) -> None:
         dockerfile = ROOT.joinpath("Dockerfile").read_text(encoding="utf-8")
         self.assertIn("FROM python:3.12-slim", dockerfile)
+        self.assertIn("PYTHONPATH=/app/src", dockerfile)
+        self.assertIn("COPY src ./src", dockerfile)
+        self.assertIn("COPY fixtures ./fixtures", dockerfile)
         self.assertIn("USER auremgrid", dockerfile)
         self.assertIn("--host\", \"0.0.0.0\"", dockerfile)
         self.assertIn('CMD ["auremgrid", "serve"', dockerfile)
