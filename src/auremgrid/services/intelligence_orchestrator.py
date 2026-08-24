@@ -371,6 +371,12 @@ class IntelligenceOrchestrator:
                 try:
                     remaining = max(0.0, deadline - time.monotonic())
                     raw = future.result(timeout=remaining)
+                    if isinstance(raw, Mapping):
+                        for field in ("evidence_for", "evidence_against", "analogues", "dissent"):
+                            for item in raw.get(field, []) or []:
+                                ref = _ref_id(item)
+                                if ref is None or ref not in allowed_refs:
+                                    raise ValidationError(f"{profile_key}: unsupported or unauthorized evidence")
                     normalized = validate_expert_result(raw, allowed_refs=allowed_refs)
                     normalized["profile"] = self._contract_ref(profile)
                     normalized["specialist_id"] = profile_key
