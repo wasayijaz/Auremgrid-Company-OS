@@ -24,3 +24,12 @@ event are inserted in one transaction, use a caller-supplied idempotency key,
 and are blocked while recovery mode or disabled outbound dispatch is active.
 Transport dispatch is intentionally injectable so retry and failure handling
 can be tested without a network call.
+
+The packaged HTTP receipt boundary is `POST /webhooks/provider/<installation>`
+and is disabled unless `AUREMGRID_WEBHOOK_RECEIPTS_ENABLED=1` is explicitly
+configured. It accepts a bounded body, validates the installation secret,
+timestamp window, and event dedupe through `WebhookIntakeService`, and returns
+only status plus a digest. Rejected receipts are quarantined as rejected event
+metadata; accepted receipts are durable intake records. No raw body, secret,
+or provider write is emitted, and the internal metrics use fixed low-cardinality
+names (`webhook.receipt.*`).

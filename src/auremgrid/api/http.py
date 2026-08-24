@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import mimetypes
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
@@ -104,7 +105,7 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
         params = {key: values[0] for key, values in parse_qs(parsed.query).items()}
         try:
             identity = None
-            if parsed.path not in {"/", "/dashboard", "/health", "/metrics", "/health/detailed", "/oauth/callback"} and not parsed.path.startswith("/dashboard-assets/"):
+            if parsed.path not in {"/", "/dashboard", "/health", "/health/detailed", "/oauth/callback"} and not parsed.path.startswith("/dashboard-assets/"):
                 identity = self._authenticate_request(parsed.path, "GET", params)
             if parsed.path == "/health":
                 self._json(200, {"ok": True, "schema_version": self.os.store.schema_version})
@@ -715,6 +716,9 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
+            if parsed.path.startswith("/webhooks/provider/"):
+                self._receive_provider_webhook(parsed.path)
+                return
             payload = self._read_json()
             if parsed.path == "/oauth/callback":
                 if "code_verifier" in payload:
@@ -1522,6 +1526,61 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not_found"})
         except Exception as exc:
             self._handle_error(exc)
+
+    def _receive_provider_webhook(self, path: str) -> None:
+        """Receive a bounded, HMAC-authenticated provider event without bearer auth."""
+        from auremgrid.domain.security import AuthenticatedIdentity
+        from auremgrid.observability import get_metrics
+        from auremgrid.services.integration_security import WebhookIntakeService
+
+        if os.environ.get("AUREMGRID_WEBHOOK_RECEIPTS_ENABLED") != "1":
+            get_metrics().inc("webhook.receipt.disabled")
+            self._json(404, {"error": "webhook_receipts_disabled"})
+            return
+        installation_id = path.removeprefix("/webhooks/provider/").strip()
+        if not installation_id or "/" in installation_id or len(installation_id) > 128:
+            get_metrics().inc("webhook.receipt.rejected")
+            self._json(404, {"error": "webhook_not_found"})
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        if length < 0 or length > 1_048_576:
+            get_metrics().inc("webhook.receipt.rejected")
+            self._json(413, {"error": "webhook_payload_too_large"})
+            return
+        body = self.rfile.read(length) if length else b""
+        row = self.os.store.conn.execute(
+            "SELECT organization_id,workspace_id FROM provider_installations WHERE id=? AND status='active'",
+            (installation_id,),
+        ).fetchone()
+        if row is None:
+            get_metrics().inc("webhook.receipt.rejected")
+            self._json(404, {"error": "webhook_not_found"})
+            return
+        identity = AuthenticatedIdentity(
+            f"webhook:{installation_id}", row["organization_id"], f"webhook:{installation_id}",
+            "webhook", frozenset({"integration_sync"}), workspace_id=row["workspace_id"],
+        )
+        try:
+            result = WebhookIntakeService(self.os.store.conn, self.os.jobs.new_id).receive(
+                identity,
+                installation_id,
+                body,
+                self.headers.get("X-Webhook-Signature", ""),
+                provider_event_id=self.headers.get("X-Provider-Event-ID"),
+                timestamp=self.headers.get("X-Webhook-Timestamp"),
+            )
+        except Exception as exc:
+            get_metrics().inc("webhook.receipt.rejected")
+            if isinstance(exc, (AuthorizationError, NotFoundError, ValidationError)):
+                self._json(401 if isinstance(exc, AuthorizationError) else 400, {"error": "webhook_rejected"})
+                return
+            raise
+        if result.get("duplicate"):
+            get_metrics().inc("webhook.receipt.duplicate")
+            self._json(200, {"status": "duplicate", "event_digest": result["event_digest"]})
+            return
+        get_metrics().inc("webhook.receipt.accepted")
+        self._json(202, {"status": "accepted", "event_digest": result["event_digest"]})
 
     def _call_work_action(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         workspace_id = _need(payload, "workspace_id")
