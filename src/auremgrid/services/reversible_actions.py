@@ -258,6 +258,27 @@ def validate_approved_action_descriptor(
         ).fetchone()
         if recipient is None:
             raise NotFoundError("notification recipient not found")
+    if action == "create_risk" and canonical_descriptor.get("project_id"):
+        project = conn.execute(
+            "SELECT id FROM projects WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, canonical_descriptor["project_id"]),
+        ).fetchone()
+        if project is None:
+            raise NotFoundError("project not found")
+    if action == "add_work_comment":
+        work_item = conn.execute(
+            "SELECT id FROM work_items WHERE workspace_id=? AND id=?",
+            (workspace_id, canonical_descriptor["work_item_id"]),
+        ).fetchone()
+        if work_item is None:
+            raise NotFoundError("work item not found")
+    if action == "create_proposal" and canonical_descriptor.get("source_id"):
+        source = conn.execute(
+            "SELECT id FROM sources WHERE workspace_id=? AND id=?",
+            (workspace_id, canonical_descriptor["source_id"]),
+        ).fetchone()
+        if source is None:
+            raise NotFoundError("proposal evidence not found")
     if action == "acknowledge_attention":
         lifecycle = conn.execute(
             """SELECT workspace_id FROM proactive_intelligence_attention_lifecycle
