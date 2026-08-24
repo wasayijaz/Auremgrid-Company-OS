@@ -86,9 +86,11 @@ class DashboardSurfaceTests(unittest.TestCase):
 
     def test_scenario_descriptor_buttons_require_backend_routes(self) -> None:
         self.assertIn("actions=s.action_descriptors||s.allowed_actions||[]", self.html)
-        self.assertIn("a&&a.route", self.html)
+        self.assertIn("a&&a.route&&a.safe===true", self.html)
         self.assertIn("data-scenario-action", self.html)
         self.assertIn("No backend route is available", self.html)
+        self.assertIn("The backend did not mark this descriptor safe.", self.html)
+        self.assertIn("disabled_reason||action.reason||action.message||action.unavailable_reason||action.status_reason", self.html)
 
     def test_brain_surface_names_all_canonical_collections_and_empty_states(self) -> None:
         for marker in (

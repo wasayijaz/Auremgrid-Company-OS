@@ -241,6 +241,17 @@ def test_intelligence_surfaces_disagreement_learning_and_scenario_analysis(owner
           "reason":"Needs human approval"
         }]
       }],
+      "scenarios":[{
+        "name":"approval_required_scenario",
+        "summary":"A scenario action was returned, but it still needs approval.",
+        "action_descriptors":[{
+          "action":"apply_scenario",
+          "label":"Apply scenario",
+          "route":"/work/items",
+          "safe":false,
+          "reason":"Scenario requires approval"
+        }]
+      }],
       "disagreement":{"status":"contested","resolution":"human_review","positions":["Capacity risk","Revenue upside"]},
       "historical_learning":{"status":"available","lesson":"Similar launches needed staged capacity."},
       "scenario_analysis":{"status":"bounded","scenarios":[{"name":"baseline","constraint":"No added capacity"}]}
@@ -262,6 +273,11 @@ def test_intelligence_surfaces_disagreement_learning_and_scenario_analysis(owner
     expect(panel).to_contain_text("baseline")
     expect(page.locator(".intelligence-actions button", has_text="Push plan unavailable")).to_be_disabled()
     expect(page.locator("[data-intelligence-action]")).to_have_count(0)
+    page.get_by_role("button", name="Run scenario", exact=True).click()
+    expect(page.locator("#intelligence-status")).to_contain_text("scenario modeled")
+    expect(page.locator(".scenario-card", has_text="approval_required_scenario")).to_be_visible()
+    expect(page.locator(".scenario-actions button", has_text="Apply scenario unavailable")).to_be_disabled()
+    expect(page.locator("[data-scenario-action]")).to_have_count(0)
     assert_no_browser_errors(page)
 
 

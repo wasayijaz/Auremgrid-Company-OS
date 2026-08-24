@@ -26,6 +26,9 @@ summaries from the same `/dashboard/intelligence` payload: `disagreement`,
 `historical_learning`, and `scenario_analysis`. These panels are read-only
 readouts with explicit empty/degraded text. A routed descriptor inside the
 finding area is still disabled unless it is explicitly marked `safe: true`;
+modeled scenario controls follow the same rule, so a visible scenario action is
+clickable only when it has both a backend route and `safe: true`, otherwise it
+is disabled with the backend reason.
 the executive reasoning panels themselves never create unsupported actions.
 
 Review annotations are served by the same local dashboard bundle. The Review center opens a single annotation panel that reloads the organization-scoped queue, uses the selected review's workspace and attached source locator, and renders only backend-granted annotation capabilities as live options. General comments, image points/regions, document pages/regions, and video timestamps/ranges all post through `/reviews/annotations`; unsupported capabilities remain visible but disabled with the server reason. Source previews stay local to the browser: images can capture normalized click points or drag regions, document sources get a page-aware region pad and embedded viewer when the browser can display them, and video sources expose native playback with buttons to capture current start/end seconds. The dashboard stores only review annotation metadata and normalized coordinates, not binary assets.
