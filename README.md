@@ -670,6 +670,7 @@ restore workers for binary assets.
 ## Documentation map
 
 - [Architecture](docs/architecture.md)
+- [Phase 14 activation requirements](docs/phase-14-activation.md)
 - [Domain model](docs/domain-model.md)
 - [Operating model](docs/operating-model.md)
 - [Wing workflow catalog](docs/wing-workflows.md)
