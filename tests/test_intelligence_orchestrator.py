@@ -261,6 +261,26 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
         self.assertEqual(len(set(findings)), 3)
         self.assertEqual(len(set(hypotheses)), 3)
 
+    def test_context_budget_overflow_is_explicit(self):
+        contracts = _Contracts(1)
+        contracts.profiles[0].update({"max_context": 128, "domains": ["work"]})
+        result = IntelligenceOrchestrator(self.os, contracts).run(
+            "org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin",
+            profile_ids=["expert-0"],
+        )
+        specialist = result["specialists"][0]
+        self.assertEqual(specialist["context_budget"]["status"], "overflow")
+        self.assertEqual(result["context_budget"]["status"], "overflow")
+        self.assertTrue(any(event["stage"] == "context_budget" for event in result["trace"]))
+
+    def test_historical_analogue_wire_alias_is_normalized(self):
+        from auremgrid.services.intelligence_orchestrator import validate_expert_result
+        value = _result()
+        value.pop("analogues")
+        value["historical_analogues"] = [{"ref": "visible"}]
+        normalized = validate_expert_result(value)
+        self.assertEqual(normalized["analogues"], normalized["historical_analogues"])
+
     def test_default_runbook_uses_trigger_match_and_reports_no_match(self):
         contracts = _Contracts(1)
         contracts.runbooks = [

@@ -470,6 +470,11 @@ class IntelligenceService:
             confidence = item.get("confidence") or {}
             impact = item.get("impact") or {}
             recommendation = item.get("recommendation") or {}
+            evidence = item.get("evidence", [])[:6]
+            causes = item.get("hypotheses") or [{"text": item.get("summary") or item.get("title"), "supporting_evidence": evidence}]
+            supporting = item.get("supporting_evidence") or evidence
+            opposing = item.get("opposing_evidence") or []
+            options = item.get("options") or ([recommendation] if recommendation else [])
             narrative_items.append({
                 "rank": rank,
                 "workspace_id": item.get("workspace_id"),
@@ -479,7 +484,14 @@ class IntelligenceService:
                 "why_it_matters": impact.get("summary") or "Impact is not quantified in the visible records.",
                 "next_step": recommendation.get("summary") or "Review the cited records and choose a reversible next step.",
                 "confidence": confidence,
-                "evidence": item.get("evidence", [])[:6],
+                "evidence": evidence,
+                "causes": causes[:6],
+                "supporting_evidence": supporting[:6],
+                "opposing_evidence": opposing[:6],
+                "options": options[:6],
+                "effects": impact,
+                "recommendation": recommendation or {"summary": "Review the cited records."},
+                "human_decision_needed": bool(item.get("needs_review", True) or not recommendation),
             })
         return {
             **result,
@@ -488,6 +500,7 @@ class IntelligenceService:
             "sections": {
                 "attention": result["portfolio"]["attention"],
                 "top_three": narrative_items,
+                "conclusions": narrative_items,
                 "narrative": {
                     "headline": "Three things need attention" if narrative_items else "No evidence-backed attention items",
                     "items": narrative_items,
@@ -509,6 +522,7 @@ class IntelligenceService:
                     if scenario.get("name") == "defer"
                 ][:20],
             },
+            "conclusions": narrative_items,
         }
 
     def _rows(self, sql: str, args: tuple[Any, ...]) -> list[dict[str, Any]]:

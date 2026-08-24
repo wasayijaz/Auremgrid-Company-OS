@@ -82,7 +82,13 @@ def validate_expert_result(value: Mapping[str, Any], *, allowed_refs: set[str] |
     """Normalize one specialist or final result and fail closed on bad shape."""
     if not isinstance(value, Mapping):
         raise ValidationError("expert result must be an object")
-    missing = [key for key in REQUIRED_RESULT_FIELDS if key not in value]
+    # ``historical_analogues`` was the contract spelling before the runtime
+    # specialist field was shortened to ``analogues``. Normalize either wire
+    # spelling before strict validation.
+    normalized_value = dict(value)
+    if "analogues" not in normalized_value and "historical_analogues" in normalized_value:
+        normalized_value["analogues"] = normalized_value["historical_analogues"]
+    missing = [key for key in REQUIRED_RESULT_FIELDS if key not in normalized_value]
     if missing:
         raise ValidationError("expert result missing required fields: " + ",".join(missing))
     result: dict[str, Any] = {
@@ -93,7 +99,7 @@ def validate_expert_result(value: Mapping[str, Any], *, allowed_refs: set[str] |
         "unknowns": [_text(x) for x in _bounded_list(value.get("unknowns"))],
         "hypothesis": _text(value.get("hypothesis"), "No causal hypothesis established."),
         "confidence": round(_score(value.get("confidence")), 3),
-        "analogues": _bounded_list(value.get("analogues")),
+        "analogues": _bounded_list(normalized_value.get("analogues")),
         "risks": _bounded_list(value.get("risks")),
         "options": _bounded_list(value.get("options")),
         "recommendation": _json(value.get("recommendation")),
@@ -101,6 +107,9 @@ def validate_expert_result(value: Mapping[str, Any], *, allowed_refs: set[str] |
         "needs_review": bool(value.get("needs_review")),
         "dissent": _bounded_list(value.get("dissent")),
     }
+    result["historical_analogues"] = list(result["analogues"])
+    if isinstance(value.get("context_budget"), Mapping):
+        result["context_budget"] = _json(value.get("context_budget"))
     if allowed_refs is not None:
         dropped_citations = 0
         for key in ("evidence_for", "evidence_against", "analogues", "dissent"):
@@ -224,6 +233,18 @@ class IntelligenceOrchestrator:
         for item in specialists:
             latest[str((item.get("profile") or {}).get("id"))] = item
         specialists = list(latest.values())[: self.limits.max_specialists]
+        context_overflows = [
+            item for item in specialists
+            if isinstance(item.get("context_budget"), Mapping)
+            and item["context_budget"].get("status") == "overflow"
+        ]
+        if context_overflows:
+            trace.append({
+                "stage": "context_budget",
+                "status": "overflow",
+                "count": len(context_overflows),
+                "specialists": [item.get("specialist_id") for item in context_overflows[:8]],
+            })
         if errors:
             # Keep a stable summary marker for consumers that do not inspect
             # every per-iteration trace event.
@@ -253,7 +274,12 @@ class IntelligenceOrchestrator:
         result = {
             **final,
             "trace_id": trace_id,
-            "status": "degraded" if errors or not specialists else "ready",
+            "status": "degraded" if errors or not specialists or context_overflows else "ready",
+            "context_budget": {
+                "status": "overflow" if context_overflows else "within_budget",
+                "overflow_count": len(context_overflows),
+                "specialists": [item.get("specialist_id") for item in context_overflows[:8]],
+            },
             "contradictions": contradictions,
             "disagreement": disagreement,
             "historical_learning": historical_learning,
@@ -302,7 +328,12 @@ class IntelligenceOrchestrator:
         except (TypeError, ValueError):
             max_context = 64 * 1024
         encoded = json.dumps(_json(profile_context), separators=(",", ":"), sort_keys=True)
+        original_size = len(encoded)
+        context_budget = {"limit": max_context, "original_bytes": original_size, "used_bytes": original_size, "truncated": False, "status": "within_budget", "overflow": False}
         if len(encoded) > max_context:
+            # Any reduction is an explicit budget overflow. Consumers must be
+            # able to distinguish a complete context from a degraded one.
+            context_budget.update({"truncated": True, "status": "overflow", "overflow": True})
             for field in ("findings", "historical_analogues", "decision_action_outcome_learning", "scenario_inputs"):
                 profile_context[field] = [] if field != "scenario_inputs" else {}
                 encoded = json.dumps(_json(profile_context), separators=(",", ":"), sort_keys=True)
@@ -310,6 +341,10 @@ class IntelligenceOrchestrator:
                     break
         if len(encoded) > max_context:
             profile_context = {"profile": {"id": key}}
+            context_budget.update({"used_bytes": len(json.dumps(profile_context)), "status": "overflow", "overflow": True})
+        else:
+            context_budget["used_bytes"] = len(encoded)
+        profile_context["context_budget"] = context_budget
         provider = self.specialist_provider
         if isinstance(provider, Mapping):
             provider = provider.get(key)
@@ -320,6 +355,7 @@ class IntelligenceOrchestrator:
                 raw, metadata = invoke_reasoning_provider(provider, profile_context)
                 result = dict(raw)
                 result["provider_metadata"] = metadata
+                result.setdefault("context_budget", context_budget)
                 return result
             except Exception:
                 # Optional provider failures degrade this perspective to the
@@ -329,6 +365,7 @@ class IntelligenceOrchestrator:
         if handler is not None:
             result = dict(handler(profile_context))
             result.setdefault("provider_metadata", {"status": "injected_handler", "profile_id": key})
+            result.setdefault("context_budget", context_budget)
             return result
         findings = profile_context.get("findings") or []
         first = findings[0] if findings else {}
@@ -339,21 +376,38 @@ class IntelligenceOrchestrator:
         specialty = _text(self._field(profile, "specialty") or self._field(profile, "mission") or key)
         method = _text(self._field(profile, "reasoning_method") or "bounded evidence review")
         base_hypothesis = (first.get("hypotheses") or [{"text": "No hypothesis established."}])[0].get("text", "No hypothesis established.") if isinstance(first, Mapping) else "No hypothesis established."
+        method_key = f"{key}"
+        distinct = {
+            "account_strategist": ("Retention/expansion lens", "Prioritize account value protection and a reversible client review."),
+            "relationship_analyst": ("Stakeholder health lens", "Check relationship signals and assign an owner for the next touchpoint."),
+            "delivery_analyst": ("Commitment variance lens", "Rebaseline the at-risk commitment and confirm a delivery owner."),
+            "performance_analyst": ("Performance variance lens", "Compare the latest operating signal with its baseline before reallocating effort."),
+            "finance_scope_analyst": ("Margin/scope lens", "Quantify scope or margin exposure before approving additional work."),
+            "capacity_planner": ("Capacity constraint lens", "Sequence work against available capacity and surface the staffing tradeoff."),
+            "brand_creative_analyst": ("Creative fit lens", "Validate creative consistency and request a bounded asset review."),
+            "research_analyst": ("Evidence synthesis lens", "Separate observed evidence from assumptions and identify the next measurement."),
+            "risk_analyst": ("Risk boundary lens", "Contain the risk, preserve opposing evidence, and require human approval for one-way action."),
+            "scenario_analyst": ("Scenario sensitivity lens", "Model bounded what-if branches and compare their reversible effects."),
+            "historical_analogue_analyst": ("Historical pattern lens", "Compare the visible signal with prior outcomes, without treating analogy as fact."),
+            "reality_checker": ("Reality check lens", "Challenge unsupported claims and mark the result for review when evidence conflicts."),
+            "executive_synthesizer": ("Executive prioritization lens", "Frame the highest-impact decision, options, and explicit human checkpoint."),
+        }.get(method_key, (f"{specialty} lens", "Review the bounded evidence and choose a reversible next step."))
         return {
-            "finding": f"{specialty} ({', '.join(profile_domains[:2])}): " + _text(first.get("summary"), "No visible finding.") if isinstance(first, Mapping) else f"{specialty}: No visible finding.",
+            "finding": f"{distinct[0]}: " + (_text(first.get("summary"), "No visible finding.") if isinstance(first, Mapping) else "No visible finding."),
             "evidence_for": evidence,
             "evidence_against": first.get("opposing_evidence", [])[:2] if isinstance(first, Mapping) else [],
             "assumptions": [f"{method} applied to ACL-visible canonical records."],
             "unknowns": ["Unobserved external causes remain unknown."],
-            "hypothesis": f"{method}: {base_hypothesis}",
+            "hypothesis": f"{distinct[0]} using {method}: {base_hypothesis}",
             "confidence": ((first.get("confidence") or {}).get("score", 0.35) if isinstance(first, Mapping) else 0.35),
             "analogues": profile_context.get("historical_analogues", [])[:4],
             "risks": [item.get("summary") for item in (first.get("scenarios", [])[:2] if isinstance(first, Mapping) else [])],
             "options": [first.get("recommendation")] if isinstance(first, Mapping) else [],
-            "recommendation": first.get("recommendation", {}) if isinstance(first, Mapping) else {},
+            "recommendation": {"summary": distinct[1], "rationale": f"{method} applied to permitted {', '.join(profile_domains[:2])} evidence."},
             "expected_impact": first.get("impact", {}) if isinstance(first, Mapping) else {},
             "needs_review": not bool(findings),
             "dissent": first.get("opposing_evidence", [])[:2] if isinstance(first, Mapping) else [],
+            "context_budget": context_budget,
         }
 
     def _run_specialists(
@@ -395,6 +449,8 @@ class IntelligenceOrchestrator:
                     normalized["perspective"] = _text(self._field(profile, "specialty") or self._field(profile, "mission") or profile_key)
                     if isinstance(raw, Mapping) and raw.get("provider_metadata"):
                         normalized["provider_metadata"] = _json(raw.get("provider_metadata"))
+                    if isinstance(raw, Mapping) and isinstance(raw.get("context_budget"), Mapping):
+                        normalized["context_budget"] = _json(raw.get("context_budget"))
                     results.append(normalized)
                 except FutureTimeoutError:
                     future.cancel()
@@ -777,6 +833,21 @@ class IntelligenceOrchestrator:
             marker = " ".join(str(item.get(key) or "").lower() for key in ("id", "type", "title", "domain"))
             if any(domain in marker for domain in domains):
                 findings.append(item)
+        # A workspace can legitimately have no finding whose title carries a
+        # specialist's domain label. Preserve one ACL-visible anchor in that
+        # case so offline specialists still return cited, useful uncertainty
+        # instead of an uncited generic fallback.
+        if not findings:
+            first = next((item for item in context.get("findings", []) or [] if isinstance(item, Mapping)), None)
+            if first is not None and first.get("evidence"):
+                findings = [{
+                    "summary": "Visible evidence requiring a domain-specific review.",
+                    "evidence": list(first.get("evidence", []))[:4],
+                    "confidence": first.get("confidence"),
+                    "opposing_evidence": first.get("opposing_evidence", []),
+                    "recommendation": first.get("recommendation", {}),
+                    "impact": first.get("impact", {}),
+                }]
         result["findings"] = findings
         # These aggregates lack reliable domain labels; do not leak broad
         # company history into a domain-scoped specialist.

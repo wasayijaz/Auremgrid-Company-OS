@@ -380,7 +380,18 @@ COMMON_CONSTRAINTS = (
 
 EXPERT_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "required": ["finding", "confidence", "evidence", "unknowns", "handoff"],
+    # This is the specialist runtime contract (not a generic narrative
+    # shape). ``analogues`` remains an accepted wire alias for older callers.
+    "required": [
+        "finding", "evidence_for", "evidence_against", "assumptions",
+        "unknowns", "hypothesis", "confidence", "analogues", "risks",
+        "options", "recommendation", "expected_impact", "needs_review",
+    ],
+    "properties": {
+        "historical_analogues": {"type": "array"},
+        "analogues": {"type": "array"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    },
 }
 
 

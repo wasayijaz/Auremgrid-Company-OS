@@ -391,6 +391,9 @@ class ExpertResult:
     profile: dict[str, Any] | None = None
     runbooks: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     allowed_actions: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    # Runtime specialists historically called this field ``analogues``. Keep
+    # the canonical contract name while emitting the compatibility alias.
+    context_budget: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -404,6 +407,7 @@ class ExpertResult:
             "hypothesis": self.hypothesis,
             "confidence": self.confidence,
             "historical_analogues": list(self.historical_analogues),
+            "analogues": list(self.historical_analogues),
             "risks": list(self.risks),
             "options": list(self.options),
             "recommendation": self.recommendation,
@@ -412,4 +416,5 @@ class ExpertResult:
             "profile": self.profile,
             "runbooks": list(self.runbooks),
             "allowed_actions": list(self.allowed_actions),
+            "context_budget": self.context_budget,
         }
