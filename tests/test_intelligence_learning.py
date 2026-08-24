@@ -288,6 +288,39 @@ class IntelligenceLearningTests(unittest.TestCase):
         self.assertEqual(quality["evidence_scope"]["measured_outcome_count"], 1)
         self.assertEqual(quality["method"]["score_threshold"], 0.5)
 
+    def test_trace_linked_handoff_records_human_links_without_creating_canonical_actions(self) -> None:
+        recommendation = self._recommendation()
+        before_decisions = self.os.store.conn.execute(
+            "SELECT COUNT(*) FROM decisions WHERE organization_id=? AND workspace_id=?", (self.org, self.ws)
+        ).fetchone()[0]
+        before_work = self.os.store.conn.execute(
+            "SELECT COUNT(*) FROM work_items WHERE workspace_id=?", (self.ws,)
+        ).fetchone()[0]
+        trace = self.os.intelligence_orchestrator.run(
+            self.org, self.ws, self.person, actor_id="act_alpha_admin", runbook_id="client_health_drop"
+        )
+        handoff = self.os.intelligence_learning.handoff_recommendation(
+            self.org, self.ws, self.person, trace["trace_id"], recommendation_id=recommendation["id"],
+            review_status="reviewed", outcome_refs=[self._source_ref()], notes="Human reviewed trace.",
+            idempotency_key="handoff-key",
+        )
+        self.assertEqual(handoff["handoff"]["trace_id"], trace["trace_id"])
+        self.assertEqual(handoff["recommendation"]["id"], recommendation["id"])
+        self.assertEqual(
+            self.os.store.conn.execute("SELECT COUNT(*) FROM decisions WHERE organization_id=? AND workspace_id=?", (self.org, self.ws)).fetchone()[0],
+            before_decisions,
+        )
+        self.assertEqual(
+            self.os.store.conn.execute("SELECT COUNT(*) FROM work_items WHERE workspace_id=?", (self.ws,)).fetchone()[0],
+            before_work,
+        )
+        self.assertEqual(
+            self.os.store.conn.execute(
+                "SELECT COUNT(*) FROM ledger_audit WHERE organization_id=? AND workspace_id=? AND entity_type='intelligence_recommendation_handoff'",
+                (self.org, self.ws),
+            ).fetchone()[0], 1,
+        )
+
     def test_learning_persists_across_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "learning.sqlite"

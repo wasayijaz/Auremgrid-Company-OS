@@ -3557,6 +3557,41 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        50,
+        "intelligence_recommendation_handoffs",
+        """
+        CREATE TABLE IF NOT EXISTS intelligence_recommendation_handoffs (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            recommendation_id TEXT NOT NULL,
+            trace_id TEXT NOT NULL,
+            reviewed_by_person_id TEXT NOT NULL,
+            review_status TEXT NOT NULL CHECK(review_status IN ('recorded','reviewed','accepted','rejected','deferred')),
+            decision_id TEXT,
+            approval_request_id TEXT,
+            work_item_id TEXT,
+            action_descriptor_json TEXT,
+            outcome_refs_json TEXT NOT NULL,
+            notes TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(recommendation_id) REFERENCES intelligence_recommendations(id),
+            FOREIGN KEY(reviewed_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_intelligence_recommendation_handoffs_scope
+            ON intelligence_recommendation_handoffs(organization_id, workspace_id, recommendation_id, created_at, id);
+        CREATE TRIGGER IF NOT EXISTS intelligence_recommendation_handoffs_no_update BEFORE UPDATE ON intelligence_recommendation_handoffs BEGIN
+            SELECT RAISE(ABORT, 'intelligence recommendation handoffs are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS intelligence_recommendation_handoffs_no_delete BEFORE DELETE ON intelligence_recommendation_handoffs BEGIN
+            SELECT RAISE(ABORT, 'intelligence recommendation handoffs are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS audit_intelligence_recommendation_handoffs_insert AFTER INSERT ON intelligence_recommendation_handoffs BEGIN
+            INSERT INTO ledger_audit VALUES ('audit_'||lower(hex(randomblob(8))),NEW.organization_id,NEW.workspace_id,'person',NEW.reviewed_by_person_id,'create','intelligence_recommendation_handoff',NEW.id,'trace='||NEW.trace_id||';recommendation='||NEW.recommendation_id,CURRENT_TIMESTAMP);
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

@@ -84,6 +84,7 @@ class McpToolRouter:
             {"name": "intelligence.hypotheses.record", "description": "Record a workspace-scoped interpretation hypothesis without promoting facts."},
             {"name": "intelligence.recommendations.record", "description": "Record a workspace-scoped recommendation for human lifecycle review."},
             {"name": "intelligence.recommendations.lifecycle", "description": "Append an accepted/rejected/chosen/evaluated lifecycle event to a recommendation."},
+            {"name": "intelligence.recommendations.handoff", "description": "Record a human-reviewed trace-linked recommendation and supplied canonical links without creating actions."},
             {"name": "intelligence.evaluation_safety.get", "description": "Read shadow evaluation and circuit-breaker status."},
             {"name": "intelligence.evaluation.start", "description": "Start a shadow-only intelligence evaluation record."},
             {"name": "intelligence.evaluation.complete", "description": "Complete a scoped shadow-only intelligence evaluation record."},
@@ -119,7 +120,7 @@ class McpToolRouter:
                 "intelligence.profiles.list","intelligence.profiles.get","intelligence.runbooks.list",
                 "intelligence.runbooks.get","intelligence.orchestrator.run","intelligence.orchestrator.result",
                 "intelligence.learning.get","intelligence.recommendations.quality","intelligence.hypotheses.record","intelligence.recommendations.record",
-                "intelligence.recommendations.lifecycle","intelligence.evaluation_safety.get",
+                "intelligence.recommendations.lifecycle","intelligence.recommendations.handoff","intelligence.evaluation_safety.get",
                 "intelligence.evaluation.start","intelligence.evaluation.complete"}
             if name in company_tools:
                 return self._call_company_tool(name, arguments)
@@ -590,6 +591,22 @@ class McpToolRouter:
                 evaluation_window_end=_optional_str(arguments.get("evaluation_window_end")),
                 idempotency_key=_optional_str(arguments.get("idempotency_key")),
             )}
+        if name == "intelligence.recommendations.handoff":
+            workspace = _required(arguments, "workspace_id")
+            return self.os.intelligence_learning.handoff_recommendation(
+                organization_id, workspace, person_id, _required(arguments, "trace_id"),
+                recommendation_id=_optional_str(arguments.get("recommendation_id")),
+                summary=_optional_str(arguments.get("summary")), runbook_id=_optional_str(arguments.get("runbook_id")),
+                runbook_version=_optional_int(arguments.get("runbook_version")), profile_contributors=arguments.get("profile_contributors"),
+                confidence=float(arguments.get("confidence", 0.5)), options=arguments.get("options"),
+                recommended_option_id=_optional_str(arguments.get("recommended_option_id")), evidence_refs=arguments.get("evidence_refs"),
+                evaluation_window_start=_optional_str(arguments.get("evaluation_window_start")), evaluation_window_end=_optional_str(arguments.get("evaluation_window_end")),
+                generated_by=arguments.get("generated_by"), review_status=str(arguments.get("review_status") or "reviewed"),
+                decision_id=_optional_str(arguments.get("decision_id")), approval_request_id=_optional_str(arguments.get("approval_request_id")),
+                work_item_id=_optional_str(arguments.get("work_item_id")), action_descriptor=arguments.get("action_descriptor"),
+                outcome_refs=arguments.get("outcome_refs"), notes=str(arguments.get("notes") or ""),
+                idempotency_key=_optional_str(arguments.get("idempotency_key")),
+            )
         if name == "intelligence.evaluation_safety.get":
             workspace = _required(arguments, "workspace_id")
             return _evaluation_safety_status(
@@ -714,7 +731,7 @@ def _mcp_capability(name: str) -> str:
     if name in {"brain.propose", "brain.entity.candidates", "entity_candidates"}: return "brain_propose"
     if name in {"brain.promote"}: return "brain_promote"
     if name in {"brain.resolve_conflict"}: return "brain_promote"
-    if name in {"intelligence.hypotheses.record", "intelligence.recommendations.record", "intelligence.evaluation.start"}:
+    if name in {"intelligence.hypotheses.record", "intelligence.recommendations.record", "intelligence.recommendations.handoff", "intelligence.evaluation.start"}:
         return "brain_propose"
     if name in {"intelligence.recommendations.lifecycle", "intelligence.evaluation.complete"}:
         return "brain_promote"

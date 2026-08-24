@@ -37,6 +37,12 @@ write only append-only learning records through the existing service gates.
 `brain_promote` and appends accepted, rejected, chosen, or evaluated events;
 it does not execute the recommendation.
 
+`POST /dashboard/intelligence/recommendations/handoff` requires
+`brain_propose` and records a human-reviewed, trace-linked recommendation
+handoff. Supplied decision, approval, work, outcome, and action-descriptor
+references are validated in the same workspace; the route creates none of
+those canonical records or actions.
+
 `GET /dashboard/intelligence/recommendation-quality` (also available as
 `/dashboard/intelligence/recommendations/quality`) returns a read-only,
 workspace-scoped correctness aggregate. Its denominator includes only the

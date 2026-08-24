@@ -29,7 +29,7 @@ lookup. It exposes:
 - intelligence.runbooks.list, intelligence.runbooks.get
 - intelligence.orchestrator.run, intelligence.orchestrator.result
 - intelligence.learning.get, intelligence.recommendations.quality, intelligence.hypotheses.record
-- intelligence.recommendations.record, intelligence.recommendations.lifecycle
+- intelligence.recommendations.record, intelligence.recommendations.lifecycle, intelligence.recommendations.handoff
 - intelligence.evaluation_safety.get, intelligence.evaluation.start, intelligence.evaluation.complete
 
 The original short tool names remain internal aliases for the same handlers. Brain mutation tools use explicit proposal/promotion capabilities; they never fall back to `brain_read`. Proposer, reviewer, organization, person, workspace, and actor identity are derived or checked from the authenticated identity. Permissions are enforced by the service layer, not by tool naming.
@@ -51,6 +51,9 @@ latest evaluated lifecycle event per recommendation. It reports correctness
 rate and denominator only where score, measured outcomes, and evidence refs
 are present, and exposes pending/insufficient counts without fabricating
 outcomes.
+`intelligence.recommendations.handoff` requires `brain_propose` and persists a
+human-reviewed trace link plus same-workspace canonical references. It does
+not create decisions, approvals, work, or execute descriptors.
 
 The graph provider is local by default. An explicitly configured Graphiti/Neo4j
 projection is queried only for full-workspace source access; partial ACLs skip

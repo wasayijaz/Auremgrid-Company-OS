@@ -55,7 +55,7 @@ def _route_capability(path: str, method: str) -> str:
     if path.startswith("/jobs"): return "job_manage"
     if path in {"/auth/sessions/rotate", "/auth/revoke"}: return "workspace_read"
     if path in {"/dashboard/intelligence/refresh", "/dashboard/intelligence/orchestrator/run"}: return "brain_read"
-    if path in {"/dashboard/intelligence/hypotheses", "/dashboard/intelligence/recommendations", "/dashboard/intelligence/evaluation/start"}:
+    if path in {"/dashboard/intelligence/hypotheses", "/dashboard/intelligence/recommendations", "/dashboard/intelligence/recommendations/handoff", "/dashboard/intelligence/evaluation/start"}:
         return "brain_propose"
     if path in {"/dashboard/intelligence/recommendations/lifecycle", "/dashboard/intelligence/evaluation/complete"}:
         return "brain_promote"
@@ -836,6 +836,25 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                     evaluation_window_end=_optional_str(payload.get("evaluation_window_end")),
                     idempotency_key=_optional_str(payload.get("idempotency_key")),
                 )}); return
+            if parsed.path == "/dashboard/intelligence/recommendations/handoff":
+                workspace_id = _need(payload, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(201, self.os.intelligence_learning.handoff_recommendation(
+                    scoped.organization_id, workspace_id, scoped.person_id, _need(payload, "trace_id"),
+                    recommendation_id=_optional_str(payload.get("recommendation_id")),
+                    summary=_optional_str(payload.get("summary")),
+                    runbook_id=_optional_str(payload.get("runbook_id")),
+                    runbook_version=_optional_int(payload.get("runbook_version")),
+                    profile_contributors=payload.get("profile_contributors"), confidence=float(payload.get("confidence", 0.5)),
+                    options=payload.get("options"), recommended_option_id=_optional_str(payload.get("recommended_option_id")),
+                    evidence_refs=payload.get("evidence_refs"),
+                    evaluation_window_start=_optional_str(payload.get("evaluation_window_start")),
+                    evaluation_window_end=_optional_str(payload.get("evaluation_window_end")), generated_by=payload.get("generated_by"),
+                    review_status=str(payload.get("review_status") or "reviewed"), decision_id=_optional_str(payload.get("decision_id")),
+                    approval_request_id=_optional_str(payload.get("approval_request_id")), work_item_id=_optional_str(payload.get("work_item_id")),
+                    action_descriptor=payload.get("action_descriptor"), outcome_refs=payload.get("outcome_refs"),
+                    notes=str(payload.get("notes") or ""), idempotency_key=_optional_str(payload.get("idempotency_key")),
+                )); return
             if parsed.path == "/dashboard/intelligence/evaluation/start":
                 workspace_id = _need(payload, "workspace_id")
                 scoped = self.os.auth.scope_identity(identity, workspace_id)

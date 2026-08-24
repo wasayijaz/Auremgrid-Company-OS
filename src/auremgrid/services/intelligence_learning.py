@@ -71,6 +71,8 @@ def _row_dict(row: Any) -> dict[str, Any]:
         "options_json",
         "evidence_refs_json",
         "measured_outcomes_json",
+        "action_descriptor_json",
+        "outcome_refs_json",
     ):
         if key in result:
             target = key.removesuffix("_json")
@@ -321,6 +323,140 @@ class IntelligenceLearningService:
         self.conn.commit()
         return result
 
+    def handoff_recommendation(
+        self,
+        organization_id: str,
+        workspace_id: str,
+        person_id: str,
+        trace_id: str,
+        *,
+        recommendation_id: str | None = None,
+        summary: str | None = None,
+        runbook_id: str | None = None,
+        runbook_version: int | None = None,
+        profile_contributors: list[dict[str, Any]] | None = None,
+        confidence: float = 0.5,
+        options: list[dict[str, Any]] | None = None,
+        recommended_option_id: str | None = None,
+        evidence_refs: list[dict[str, Any]] | None = None,
+        evaluation_window_start: str | None = None,
+        evaluation_window_end: str | None = None,
+        generated_by: dict[str, str] | None = None,
+        review_status: str = "reviewed",
+        decision_id: str | None = None,
+        approval_request_id: str | None = None,
+        work_item_id: str | None = None,
+        action_descriptor: dict[str, Any] | None = None,
+        outcome_refs: list[dict[str, Any]] | None = None,
+        notes: str = "",
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Record an explicitly human-reviewed recommendation handoff from a trace.
+
+        This method only persists the recommendation and links supplied by the
+        caller. It never creates or executes a decision, approval, work item, or
+        action descriptor.
+        """
+        self.os._require_person_access(organization_id, workspace_id, person_id, write=True)
+        trace_id = _text(trace_id, "trace_id")
+        trace = self._trace_result(organization_id, workspace_id, trace_id)
+        if review_status not in {"recorded", "reviewed", "accepted", "rejected", "deferred"}:
+            raise ValidationError("invalid recommendation handoff review_status")
+        if action_descriptor is not None and not isinstance(action_descriptor, dict):
+            raise ValidationError("action_descriptor must be an object")
+        if decision_id and not self.conn.execute(
+            "SELECT 1 FROM decisions WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, decision_id),
+        ).fetchone():
+            raise NotFoundError("decision not found in workspace scope")
+        if approval_request_id and not self.conn.execute(
+            "SELECT 1 FROM approval_requests WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, approval_request_id),
+        ).fetchone():
+            raise NotFoundError("approval request not found in workspace scope")
+        if work_item_id and not self.conn.execute(
+            "SELECT 1 FROM work_items WHERE workspace_id=? AND id=?",
+            (workspace_id, work_item_id),
+        ).fetchone():
+            raise NotFoundError("work item not found in workspace scope")
+        normalized_outcomes = self._validate_evidence_refs(
+            organization_id, workspace_id, _list(outcome_refs, "outcome_refs")
+        )
+
+        existing = self._recommendation(organization_id, workspace_id, recommendation_id) if recommendation_id else None
+        if existing is None:
+            trace_recommendation = trace.get("recommendation") if isinstance(trace.get("recommendation"), dict) else {}
+            runbook_ref = trace.get("runbook") if isinstance(trace.get("runbook"), dict) else {}
+            selected_runbook = runbook_id or runbook_ref.get("id")
+            selected_version = runbook_version or runbook_ref.get("version")
+            if not summary or not selected_runbook or not selected_version:
+                raise ValidationError("new trace handoffs require summary, runbook_id, and runbook_version")
+            selected_profiles = profile_contributors or [
+                {"profile_id": item.get("id"), "version": item.get("version"), "role": "contributor"}
+                for item in (trace.get("profiles") or [])
+                if isinstance(item, dict) and item.get("id") and item.get("version")
+            ]
+            selected_options = options or trace_recommendation.get("options") or []
+            selected_evidence = evidence_refs or []
+            if not selected_profiles or not selected_options or not selected_evidence:
+                raise ValidationError("new trace handoffs require profiles, options, and evidence_refs")
+            payload = {
+                "trace_id": trace_id, "summary": summary, "runbook_id": selected_runbook,
+                "runbook_version": int(selected_version), "profile_contributors": selected_profiles,
+                "confidence": confidence, "options": selected_options,
+                "recommended_option_id": recommended_option_id, "evidence_refs": selected_evidence,
+                "evaluation_window_start": evaluation_window_start,
+                "evaluation_window_end": evaluation_window_end,
+                "generated_by": generated_by,
+            }
+            if not evaluation_window_start or not evaluation_window_end:
+                raise ValidationError("new trace handoffs require an evaluation window")
+            cached = self._idempotent(organization_id, workspace_id, idempotency_key, "intelligence.recommendation.handoff", payload)
+            if cached is not None:
+                return cached
+            existing = self.record_recommendation(
+                organization_id, workspace_id, person_id, summary,
+                runbook_id=selected_runbook, runbook_version=int(selected_version),
+                profile_contributors=selected_profiles, confidence=confidence,
+                options=selected_options, recommended_option_id=recommended_option_id,
+                evidence_refs=selected_evidence, evaluation_window_start=evaluation_window_start,
+                evaluation_window_end=evaluation_window_end, generated_by=generated_by,
+            )
+        else:
+            payload = {
+                "trace_id": trace_id, "recommendation_id": existing["id"],
+                "review_status": review_status, "decision_id": decision_id,
+                "approval_request_id": approval_request_id, "work_item_id": work_item_id,
+                "action_descriptor": action_descriptor, "outcome_refs": normalized_outcomes,
+                "notes": notes.strip(),
+            }
+            cached = self._idempotent(organization_id, workspace_id, idempotency_key, "intelligence.recommendation.handoff", payload)
+            if cached is not None:
+                return cached
+
+        now = _now()
+        item = {
+            "id": self.new_id("irh"), "organization_id": organization_id, "workspace_id": workspace_id,
+            "recommendation_id": existing["id"], "trace_id": trace_id,
+            "reviewed_by_person_id": person_id, "review_status": review_status,
+            "decision_id": decision_id, "approval_request_id": approval_request_id,
+            "work_item_id": work_item_id,
+            "action_descriptor_json": _json(action_descriptor) if action_descriptor is not None else None,
+            "outcome_refs_json": _json(normalized_outcomes), "notes": notes.strip(), "created_at": now,
+        }
+        self.conn.execute(
+            """INSERT INTO intelligence_recommendation_handoffs(
+                id,organization_id,workspace_id,recommendation_id,trace_id,reviewed_by_person_id,
+                review_status,decision_id,approval_request_id,work_item_id,action_descriptor_json,
+                outcome_refs_json,notes,created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tuple(item.values()),
+        )
+        result = {"handoff": _row_dict(item), "recommendation": existing}
+        self._save_idempotency(organization_id, workspace_id, idempotency_key, "intelligence.recommendation.handoff", payload, result, now)
+        self.conn.commit()
+        return result
+
     def workspace_learning(self, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any]:
         self.os._require_person_access(organization_id, workspace_id, person_id)
         hypotheses = [
@@ -350,11 +486,21 @@ class IntelligenceLearningService:
                 (organization_id, workspace_id),
             ).fetchall()
         ]
+        handoffs = [
+            _row_dict(row)
+            for row in self.conn.execute(
+                """SELECT * FROM intelligence_recommendation_handoffs
+                   WHERE organization_id=? AND workspace_id=?
+                   ORDER BY created_at,id""",
+                (organization_id, workspace_id),
+            ).fetchall()
+        ]
         return {
             "scope": {"organization_id": organization_id, "workspace_id": workspace_id},
             "hypotheses": hypotheses,
             "recommendations": recommendations,
             "recommendation_lifecycle": lifecycle,
+            "recommendation_handoffs": handoffs,
         }
 
     def recommendation_quality(
@@ -591,6 +737,22 @@ class IntelligenceLearningService:
         if row is None:
             raise NotFoundError("recommendation not found")
         return dict(row)
+
+    def _trace_result(self, organization_id: str, workspace_id: str, trace_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            """SELECT result_json FROM intelligence_orchestrator_runs
+               WHERE trace_id=? AND organization_id=? AND workspace_id=?""",
+            (trace_id, organization_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("orchestration trace not found in workspace scope")
+        try:
+            result = json.loads(row["result_json"] or "{}")
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("orchestration trace result is invalid") from exc
+        if not isinstance(result, dict):
+            raise ValidationError("orchestration trace result is invalid")
+        return result
 
     def _validate_recommendation_outcomes(
         self,

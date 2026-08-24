@@ -63,6 +63,12 @@ the same workspace and inside the original evaluation window. These tables are
 append-only or immutable and audited; they do not promote hypotheses into
 facts or recommendations into decisions.
 
+`intelligence_recommendation_handoffs` is an append-only, human-authored
+bridge from a persisted orchestration trace to a recommendation. It stores
+only same-workspace references to existing decisions, approvals, work,
+outcome evidence, and an action descriptor; it never creates or executes any
+of those records.
+
 The recommendation-quality read model answers how often recommendations were
 correct without inventing outcomes. It uses the latest evaluated event per
 recommendation, counts a scored event with measured outcomes and evidence refs
@@ -104,7 +110,7 @@ REST and MCP expose these surfaces through the same service boundaries:
 - MCP: `intelligence.profiles.*`, `intelligence.runbooks.*`,
   `intelligence.orchestrator.*`, `intelligence.learning.get`,
   `intelligence.hypotheses.record`, `intelligence.recommendations.record`,
-  `intelligence.recommendations.lifecycle`,
+  `intelligence.recommendations.lifecycle`, `intelligence.recommendations.handoff`,
   `intelligence.evaluation_safety.get`, `intelligence.evaluation.start`, and
   `intelligence.evaluation.complete`.
 

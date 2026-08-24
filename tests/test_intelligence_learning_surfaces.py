@@ -266,6 +266,7 @@ class IntelligenceLearningSurfaceTests(unittest.TestCase):
         self.assertEqual(_mcp_capability("intelligence.hypotheses.record"), "brain_propose")
         self.assertEqual(_mcp_capability("intelligence.recommendations.record"), "brain_propose")
         self.assertEqual(_mcp_capability("intelligence.recommendations.lifecycle"), "brain_promote")
+        self.assertEqual(_mcp_capability("intelligence.recommendations.handoff"), "brain_propose")
         self.assertEqual(_mcp_capability("intelligence.evaluation_safety.get"), "brain_read")
         self.assertEqual(_mcp_capability("intelligence.evaluation.start"), "brain_propose")
         self.assertEqual(_mcp_capability("intelligence.evaluation.complete"), "brain_promote")
@@ -273,6 +274,7 @@ class IntelligenceLearningSurfaceTests(unittest.TestCase):
         router = McpToolRouter(self.os, self.identity)
         tool_names = {tool["name"] for tool in router.list_tools()}
         self.assertIn("intelligence.learning.get", tool_names)
+        self.assertIn("intelligence.recommendations.handoff", tool_names)
         self.assertIn("intelligence.recommendations.quality", tool_names)
         hypothesis = router.call(
             "intelligence.hypotheses.record",
