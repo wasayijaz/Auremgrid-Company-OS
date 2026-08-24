@@ -3628,7 +3628,9 @@ def _approved_reversible_action_executions_sql(conn: sqlite3.Connection) -> str:
             SELECT RAISE(ABORT, 'agent action executions are append-only');
         END;
         """
-    return MIGRATIONS[-1].sql
+    # Fresh databases need the full ledger schema.  Returning the latest
+    # migration here skipped v48 as soon as a later migration was appended.
+    return next(migration.sql for migration in MIGRATIONS if migration.version == 48)
 
 
 def migrate(conn: sqlite3.Connection) -> int:
