@@ -13,6 +13,8 @@ class Dashboard407ContractTests(unittest.TestCase):
     def test_top_ask_routes_to_structured_intelligence(self) -> None:
         self.assertIn("cosmoCommandForm", self.bundle)
         self.assertIn("loadIntelligence(query)", self.bundle)
+        self.assertIn("show('Intelligence')", self.bundle)
+        self.assertIn("PAGES.Intelligence='intelligence'", self.bundle)
         self.assertNotIn("cosmoCommandForm)if(cosmoCommandForm)cosmoCommandForm.onsubmit=event=>{event.preventDefault();const query=$(\'command\').value.trim();if(!query)return;$('ask-modal')", self.bundle)
 
     def test_navigation_and_overview_controls_are_present(self) -> None:

@@ -258,13 +258,46 @@ class DashboardSurfaceTests(unittest.TestCase):
 
     def test_intelligence_is_a_permanent_contextual_backend_surface(self) -> None:
         for marker in (
+            'id="page-intelligence"', 'data-intelligence-workspace',
             'class="intelligence-rail"', 'id="intelligence-findings"',
             "loadIntelligence", "renderIntelligence", "/dashboard/intelligence?",
             "intelligenceConfidence", "intelligenceEvidence", "data-intelligence-surface",
+            "intelligence-page-status", "Intelligence workspace",
         ):
             self.assertIn(marker, self.html)
         self.assertIn("grid-template-columns:248px minmax(0,1fr) 372px", self.html)
         self.assertIn("There is not enough permitted evidence", self.html)
+
+    def test_intelligence_workspace_names_required_readouts(self) -> None:
+        for marker in (
+            "Finding",
+            "Confidence",
+            "Supporting evidence",
+            "Opposing evidence",
+            "Hypotheses",
+            "Analogues",
+            "Scenarios",
+            "Recommendations",
+            "Unknowns",
+            "Contributors",
+            "Reality checker",
+            "Trace",
+            "Learning",
+            "Attention",
+        ):
+            self.assertIn(marker, self.html)
+
+    def test_intelligence_actions_are_descriptor_gated_or_disabled(self) -> None:
+        for marker in (
+            "function intelligenceActionReason",
+            "function intelligenceActions",
+            "action&&action.route",
+            "data-intelligence-action",
+            "No backend route was granted by the server",
+            "No evidence action descriptor returned",
+        ):
+            self.assertIn(marker, self.html)
+        self.assertNotIn('"work.capture":\'Work\'', self.html)
 
     def test_intelligence_contract_workspace_uses_real_backend_routes(self) -> None:
         for marker in (
