@@ -60,6 +60,107 @@ class AssetRecoveryService:
     def __init__(self, conn: Any, new_id: Callable[[str], str]) -> None:
         self.conn, self.new_id = conn, new_id
 
+    def _read_scope(self, identity: AuthenticatedIdentity, organization_id: str, workspace_id: str) -> None:
+        """Authorize a workspace-scoped, metadata-only registry read."""
+        if identity.organization_id != organization_id:
+            raise AuthorizationError("identity scope mismatch")
+        if identity.workspace_id not in {None, workspace_id}:
+            raise AuthorizationError("identity workspace mismatch")
+        identity.require("workspace_read")
+
+    @staticmethod
+    def _asset_row(row: Any) -> dict[str, Any]:
+        item = dict(row)
+        try:
+            item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        except (TypeError, ValueError):
+            item["metadata"] = {}
+            item.pop("metadata_json", None)
+        # Keep the canonical digest name and provide an explicit API alias.
+        item["checksum"] = item.get("sha256")
+        return item
+
+    def _review_status(self, organization_id: str, workspace_id: str, asset_id: str) -> dict[str, Any]:
+        """Return creative review state when this registry id has a creative record."""
+        row = self.conn.execute(
+            "SELECT id,approval_state,reviewer_person_id,revision_count FROM creative_assets "
+            "WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, asset_id),
+        ).fetchone()
+        if row is None:
+            return {"review_status": None, "reviewer_person_id": None, "review_event_count": 0}
+        count = self.conn.execute(
+            "SELECT COUNT(*) FROM creative_review_events WHERE organization_id=? AND workspace_id=? AND asset_id=?",
+            (organization_id, workspace_id, asset_id),
+        ).fetchone()[0]
+        return {
+            "review_status": row["approval_state"],
+            "reviewer_person_id": row["reviewer_person_id"],
+            "review_event_count": int(count),
+            "revision_count": row["revision_count"],
+        }
+
+    def list_assets(
+        self,
+        identity: AuthenticatedIdentity,
+        organization_id: str,
+        workspace_id: str,
+        status: str | None = None,
+        retention_class: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        self._read_scope(identity, organization_id, workspace_id)
+        if not 1 <= int(limit) <= 200:
+            raise ValidationError("limit must be between 1 and 200")
+        sql = "SELECT * FROM asset_registry WHERE organization_id=? AND workspace_id=?"
+        args: list[Any] = [organization_id, workspace_id]
+        if status:
+            sql += " AND status=?"
+            args.append(status)
+        if retention_class:
+            if retention_class not in _RETENTION:
+                raise ValidationError("invalid retention class")
+            sql += " AND retention_class=?"
+            args.append(retention_class)
+        sql += " ORDER BY updated_at DESC,id LIMIT ?"
+        args.append(int(limit))
+        rows = self.conn.execute(sql, args).fetchall()
+        return [{**self._asset_row(row), **self._review_status(organization_id, workspace_id, row["id"])} for row in rows]
+
+    def asset_detail(
+        self,
+        identity: AuthenticatedIdentity,
+        organization_id: str,
+        workspace_id: str,
+        asset_id: str,
+    ) -> dict[str, Any]:
+        self._read_scope(identity, organization_id, workspace_id)
+        row = self.conn.execute(
+            "SELECT * FROM asset_registry WHERE organization_id=? AND workspace_id=? AND id=?",
+            (organization_id, workspace_id, asset_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("asset not found")
+        audit_rows = self.conn.execute(
+            "SELECT id,actor_id,action,entity_type,entity_id,detail_json,created_at "
+            "FROM asset_recovery_audit WHERE organization_id=? AND workspace_id=? AND entity_type='asset' AND entity_id=? "
+            "ORDER BY created_at,id",
+            (organization_id, workspace_id, asset_id),
+        ).fetchall()
+        audit: list[dict[str, Any]] = []
+        for event in audit_rows:
+            item = dict(event)
+            try:
+                item["detail"] = json.loads(item.pop("detail_json") or "{}")
+            except (TypeError, ValueError):
+                item["detail"] = {}
+                item.pop("detail_json", None)
+            audit.append(item)
+        return {
+            "asset": {**self._asset_row(row), **self._review_status(organization_id, workspace_id, asset_id)},
+            "recovery_audit": audit,
+        }
+
     def _audit(self, identity: AuthenticatedIdentity, organization_id: str, workspace_id: str | None, action: str, entity_type: str, entity_id: str, detail: dict[str, Any] | None = None) -> None:
         self.conn.execute("INSERT INTO asset_recovery_audit VALUES (?,?,?,?,?,?,?,?,?)", (self.new_id("asset_audit"), organization_id, workspace_id, identity.person_id, action, entity_type, entity_id, json.dumps(redact(detail or {}), sort_keys=True, separators=(",", ":")), _now()))
 

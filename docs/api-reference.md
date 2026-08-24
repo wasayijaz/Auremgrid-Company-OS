@@ -133,6 +133,14 @@ deployment key. `/oauth/install/{id}/health` reports stored-token health without
 returning token material, and `/oauth/revoke` revokes the local vault entry.
 The repository does not bundle provider client credentials.
 
+The asset registry is read-only over HTTP and requires a workspace scope. `GET
+/assets?workspace_id=...` (or `/asset-registry`) lists registered assets with
+stable locator metadata, SHA-256 checksum, size, retention class, lifecycle
+status, and any available creative review status. `GET
+/assets/detail?workspace_id=...&asset_id=...` returns one asset and its
+workspace-scoped recovery-audit history. These routes do not fetch external
+objects, upload data, or change registry/recovery state.
+
 `POST /provider-imports/preview` and `/provider-imports/sync` are read-only
 normalization paths for injected Stripe Billing/accounting and Meta Ads pages.
 They require `integration_sync`, an account-to-workspace mapping, and a

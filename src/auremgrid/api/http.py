@@ -39,6 +39,7 @@ def _route_capability(path: str, method: str) -> str:
         if path in {"/agents", "/agents/detail"} or path.startswith("/agents/runs"): return "agent_run"
         if path in {"/integrations"}: return "integration_configure"
         if path == "/connectors/catalog": return "workspace_read"
+        if path in {"/assets", "/assets/detail", "/asset-registry", "/asset-registry/detail"}: return "workspace_read"
         if path == "/operator/health": return "workspace_read"
         if path in {"/operator/pause", "/operator/resume"}: return "job_manage"
         if path == "/onboarding/templates" or path.startswith("/onboarding/imports"): return "workspace_read"
@@ -526,6 +527,23 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200, self.os.agency_ops.creative_detail(
                     _need(params,"organization_id"), _need(params,"workspace_id"),
                     _need(params,"person_id"), _need(params,"asset_id")
+                )); return
+            if parsed.path in {"/assets", "/asset-registry"}:
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, {"assets": self.os.asset_recovery.list_assets(
+                    scoped, scoped.organization_id, workspace_id,
+                    _optional_str(params.get("status")),
+                    _optional_str(params.get("retention_class")),
+                    _int(params.get("limit", "100"), "limit"),
+                )}); return
+            if parsed.path in {"/assets/detail", "/asset-registry/detail"}:
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, self.os.asset_recovery.asset_detail(
+                    scoped, scoped.organization_id, workspace_id, _need(params, "asset_id")
                 )); return
             if parsed.path == "/notifications":
                 self._json(200,{"notifications":self.os.agency_ops.attention(_need(params,"organization_id"),_need(params,"person_id"),_int(params.get("limit",20),"limit"))}); return

@@ -6,6 +6,14 @@ and `legal_hold` retention classes.  Signed URLs, query-string credentials,
 fragments, and authorization material are rejected; use a stable object key or
 path and resolve credentials at send time.
 
+The read-only HTTP registry surface is workspace scoped. `GET /assets` (also
+available as `/asset-registry`) lists registered asset metadata with checksum,
+size, retention class, lifecycle status, and any available creative review
+status. `GET /assets/detail?asset_id=...` returns one asset plus its recovery
+audit history. These routes never fetch external locators or mutate registry,
+review, or recovery state; callers must hold the normal `workspace_read`
+capability and may only read a workspace visible to their identity.
+
 Backups are made through the existing SQLite online backup API, never by copying
 the live WAL.  Each independent backup receives a durable manifest containing
 hash, size, schema version, and integrity result.  Verification re-hashes the
