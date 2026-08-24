@@ -1,7 +1,9 @@
 # Upgrade guide
 
 Opening a database runs ordered, append-only schema migrations recorded in
-`schema_migrations`. The current schema version is **48** (`approved_reversible_action_executions`).
+`schema_migrations`. The current documented release-line schema version is
+**53** (`crm_provider_import_records`); `/health` or `/health/detailed` is the
+authoritative runtime evidence for the exact artifact being upgraded.
 
 Before upgrading:
 
@@ -10,7 +12,8 @@ Before upgrading:
 3. Run the full test suite against a copy.
 4. Start Auremgrid; migrations apply in order.
 5. Check `/health` (or `/health/detailed`) for the schema version; a healthy
-   current installation reports `48`.
+   schema-53 release-line installation reports `53`, and later artifacts must
+   report their shipped schema version.
 6. Rebuild local projections with CompanyOS.rebuild_projections when required.
 
 Migrations preserve canonical rows. Obsolete API compatibility layers are not
@@ -34,13 +37,12 @@ Intelligence expert profiles/runbooks, append-only Intelligence hypotheses and
 recommendation lifecycle records, shadow-only Intelligence evaluation/circuit
 breaker records, and proactive Intelligence attention lifecycle state.
 Schema 46 adds append-only persisted Intelligence orchestration traces for
-durable specialist review results. Schema 47 adds supervised reversible action
-descriptor fields to agent tasks and records the orchestration trace that
-proposed them when available; replay is safe for older physical schemas that
-already carried an action descriptor column. Schema 48 adds the
-`agent_action_executions` ledger for approved reversible action execution,
-with a scoped idempotency key, descriptor and payload hashes, status/result/error
-fields, run linkage, and an append-only no-delete boundary.
+durable specialist review results. Schemas 47 and 48 add supervised reversible
+action descriptor fields and the `agent_action_executions` ledger for approved
+reversible action execution, with scoped idempotency, descriptor/payload hashes,
+run linkage, and an append-only no-delete boundary. Schemas 49 through 53 add
+Intelligence contract audit hooks, recommendation handoffs, local admin auth
+invites, Google Ads provider import records, and CRM provider import records.
 
 Schema 11-era databases also need the authenticated identity bootstrap. After
 migration, use the local `bootstrap-auth` command for an existing organization

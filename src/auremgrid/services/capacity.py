@@ -46,6 +46,34 @@ def _rounded(value: float) -> float:
     return round(float(value), 4)
 
 
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _deep_find_text(value: Any, keys: set[str]) -> str | None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in keys and child:
+                return str(child)
+            found = _deep_find_text(child, keys)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _deep_find_text(child, keys)
+            if found:
+                return found
+    return None
+
+
 def _interval_hours(
     started_at: datetime,
     ended_at: datetime | None,
@@ -142,9 +170,11 @@ class CapacityService:
         self._apply_booked_time(
             organization_id, workspace_ids, week_start_dt, week_end_dt, cutoff, person_rows, account_rows
         )
-        self._apply_work_demand(organization_id, workspace_ids, cutoff, person_rows, account_rows)
+        counted_work_item_ids = self._apply_work_demand(
+            organization_id, workspace_ids, cutoff, person_rows, account_rows
+        )
         self._apply_workflow_demand(
-            organization_id, workspace_ids, cutoff, person_rows, account_rows, wing_rows
+            organization_id, workspace_ids, cutoff, person_rows, account_rows, wing_rows, counted_work_item_ids
         )
 
         for row in person_rows.values():
@@ -178,7 +208,8 @@ class CapacityService:
                 "historical_inputs": "current_configuration",
                 "notes": [
                     "availability and leave use current configuration",
-                    "work and workflow channels may overlap because no canonical linkage exists",
+                    "workflow stage demand linked to counted canonical work is excluded from workflow demand",
+                    "unlinked workflow stage demand remains separate from canonical work demand",
                 ],
             },
             "people": sorted(person_rows.values(), key=lambda item: (item["name"], item["person_id"])),
@@ -333,12 +364,14 @@ class CapacityService:
         cutoff: datetime,
         people: dict[str, dict[str, Any]],
         accounts: dict[str, dict[str, Any]],
-    ) -> None:
+    ) -> set[str]:
+        counted_work_item_ids: set[str] = set()
         actual_by_work_item = self._actual_effort_by_work_item(organization_id, workspace_ids, cutoff)
         for item in self._work_rows(organization_id, workspace_ids, cutoff):
             assignee = item.get("assignee_person_id")
             if not assignee or item.get("status") in TERMINAL_WORK_STATUSES:
                 continue
+            work_item_id = str(item.get("id") or "")
             person = people.get(str(assignee))
             account = accounts.get(str(item.get("workspace_id")))
             estimate = item.get("estimate_hours")
@@ -347,6 +380,8 @@ class CapacityService:
                     person["work_unestimated_count"] += 1
                 if account is not None:
                     account["work_unestimated_count"] += 1
+                if work_item_id:
+                    counted_work_item_ids.add(work_item_id)
                 continue
             actual = actual_by_work_item.get(str(item.get("id")), _float(item.get("actual_effort_hours")))
             remaining = max(float(estimate) - actual, 0.0)
@@ -354,6 +389,9 @@ class CapacityService:
                 person["work_remaining_hours"] += remaining
             if account is not None:
                 account["work_remaining_hours"] += remaining
+            if work_item_id:
+                counted_work_item_ids.add(work_item_id)
+        return counted_work_item_ids
 
     def _actual_effort_by_work_item(
         self, organization_id: str, workspace_ids: list[str], cutoff: datetime
@@ -410,6 +448,7 @@ class CapacityService:
         people: dict[str, dict[str, Any]],
         accounts: dict[str, dict[str, Any]],
         wings: dict[str, dict[str, Any]],
+        counted_work_item_ids: set[str],
     ) -> None:
         if not workspace_ids:
             return
@@ -427,7 +466,11 @@ class CapacityService:
             assignee = row["assignee_person_id"]
             if status in TERMINAL_WORKFLOW_STATUSES or not assignee:
                 continue
-            duration = self._workflow_stage_duration(row["template_snapshot"], row["stage_key"])
+            stage = self._workflow_stage(row["template_snapshot"], row["stage_key"])
+            linked_work_item_id = self._workflow_linked_work_item(row, stage)
+            if linked_work_item_id and linked_work_item_id in counted_work_item_ids:
+                continue
+            duration = self._workflow_stage_duration_from_stage(stage)
             person = people.get(assignee)
             account = accounts.get(row["workspace_id"])
             wing = str(row["assignee_wing"]).strip()
@@ -475,11 +518,8 @@ class CapacityService:
         ).fetchone()
         return future["from_status"] if future and future["from_status"] else current_status
 
-    def _workflow_stage_duration(self, template_snapshot: str, stage_key: str) -> float | None:
-        try:
-            snapshot = json.loads(template_snapshot)
-        except (TypeError, ValueError):
-            return None
+    def _workflow_stage(self, template_snapshot: str, stage_key: str) -> dict[str, Any]:
+        snapshot = _json_object(template_snapshot)
         stages = snapshot.get("stages") or snapshot.get("steps") or []
         for stage in stages:
             if not isinstance(stage, dict):
@@ -487,11 +527,26 @@ class CapacityService:
             key = stage.get("key") or stage.get("id") or stage.get("slug") or stage.get("stage_key")
             if key != stage_key:
                 continue
-            value = stage.get("expected_duration_hours")
-            if value is None:
-                value = stage.get("estimate_hours")
-            return None if value is None else float(value)
-        return None
+            return stage
+        return {}
+
+    def _workflow_stage_duration_from_stage(self, stage: dict[str, Any]) -> float | None:
+        value = stage.get("expected_duration_hours")
+        if value is None:
+            value = stage.get("estimate_hours")
+        return None if value is None else float(value)
+
+    def _workflow_stage_duration(self, template_snapshot: str, stage_key: str) -> float | None:
+        return self._workflow_stage_duration_from_stage(self._workflow_stage(template_snapshot, stage_key))
+
+    def _workflow_linked_work_item(self, row: sqlite3.Row, stage: dict[str, Any]) -> str | None:
+        keys = {"work_item_id", "linked_work_item_id", "canonical_work_item_id", "canonical_work_id"}
+        value = _deep_find_text(stage, keys)
+        if value:
+            return value
+        snapshot = _json_object(row["template_snapshot"])
+        snapshot_level = {key: value for key, value in snapshot.items() if key not in {"stages", "steps"}}
+        return _deep_find_text(snapshot_level, keys)
 
     def _active_roster(
         self, organization_id: str, workspace_id: str, cutoff: datetime

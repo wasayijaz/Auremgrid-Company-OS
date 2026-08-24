@@ -308,6 +308,22 @@ class DashboardSurfaceTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.html)
 
+    def test_executive_portfolio_evidence_and_operator_runtime_are_safely_wired(self) -> None:
+        for marker in (
+            "function executiveEvidenceRef407",
+            "function executiveEvidencePill407",
+            "function openExecutiveEvidence407",
+            "data-executive-evidence",
+            "openWorkDetail(ref.work_item_id)",
+            "openClient(workspaceId)",
+            "target.querySelector('[data-runtime-toggle]')",
+            "button.disabled=true",
+            "Worker control unavailable",
+        ):
+            self.assertIn(marker, self.html)
+        self.assertNotIn("querySelector('[data-runtime-toggle');", self.html)
+        self.assertNotIn("data-executive-action", self.html)
+
     def test_intelligence_actions_are_descriptor_gated_or_disabled(self) -> None:
         for marker in (
             "function intelligenceActionReason",

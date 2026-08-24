@@ -25,7 +25,7 @@ This matrix maps the product definition of complete to authoritative implementat
 | 19. Projections rebuild after restart | ProjectionRestartTests, durable schema-16 embedding projection, fenced schema-17 graph generations, append-only schema-21 Graphiti episode-key/provider-UUID mappings, opt-in local-only SentenceTransformers identity/version fencing, and live rebuild report |
 | 20. Tests prove isolation, persistence, permissions, and workflows | Full offline behavior suite plus a deterministic ten-scenario Chromium dashboard gate |
 | 21. README accurately describes reality | implemented/local fallback/optional/experimental/planned status sections |
-| 22. Existing data migrates forward | legacy-v1 migration test and schema 48 migration chain, including durable provider task identity, embedding projection, graph generations and Graphiti UUID sidecar, entity resolution, knowledge states, existing-agent level backfill, client account rosters, CSV import previews/receipts, brain customization versions, provider import ledgers, portal report versions/events, scoped scheduler controls/heartbeats, richer import quarantines, Intelligence contracts, learning records, evaluation safety, proactive attention lifecycle, durable orchestration traces, replay-safe supervised action descriptors, and the approved reversible action execution ledger |
+| 22. Existing data migrates forward | legacy-v1 migration test and schema 53 release-line migration chain, including durable provider task identity, embedding projection, graph generations and Graphiti UUID sidecar, entity resolution, knowledge states, existing-agent level backfill, client account rosters, CSV import previews/receipts, brain customization versions, provider import ledgers, portal report versions/events, scoped scheduler controls/heartbeats, richer import quarantines, Intelligence contracts, learning records, evaluation safety, proactive attention lifecycle, durable orchestration traces, replay-safe supervised action descriptors, the approved reversible action execution ledger, Intelligence contract audit hooks, recommendation handoffs, local admin auth invites, and Google Ads/CRM provider import record support |
 | 23. Wings coordinate through executable operating contracts | eight neutral templates, immutable definition versions/run snapshots, dependency and rework behavior, evidence/approval/handoff gates, REST/MCP parity, dashboard status, and workflow isolation tests |
 | 24. Repository changes are continuously verified | read-only GitHub Actions workflow compiles source/tests and runs the complete unittest suite on pushes and pull requests |
 | 25. Public callers cannot impersonate people or actors | bearer-derived principals, actor bindings, 401/403 separation, REST forgery tests, and MCP identity-parity tests |
@@ -69,5 +69,7 @@ historic 2026-08-19 walkthrough covered the zero-install launcher, `demo`,
 `bootstrap-auth`, `serve`, `/health`, authenticated `/dashboard/brain`,
 authenticated `/dashboard/workflows`, `worker-once`, `backup`, and
 `verify-backup` against the then-current schema 18 database. Do not reuse that
-historic schema/version count as current release evidence; current release
-verification must report schema 48 from `/health` or `/health/detailed`.
+historic schema/version count as current release evidence. Current release-line
+verification must report schema 53 from `/health` or `/health/detailed`; if the
+artifact includes later schema-bearing work, the reported runtime schema must
+match that artifact rather than any historical checklist value.

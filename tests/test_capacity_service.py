@@ -244,6 +244,129 @@ class CapacityServiceTests(unittest.TestCase):
         )
         self.assertEqual(self._person(historical, self.worker.id)["workflow_hours"], 6)
 
+    def test_workflow_demand_linked_to_canonical_work_is_not_double_counted(self) -> None:
+        self._availability(self.worker.id, 12)
+        with patch("auremgrid.services.work_ops._now", return_value=datetime(2026, 1, 5, 8, tzinfo=timezone.utc)):
+            item = self.os.work_ops.create(
+                self.org.id, self.client.id, self.owner.id, "Linked workflow", "Build", "Client", estimate_hours=6
+            )
+            self.os.work_ops.assign(self.org.id, self.client.id, self.owner.id, item.id, self.worker.id)
+        created_at = datetime(2026, 1, 5, 10, tzinfo=timezone.utc).isoformat()
+        snapshot = {
+            "key": "launch",
+            "name": "Launch",
+            "version": "1",
+            "stages": [
+                {
+                    "key": "linked",
+                    "name": "Linked",
+                    "assignee_wing": "strategy",
+                    "assignee_role": "Team Lead",
+                    "assignee_person_id": self.worker.id,
+                    "expected_duration_hours": 6,
+                    "linked_work_item_id": item.id,
+                },
+                {
+                    "key": "unlinked",
+                    "name": "Unlinked",
+                    "assignee_wing": "strategy",
+                    "assignee_role": "Team Lead",
+                    "assignee_person_id": self.worker.id,
+                    "expected_duration_hours": 4,
+                },
+            ],
+        }
+        self.os.store.conn.execute(
+            """INSERT INTO workflow_runs(
+                id,organization_id,workspace_id,definition_id,definition_version_id,definition_key,
+                definition_version,definition_name,template_snapshot,status,created_by_person_id,
+                idempotency_key,due_at,sla_minutes,escalation_at,blocked_reason,created_at,updated_at,
+                started_at,completed_at,cancelled_at,version
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "wrun_dedup",
+                self.org.id,
+                self.client.id,
+                "wdef_dedup",
+                "wver_dedup",
+                "launch",
+                "1",
+                "Launch",
+                json.dumps(snapshot, sort_keys=True),
+                "pending",
+                self.owner.id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                created_at,
+                created_at,
+                None,
+                None,
+                None,
+                1,
+            ),
+        )
+        for sequence, stage_key in enumerate(("linked", "unlinked"), start=1):
+            self.os.store.conn.execute(
+                """INSERT INTO workflow_stage_runs(
+                    id,run_id,stage_key,name,sequence,status,assignee_wing,assignee_role,assignee_person_id,
+                    required_evidence,requires_approval,handoff_to_wing,handoff_to_role,handoff_to_person_id,
+                    on_reject_stage_key,due_at,blocked_reason,created_at,updated_at,started_at,completed_at,
+                    cancelled_at,version
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    f"wstage_dedup_{stage_key}",
+                    "wrun_dedup",
+                    stage_key,
+                    stage_key.title(),
+                    sequence,
+                    "pending",
+                    "strategy",
+                    "Team Lead",
+                    self.worker.id,
+                    "[]",
+                    0,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    created_at,
+                    created_at,
+                    None,
+                    None,
+                    None,
+                    1,
+                ),
+            )
+        self.os.store.conn.commit()
+
+        board = self.os.capacity.weekly_board(
+            self.org.id, self.owner.id, WEEK, self.client.id, as_of=datetime(2026, 1, 6, tzinfo=timezone.utc)
+        )
+        worker = self._person(board, self.worker.id)
+        account = self._account(board, self.client.id)
+        self.assertEqual(worker["work_remaining_hours"], 6)
+        self.assertEqual(worker["workflow_hours"], 4)
+        self.assertEqual(worker["remaining_hours"], 2)
+        self.assertEqual(account["work_remaining_hours"], 6)
+        self.assertEqual(account["workflow_hours"], 4)
+        self.assertEqual(
+            board["wings"],
+            [
+                {
+                    "wing": "strategy",
+                    "workflow_hours": 4,
+                    "workflow_unestimated_stage_count": 0,
+                    "assigned_person_ids": [self.worker.id],
+                }
+            ],
+        )
+        self.assertIn("linked to counted canonical work", " ".join(board["metadata"]["notes"]))
+
     def test_workspace_filter_does_not_disclose_inaccessible_accounts(self) -> None:
         with patch("auremgrid.services.work_ops._now", return_value=datetime(2026, 1, 5, 9, tzinfo=timezone.utc)):
             visible = self.os.work_ops.create(

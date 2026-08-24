@@ -435,6 +435,28 @@ def test_agent_operations_inspector_observes_canonical_runs(owner_page: Page, da
     assert_no_browser_errors(page)
 
 
+def test_operator_health_pause_resume_runtime_toggle_is_safe(owner_page: Page, dashboard_app: DashboardFixture) -> None:
+    page = owner_page
+    open_dashboard(page, dashboard_app)
+    wait_for_command_data(page)
+    page.locator(".nav button[data-name='Operator health']").click()
+    toggle = page.locator("[data-runtime-toggle]")
+    toggle.wait_for(state="visible", timeout=10_000)
+    expect(toggle).to_have_text(re.compile("Pause worker|Resume worker"))
+    with page.expect_response(lambda response: response.url.endswith("/operator/pause") and response.request.method == "POST"):
+        toggle.click()
+        expect(toggle).to_be_disabled()
+    expect(page.locator("#system-modules")).to_contain_text("Paused: Yes")
+    toggle = page.locator("[data-runtime-toggle]")
+    expect(toggle).to_have_text("Resume worker")
+    with page.expect_response(lambda response: response.url.endswith("/operator/resume") and response.request.method == "POST"):
+        toggle.click()
+        expect(toggle).to_be_disabled()
+    expect(page.locator("#system-modules")).to_contain_text("Paused: No")
+    expect(page.locator("[data-runtime-toggle]")).to_have_text("Pause worker")
+    assert_no_browser_errors(page)
+
+
 def test_client_health_tab_renders_explainable_backend_contract(owner_page: Page, dashboard_app: DashboardFixture) -> None:
     page = owner_page
     open_dashboard(page, dashboard_app)
