@@ -62,12 +62,34 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
 
     def test_contradictions_force_review_and_specialists_are_bounded(self):
         contracts = _Contracts(20)
-        handlers = {f"expert-{i}": (lambda _ctx, i=i: _result(f"hypothesis-{i}")) for i in range(20)}
+        shared_ref = {"object_ref": {"type": "work_item", "id": "shared-work"}, "summary": "Shared delivery evidence."}
+        def handler(i):
+            def run(_ctx):
+                value = _result(f"hypothesis-{i}")
+                value["evidence_for"] = [shared_ref]
+                value["expected_impact"] = {"level": "critical" if i == 0 else "low"}
+                return value
+            return run
+        handlers = {f"expert-{i}": handler(i) for i in range(20)}
         orchestrator = IntelligenceOrchestrator(self.os, contracts, specialist_handlers=handlers)
         result = orchestrator.run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin")
         self.assertTrue(result["needs_review"])
+        self.assertTrue(result["contradictions"])
         self.assertLessEqual(len(result["profiles"]), 13)
-        self.assertLessEqual(len(result["trace"]), 8)
+        self.assertLessEqual(len(result["trace"]), 10)
+
+    def test_lens_disagreement_is_not_material_contradiction_without_conflicting_evidence(self):
+        contracts = _Contracts(2)
+        handlers = {
+            "expert-0": lambda _ctx: _result("delivery lens says review queue"),
+            "expert-1": lambda _ctx: _result("capacity lens says rebalance work"),
+        }
+        result = IntelligenceOrchestrator(self.os, contracts, specialist_handlers=handlers).run(
+            "org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin"
+        )
+        self.assertEqual(result["contradictions"], [])
+        self.assertEqual(result["disagreement"]["resolution"], "human_review")
+        self.assertTrue(result["disagreement"]["lens_disagreements"])
 
     def test_missing_specialist_is_deterministic_degraded(self):
         orchestrator = IntelligenceOrchestrator(self.os, _Contracts(1), specialist_handlers={"expert-0": lambda _ctx: (_ for _ in ()).throw(TimeoutError())})

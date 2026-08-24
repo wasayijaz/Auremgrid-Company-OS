@@ -42,7 +42,8 @@ class IntelligenceEngineTests(unittest.TestCase):
         finding = result["findings"][0]
         self.assertTrue(finding["evidence"])
         self.assertTrue(all("citation" in evidence and "object_ref" in evidence for evidence in finding["evidence"]))
-        self.assertTrue(all(action["safe"] and not action["one_way"] and action["status"] == "proposed" for action in finding["actions"]))
+        self.assertTrue(all(action["safe"] and not action["one_way"] and action["requires_approval"] for action in finding["actions"]))
+        self.assertTrue(all(action["status"] in {"proposed","review_only","supervised_catalog_only"} for action in finding["actions"]))
 
     def test_query_is_scoped_and_unknown_query_is_insufficient(self) -> None:
         matched = self.os.intelligence.workspace(
@@ -143,6 +144,15 @@ class IntelligenceEngineTests(unittest.TestCase):
         }
         self.assertIn("report.generate", action_kinds)
         self.assertIn("work.capture", action_kinds)
+        unsafe_direct = {
+            action["kind"]: action
+            for finding in writable["findings"]
+            for action in finding["action_descriptors"]
+            if action["kind"] in {"report.generate", "work.capture", "decision.create"}
+        }
+        self.assertTrue(all(action["executable"] is False for action in unsafe_direct.values()))
+        self.assertTrue(all(action["route"] is None for action in unsafe_direct.values()))
+        self.assertTrue(all(action["requires_approval"] for action in unsafe_direct.values()))
 
         read_only = self.os.intelligence.workspace(
             "org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin",
@@ -374,6 +384,9 @@ class IntelligenceEngineTests(unittest.TestCase):
         self.assertEqual(brief["type"], "executive_brief")
         self.assertIn("attention", brief["sections"])
         self.assertIn("constraints", brief["sections"])
+        self.assertIn("what_happens_if_do_nothing", brief)
+        self.assertIn(brief["what_happens_if_do_nothing"]["status"], {"evidence_backed", "unknown"})
+        self.assertIn("unknowns", brief["what_happens_if_do_nothing"])
 
     def test_expanded_growth_staffing_and_client_decision_scenarios_retain_inputs(self) -> None:
         result = self.os.intelligence.workspace(

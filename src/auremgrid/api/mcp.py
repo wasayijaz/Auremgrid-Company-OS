@@ -57,6 +57,7 @@ class McpToolRouter:
             {"name": "risks.list", "description": "List open client risks."},
             {"name": "opportunities.list", "description": "List client opportunities."},
             {"name": "agents.list", "description": "Return agents and recent auditable runs."},
+            {"name": "agents.runs.request_review", "description": "Attach a read-only Intelligence expert review trace to a running agent run."},
             {"name": "notifications.list", "description": "Return relevance-ranked attention items."},
             {"name": "reports.generate", "description": "Generate a report with canonical citations."},
             {"name": "workflows.templates", "description": "List validated cross-wing workflow templates."},
@@ -112,7 +113,7 @@ class McpToolRouter:
             company_tools={"projects.list","projects.get","decisions.list","decisions.create","people.list","clients.list",
                 "clients.health","clients.roster.get","clients.roster.create","meetings.list","meetings.get",
                 "meetings.responsibilities.get","meetings.responsibilities.set","campaigns.list","campaigns.get","campaigns.performance",
-                "people.capacity","risks.list","opportunities.list","agents.list","agents.runs","notifications.list","reports.generate",
+                "people.capacity","risks.list","opportunities.list","agents.list","agents.runs","agents.runs.request_review","notifications.list","reports.generate",
                 "workflows.templates","workflows.runs.get","workflows.runs.create","workflows.stages.start",
                 "workflows.stages.complete","workflows.evidence.add","workflows.approvals.request",
                 "workflows.approvals.decide","workflows.handoffs.acknowledge","integrations.list",
@@ -421,6 +422,12 @@ class McpToolRouter:
             if name=="risks.list": return {"risks":self.os.client_ops.list_risks(organization_id,workspace,person_id)}
             return {"opportunities":[dict(r) for r in self.os.store.conn.execute("SELECT * FROM opportunities WHERE workspace_id=? ORDER BY created_at DESC",(workspace,)).fetchall()]}
         if name in {"agents.list","agents.runs"}: return self.os.agent_ops.command_center(organization_id,person_id)
+        if name == "agents.runs.request_review":
+            return self.os.agent_ops.request_review(
+                organization_id, person_id, _required(arguments, "agent_id"), _required(arguments, "run_id"),
+                str(arguments.get("query") or ""), _optional_str(arguments.get("runbook_id")),
+                _optional_string_sequence(arguments.get("profile_ids"), "profile_ids"), self.identity.capabilities,
+            )
         if name == "notifications.list": return {"notifications":self.os.agency_ops.attention(organization_id,person_id,int(arguments.get("limit",20)))}
         if name == "reports.generate": return self.os.agent_ops.generate_report(organization_id,person_id,_required(arguments,"type"),workspace_id)
         if name == "workflows.templates":
@@ -550,6 +557,7 @@ class McpToolRouter:
             workspace = _required(arguments, "workspace_id")
             return {"hypothesis": self.os.intelligence_learning.record_hypothesis(
                 organization_id, workspace, person_id, _required(arguments, "text"),
+                subject=_optional_str(arguments.get("subject")),
                 evidence_for_refs=arguments.get("evidence_for_refs"),
                 evidence_against_refs=arguments.get("evidence_against_refs"),
                 status=str(arguments.get("status") or "proposed"),
@@ -741,6 +749,7 @@ def _mcp_capability(name: str) -> str:
     if name == "remember": return "brain_propose"
     if name in {"decisions.create"}: return "brain_promote"
     if name in {"agents.list","agents.runs"}: return "agent_run"
+    if name == "agents.runs.request_review": return "brain_read"
     if name == "reports.generate": return "workspace_write"
     if name in {"clients.roster.create", "meetings.responsibilities.set"}: return "people_manage"
     if name in {"integrations.list","integrations.configure"}: return "integration_configure"

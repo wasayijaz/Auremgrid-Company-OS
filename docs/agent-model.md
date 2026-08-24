@@ -61,6 +61,12 @@ Workflow stages may name a wing and business role. The runtime must still check
 the caller's permissions before reading or changing records. Sensitive or
 one-way actions continue to require the canonical approval policy.
 
+Workflow roster entries may name either an eligible person or an eligible
+agent. Agent eligibility is fail-closed on organization, workspace allow-list,
+active state, and required capability; display names and titles are never
+shortcuts. Meeting-capture outputs may be routed to named people or agents as
+proposals only, and routing never creates work automatically.
+
 ## Routing contract
 
 Intake supplies capability tags. Deterministic policy recommends the cheapest

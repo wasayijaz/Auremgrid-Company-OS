@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
+import json
 from typing import Any, Callable
 
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
@@ -992,12 +993,16 @@ class WorkflowOperations:
                         "stage assignee role",
                     ),
                     "assignee_person_id": stage.get("assignee_person_id") or assignee.get("person_id") or assignee.get("person"),
+                    "assignee_principal_type": str(stage.get("assignee_principal_type") or assignee.get("principal_type") or ("agent" if stage.get("assignee_agent_id") or assignee.get("agent_id") else "person")).lower(),
+                    "assignee_principal_id": stage.get("assignee_agent_id") or assignee.get("agent_id") or stage.get("assignee_person_id") or assignee.get("person_id") or assignee.get("person"),
                     "required_evidence": normalized_evidence,
                     "requires_approval": bool(requires_approval),
                     "dependencies": [_required_text(item, "dependency stage key") for item in dependencies],
                     "handoff_to_wing": handoff_to_wing,
                     "handoff_to_role": handoff_to_role,
                     "handoff_to_person_id": handoff_to_person_id,
+                    "handoff_principal_type": str(handoff.get("principal_type") or ("agent" if handoff.get("agent_id") else "person")).lower(),
+                    "handoff_principal_id": handoff.get("agent_id") or handoff_to_person_id,
                     "handoff_structured": bool(structured_handoff_wing and structured_handoff_role),
                     "handoff_contract": handoff_contract,
                     "on_reject_stage_key": on_reject_stage_key,
@@ -1037,7 +1042,7 @@ class WorkflowOperations:
             dict(item)
             for item in self.conn.execute(
                 """
-                SELECT id, roster_id, organization_id, workspace_id, role_key, wing, person_id
+                SELECT id, roster_id, organization_id, workspace_id, role_key, wing, person_id, principal_type, agent_id
                 FROM client_account_roster_roles
                 WHERE roster_id=? AND organization_id=? AND workspace_id=?
                 ORDER BY role_key, wing, id
@@ -1097,6 +1102,21 @@ class WorkflowOperations:
             raise ValidationError(f"{label} must have workflow_run capability")
         return resolved_person_id
 
+    def _require_eligible_principal(self, organization_id: str, workspace_id: str | None, principal_type: str, principal_id: Any, label: str) -> str:
+        if principal_type == "person":
+            return self._require_eligible_owner(organization_id, workspace_id, principal_id, label)
+        resolved = _required_text(principal_id, label)
+        row = self.conn.execute("SELECT status,allowed_workspace_ids,capability_tags FROM agents WHERE organization_id=? AND id=?", (organization_id, resolved)).fetchone()
+        if workspace_id is None or row is None or row["status"] not in {"idle", "running"}:
+            raise ValidationError(f"{label} must be an active workspace-eligible agent")
+        try:
+            allowed = set(json.loads(row["allowed_workspace_ids"] or "[]")); capabilities = set(json.loads(row["capability_tags"] or "[]"))
+        except (TypeError, ValueError):
+            allowed, capabilities = set(), set()
+        if workspace_id not in {str(item) for item in allowed} or "workflow_run" not in capabilities:
+            raise ValidationError(f"{label} must be workspace-eligible with workflow_run capability")
+        return resolved
+
     def _ensure_stage_has_named_owner(
         self, run: dict[str, Any], stage: dict[str, Any], organization_id: str, workspace_id: str | None
     ) -> None:
@@ -1118,7 +1138,7 @@ class WorkflowOperations:
         """
         for stage in snapshot["stages"]:
             matches = self._matching_roster_rows(roster, stage["assignee_role"], stage["assignee_wing"])
-            explicit = stage.get("assignee_person_id")
+            explicit = stage.get("assignee_principal_id") or stage.get("assignee_person_id")
             if explicit:
                 if len(matches) != 1 or matches[0]["person_id"] != explicit:
                     raise ValidationError(
@@ -1129,13 +1149,15 @@ class WorkflowOperations:
                     raise ValidationError(
                         f"active client roster has {len(matches)} matches for stage {stage['key']}"
                     )
-                stage["assignee_person_id"] = matches[0]["person_id"]
-            stage["assignee_person_id"] = self._require_eligible_owner(
+                stage["assignee_principal_id"] = matches[0].get("agent_id") if (matches[0].get("principal_type") == "agent") else matches[0]["person_id"]
+                stage["assignee_principal_type"] = matches[0].get("principal_type") or "person"
+            stage["assignee_principal_id"] = self._require_eligible_principal(
                 roster["organization_id"],
                 roster["workspace_id"],
-                stage["assignee_person_id"],
+                stage.get("assignee_principal_type", "person"), stage["assignee_principal_id"],
                 f"stage {stage['key']} owner",
             )
+            stage["assignee_person_id"] = stage["assignee_principal_id"] if stage.get("assignee_principal_type") == "person" else None
 
             # Only structured handoffs can be roster-resolved. Opaque legacy
             # handoff_target values remain untouched and never drive guessing.

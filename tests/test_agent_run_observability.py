@@ -232,6 +232,44 @@ class AgentRunObservabilityTests(unittest.TestCase):
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM notifications WHERE source_type='agent'").fetchone()[0], 1)
 
+    def test_request_review_attaches_read_only_orchestrator_trace_without_completing_run(self) -> None:
+        task = self.os.agent_ops.enqueue_task(
+            self.org.id, self.owner.id, self.agent["id"], "Review plan", "Ask expert review", self.primary.id
+        )
+        run = self.os.agent_ops.start_run(self.org.id, self.owner.id, self.agent["id"], task["id"])
+
+        review = self.os.agent_ops.request_review(
+            self.org.id, self.owner.id, self.agent["id"], run["id"], "What should be checked?"
+        )
+
+        latest_run = self.os.store.conn.execute("SELECT status FROM agent_runs WHERE id=?", (run["id"],)).fetchone()
+        latest_task = self.os.store.conn.execute("SELECT status,orchestrator_trace_id FROM agent_tasks WHERE id=?", (task["id"],)).fetchone()
+        self.assertEqual(latest_run["status"], "running")
+        self.assertEqual(latest_task["status"], "running")
+        self.assertEqual(latest_task["orchestrator_trace_id"], review["trace_id"])
+        self.assertEqual(
+            self.os.store.conn.execute("SELECT COUNT(*) FROM intelligence_orchestrator_runs WHERE trace_id=?", (review["trace_id"],)).fetchone()[0],
+            1,
+        )
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM agent_action_executions").fetchone()[0], 0)
+        detail = self.os.agent_ops.run_detail(self.org.id, self.owner.id, run["id"])
+        self.assertEqual(detail["traces"][0]["kind"], "request_review")
+
+    def test_request_review_is_blocked_for_executable_agent_action_tasks(self) -> None:
+        self.os.auth.create_principal(self.org.id, self.owner.id, "owner@review-action.test")
+        approval = self.os.agency_ops.request_approval(
+            self.org.id, "person", self.owner.id, "Generate report", "report.generate",
+            {"report_type": "client_weekly_report"}, "approved report", policy="auto", workspace_id=self.primary.id,
+        )
+        task = self.os.agent_ops.enqueue_task(
+            self.org.id, self.owner.id, self.agent["id"], "Generate report", "Generate report", self.primary.id,
+            action_descriptor={"action": "generate_report", "safe": True, "one_way": False, "payload": {"type": "client_weekly_report"}},
+            approval_request_id=approval["id"],
+        )
+        run = self.os.agent_ops.start_run(self.org.id, self.owner.id, self.agent["id"], task["id"])
+        with self.assertRaises(ValidationError):
+            self.os.agent_ops.request_review(self.org.id, self.owner.id, self.agent["id"], run["id"])
+
     def test_risk_action_creates_canonical_risk(self) -> None:
         self.os.auth.create_principal(self.org.id, self.owner.id, "owner@risk.test")
         approval = self.os.agency_ops.request_approval(

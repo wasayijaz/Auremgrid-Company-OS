@@ -93,7 +93,9 @@ def run_intelligence_evaluations() -> dict[str, Any]:
         action_items = [item for finding in owner["findings"] for item in finding.get("actions", [])]
         action_safe = all(
             item.get("safe") is True and item.get("one_way") is False
-            and item.get("status") == "proposed"
+            and item.get("requires_approval") is True
+            and item.get("status") in {"proposed", "review_only", "supervised_catalog_only"}
+            and (item.get("route") == "/approvals" or item.get("executable") is False)
             for item in action_items
         )
         approval_descriptor = any(item.get("requires_approval") is True for item in action_items)

@@ -52,10 +52,12 @@ decisions, work items, approvals, reports, connector jobs, external sends, or
 canonical truth. Its recommendations are descriptors and analysis outputs until
 a caller sends them through an existing permission-checked service.
 
-Schema 43 adds the learning layer. `intelligence_hypotheses` stores
-interpretations with supporting and opposing evidence refs, assumptions,
-status, confidence, generator identity, optional supersession, resolution, and
-outcome fields. `intelligence_recommendations` stores the runbook/profile
+Schema 43 adds the learning layer, and schema 55 makes hypothesis subject and
+timestamps durable first-class fields. `intelligence_hypotheses` stores
+interpretations with an optional subject, supporting and opposing evidence
+refs, assumptions, status, confidence, generator identity, optional
+supersession, resolution, outcome, created/updated timestamps, and insert-time
+`resolved_at` for resolved rows. `intelligence_recommendations` stores the runbook/profile
 contributors, options, recommended option, evidence refs, and evaluation
 window. `intelligence_recommendation_lifecycle` appends accepted, rejected,
 chosen, and evaluated events. Evaluated events must cite measured outcomes in
@@ -90,8 +92,9 @@ breaker is open, but it never changes live agent routing.
 
 The orchestrator also emits explicit `disagreement`, `historical_learning`,
 and `scenario_analysis` read-model sections. Disagreement retains every
-hypothesis and profile, reports a confidence-weighted margin, and marks close
-or contradictory views `contested` with a `human_review` resolution. Historical
+hypothesis and profile, reports a confidence-weighted margin, separates
+non-material profile-lens disagreement from material contradictions, and marks
+close or contradictory views `contested` with a `human_review` resolution. Historical
 learning computes a similarity-weighted resolution rate only from analogue rows
 that contain measured outcome statistics; missing outcomes remain unknown.
 Scenario analysis echoes only retained inputs, projections, and constraints,
@@ -126,7 +129,7 @@ they do not execute external actions or invent missing metrics.
 REST and MCP expose these surfaces through the same service boundaries:
 
 - REST: `/dashboard/intelligence/profiles`, `/runbooks`,
-  `/orchestrator/run`, `/orchestrator/result`, `/learning`,
+  `/orchestrator/run`, `/orchestrator/result`, `/orchestrator/latest`, `/learning`,
   `/hypotheses`, `/recommendations`, `/recommendations/lifecycle`,
   `/evaluation-safety`, `/evaluation/start`, and `/evaluation/complete`.
 - MCP: `intelligence.profiles.*`, `intelligence.runbooks.*`,

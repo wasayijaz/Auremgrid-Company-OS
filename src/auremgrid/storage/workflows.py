@@ -195,10 +195,10 @@ class WorkflowRepository:
                 """
                 INSERT INTO workflow_stage_runs(
                     id, run_id, stage_key, name, sequence, status, assignee_wing, assignee_role,
-                    assignee_person_id, required_evidence, requires_approval, handoff_to_wing,
-                    handoff_to_role, handoff_to_person_id, on_reject_stage_key, due_at, blocked_reason, created_at,
+                    assignee_person_id, assignee_principal_type, assignee_principal_id, required_evidence, requires_approval, handoff_to_wing,
+                    handoff_to_role, handoff_to_person_id, handoff_principal_type, handoff_principal_id, on_reject_stage_key, due_at, blocked_reason, created_at,
                     updated_at, started_at, completed_at, cancelled_at, version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     stage["id"],
@@ -210,11 +210,15 @@ class WorkflowRepository:
                     stage["assignee_wing"],
                     stage["assignee_role"],
                     stage["assignee_person_id"],
+                    stage.get("assignee_principal_type", "person"),
+                    stage.get("assignee_principal_id") or stage.get("assignee_person_id"),
                     json.dumps(stage["required_evidence"]),
                     int(stage["requires_approval"]),
                     stage["handoff_to_wing"],
                     stage["handoff_to_role"],
                     stage["handoff_to_person_id"],
+                    stage.get("handoff_principal_type", "person"),
+                    stage.get("handoff_principal_id") or stage.get("handoff_to_person_id"),
                     stage["on_reject_stage_key"],
                     stage["due_at"],
                     stage["blocked_reason"],

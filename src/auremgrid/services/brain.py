@@ -224,6 +224,7 @@ class CompanyOS:
         self.intelligence_contracts.seed_defaults()
         self.intelligence_learning = IntelligenceLearningService(self, new_id)
         self.intelligence_orchestrator = IntelligenceOrchestrator(self)
+        self.agent_ops.intelligence_orchestrator = self.intelligence_orchestrator
         self.intelligence_evaluation_safety = IntelligenceEvaluationSafety(self)
         self.proactive_intelligence = ProactiveIntelligenceService(self)
         self.onboarding = OnboardingService(self, self.store.conn, new_id, self._require_person_access)

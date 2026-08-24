@@ -10,11 +10,11 @@ digest/status. It does not require a bearer token, does not echo payloads, and
 does not write to the provider; configure ingress/TLS and an installation
 secret before enabling it.
 
-Read routes include /health, /search, /entity, /entity/candidates, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /reviews/annotations, /decisions, /people, /capacity, /clients/roster, /meetings/responsibilities, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /onboarding/templates, /onboarding/imports, /memory-proposals, /knowledge-health, /dashboard/data, /dashboard/client, /dashboard/brain, /dashboard/intelligence, /dashboard/intelligence/portfolio, /dashboard/intelligence/executive, /dashboard/intelligence/profiles, /dashboard/intelligence/profiles/get, /dashboard/intelligence/runbooks, /dashboard/intelligence/runbooks/get, /dashboard/intelligence/orchestrator/result, /dashboard/intelligence/learning, /dashboard/intelligence/recommendation-quality, /dashboard/intelligence/recommendations/quality, /dashboard/intelligence/evaluation-safety, /dashboard/intelligence/snapshots, /dashboard/intelligence/attention, and /dashboard/workflows.
+Read routes include /health, /search, /entity, /entity/candidates, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /reviews/annotations, /decisions, /people, /capacity, /clients/roster, /meetings/responsibilities, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /onboarding/templates, /onboarding/imports, /memory-proposals, /knowledge-health, /dashboard/data, /dashboard/client, /dashboard/brain, /dashboard/intelligence, /dashboard/intelligence/portfolio, /dashboard/intelligence/executive, /dashboard/intelligence/profiles, /dashboard/intelligence/profiles/get, /dashboard/intelligence/runbooks, /dashboard/intelligence/runbooks/get, /dashboard/intelligence/orchestrator/result, /dashboard/intelligence/orchestrator/latest, /dashboard/intelligence/learning, /dashboard/intelligence/recommendation-quality, /dashboard/intelligence/recommendations/quality, /dashboard/intelligence/evaluation-safety, /dashboard/intelligence/snapshots, /dashboard/intelligence/attention, and /dashboard/workflows.
 
 `GET /dashboard/intelligence` requires `organization_id`, `workspace_id`, and `person_id`, accepts optional `query` and timezone-aware `as_of`, and enforces the bearer identity's organization, workspace, person, capability, and source ACL. It returns a derived read model rather than new canonical truth. The response exposes status, degraded reason, evidence-backed findings, confidence, changes, hypotheses, scenarios, impact, recommendation, and proposed action descriptors. If `CompanyOS` is constructed with an injected strategic-reasoning provider, `deliberation` may additionally contain validated `hypotheses`, `options`, `scenarios`, `recommendation`, `confidence`, and `dissent`; `provider_metadata` contains only provider identity, evidence references/counts, hashes, and fallback status. Provider failures or malformed output retain deterministic deliberation. Unknown queries return `insufficient_evidence`; historical reads and read-only memberships return no mutation actions.
 
-`GET /dashboard/intelligence/portfolio` and `GET /dashboard/intelligence/executive` require `organization_id` and `person_id`. They aggregate only workspaces visible to that membership. The executive response adds attention, client-health, and downside-constraint sections. Finance remains explicitly `not_connected` with null values unless canonical connected finance evidence exists.
+`GET /dashboard/intelligence/portfolio` and `GET /dashboard/intelligence/executive` require `organization_id` and `person_id`. They aggregate only workspaces visible to that membership. The executive response adds attention, client-health, downside-constraint, and `what_happens_if_do_nothing` sections. The inaction readout is either evidence-backed with cited visible evidence or `unknown` with explicit unknowns. Finance remains explicitly `not_connected` with null values unless canonical connected finance evidence exists.
 
 `GET /dashboard/intelligence/profiles` and
 `/dashboard/intelligence/runbooks` require `organization_id`,
@@ -32,8 +32,13 @@ Intelligence projection and returns a result with `trace_id`, `status`,
 `runbook_route`, contributing profiles, contradictions, trace, limits, and
 scope. `GET /dashboard/intelligence/orchestrator/result` requires the same
 scope plus `trace_id` and uses the scoped orchestrator lookup; mismatched
-workspaces or people are denied without leaking the run. These routes do not
-enqueue proactive jobs, execute recommendations, or write canonical truth.
+workspaces or people are denied without leaking the run. `GET
+/dashboard/intelligence/orchestrator/latest` returns the newest persisted
+trace for the same scoped organization/workspace/person, or `null` when no
+trace exists. These routes do not enqueue proactive jobs, execute
+recommendations, or write canonical truth. Named actions such as Challenge,
+Save insight, and Execute approved plan remain disabled unless a safe backend
+descriptor is explicitly returned.
 
 `GET /dashboard/intelligence/learning` returns workspace-scoped
 interpretation hypotheses, recommendations, and recommendation lifecycle

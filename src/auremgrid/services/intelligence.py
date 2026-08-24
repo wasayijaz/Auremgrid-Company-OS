@@ -305,6 +305,8 @@ class IntelligenceService:
 
     @staticmethod
     def _descriptor_allowed_by_capability(descriptor: dict[str, Any], capabilities: set[str]) -> bool:
+        if descriptor.get("executable") is False:
+            return True
         route = str(descriptor.get("route") or "")
         if route.startswith("/agents"):
             return "agent_run" in capabilities
@@ -493,14 +495,17 @@ class IntelligenceService:
                 "recommendation": recommendation or {"summary": "Review the cited records."},
                 "human_decision_needed": bool(item.get("needs_review", True) or not recommendation),
             })
+        inaction = self._what_happens_if_do_nothing(narrative_items)
         return {
             **result,
             "type": "executive_brief",
             "headline": "Portfolio operating brief",
+            "what_happens_if_do_nothing": inaction,
             "sections": {
                 "attention": result["portfolio"]["attention"],
                 "top_three": narrative_items,
                 "conclusions": narrative_items,
+                "what_happens_if_do_nothing": inaction,
                 "narrative": {
                     "headline": "Three things need attention" if narrative_items else "No evidence-backed attention items",
                     "items": narrative_items,
@@ -523,6 +528,35 @@ class IntelligenceService:
                 ][:20],
             },
             "conclusions": narrative_items,
+        }
+
+    @staticmethod
+    def _what_happens_if_do_nothing(narrative_items: list[dict[str, Any]]) -> dict[str, Any]:
+        evidence: list[Any] = []
+        summaries: list[str] = []
+        unknowns: list[str] = []
+        for item in narrative_items[:3]:
+            item_evidence = [entry for entry in item.get("evidence", []) if entry][:4]
+            if item_evidence:
+                evidence.extend(item_evidence)
+                title = item.get("title") or "Attention item"
+                impact = item.get("effects") or {}
+                impact_summary = impact.get("summary") if isinstance(impact, dict) else None
+                summaries.append(f"{title}: {impact_summary or item.get('why_it_matters') or 'impact is not quantified in the visible records'}")
+            else:
+                unknowns.append(f"{item.get('title') or 'Attention item'} has no linkable evidence for an inaction forecast.")
+        if not evidence:
+            return {
+                "status": "unknown",
+                "summary": "No permitted evidence is sufficient to model what happens if no action is taken.",
+                "evidence": [],
+                "unknowns": unknowns or ["No evidence-backed attention items are visible for this person."],
+            }
+        return {
+            "status": "evidence_backed",
+            "summary": "If no action is taken, the visible attention items are expected to remain open: " + " | ".join(summaries)[:1200],
+            "evidence": evidence[:12],
+            "unknowns": unknowns[:8] or ["Unobserved external changes and uncaptured follow-through remain unknown."],
         }
 
     def _rows(self, sql: str, args: tuple[Any, ...]) -> list[dict[str, Any]]:
@@ -2250,38 +2284,45 @@ class IntelligenceService:
                 "id": "capture-follow-up-work",
                 "action": "Create follow-up work", "label": "Create follow-up work",
                 "kind": "work.capture",
-                "route": "/work/capture",
-                "method": "POST",
+                "route": None,
+                "method": None,
                 "payload": work_payload, "required_fields": [] if actor_id else ["actor_id"],
                 "safe": True,
                 "one_way": False,
-                "requires_approval": False,
-                "status": "proposed",
+                "requires_approval": True,
+                "status": "review_only",
+                "executable": False,
+                "execution_note": "No supervised catalog action exists for work.capture; this is a read-only recommendation.",
             },
             {
                 "id": "record-decision",
                 "action": "Record a decision", "label": "Record a decision",
                 "kind": "decision.create",
-                "route": "/decisions",
-                "method": "POST",
+                "route": None,
+                "method": None,
                 "payload": decision_payload, "required_fields": [],
                 "safe": True,
                 "one_way": False,
-                "requires_approval": False,
-                "status": "proposed",
+                "requires_approval": True,
+                "status": "review_only",
+                "executable": False,
+                "execution_note": "No supervised catalog action exists for decision.create; this is a read-only recommendation.",
             },
             {
                 "id": "generate-client-weekly-report",
                 "action": "Generate report", "label": "Generate report",
                 "kind": "report.generate",
-                "route": "/reports/generate",
-                "method": "POST",
+                "route": None,
+                "method": None,
                 "payload": {"organization_id": organization_id, "workspace_id": workspace_id, "person_id": person_id, "type": "client_weekly_report"},
                 "required_fields": [],
                 "safe": True,
                 "one_way": False,
-                "requires_approval": False,
-                "status": "proposed",
+                "requires_approval": True,
+                "status": "supervised_catalog_only",
+                "executable": False,
+                "supervised_action": "generate_report",
+                "execution_note": "Execute only through an approved agent action descriptor from the supervised catalog.",
             },
             {
                 "id": "request-approval",

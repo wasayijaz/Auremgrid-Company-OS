@@ -92,6 +92,16 @@ class DashboardSurfaceTests(unittest.TestCase):
         self.assertIn("The backend did not mark this descriptor safe.", self.html)
         self.assertIn("disabled_reason||action.reason||action.message||action.unavailable_reason||action.status_reason", self.html)
 
+    def test_intelligence_rail_loads_latest_trace_and_names_disabled_actions(self) -> None:
+        for marker in (
+            "/dashboard/intelligence/orchestrator/latest?",
+            "installLatestPersistedIntelligenceTrace",
+            "No persisted expert review trace",
+            "scenarioActionReason(action)",
+            "What happens if we do nothing",
+        ):
+            self.assertIn(marker, self.html)
+
     def test_brain_surface_names_all_canonical_collections_and_empty_states(self) -> None:
         for marker in (
             "current_truth", "Decisions", "Preferences", "Entities", "Conflicts",

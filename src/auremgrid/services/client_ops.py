@@ -122,6 +122,20 @@ class ClientOperations:
         if row is None:
             raise ValidationError("client account roster people must be active workspace members in the organization")
 
+    def _require_eligible_roster_agent(self, organization_id: str, workspace_id: str, agent_id: str) -> None:
+        row = self.conn.execute(
+            "SELECT status,allowed_workspace_ids FROM agents WHERE organization_id=? AND id=?",
+            (organization_id, agent_id),
+        ).fetchone()
+        if row is None or row["status"] not in {"idle", "running"}:
+            raise ValidationError("client account roster agent must be active")
+        try:
+            allowed = json.loads(row["allowed_workspace_ids"] or "[]")
+        except (TypeError, ValueError):
+            allowed = []
+        if workspace_id not in {str(item) for item in allowed}:
+            raise ValidationError("client account roster agent must be allowed in workspace")
+
     def _require_workspace_admin(self, organization_id: str, workspace_id: str, person_id: str) -> None:
         row = self.conn.execute(
             """SELECT wm.role FROM workspace_memberships wm
@@ -137,6 +151,7 @@ class ClientOperations:
         return ClientAccountRosterRole(
             row["id"], row["roster_id"], row["organization_id"], row["workspace_id"],
             row["role_key"], row["wing"], row["person_id"], _parse_dt(row["created_at"]),
+            str(row["principal_type"] or "person"), row["agent_id"],
         )
 
     def _roster_from_row(self, row: Any) -> ClientAccountRoster:
@@ -175,20 +190,26 @@ class ClientOperations:
                 raise ValidationError("wing is required for wing roster roles")
             if role_key not in WING_ROLES and wing is not None:
                 raise ValidationError("wing is only valid for wing roster roles")
-            target_person_id = str(role.get("person_id") or "").strip()
-            if not target_person_id:
-                raise ValidationError("client account roster role person_id is required")
+            principal_type = str(role.get("principal_type") or ("agent" if role.get("agent_id") else "person")).strip().lower()
+            target_id = str(role.get("agent_id") if principal_type == "agent" else role.get("person_id") or "").strip()
+            if not target_id:
+                raise ValidationError("client account roster role target is required")
             key = (role_key, wing or "")
             if key in seen:
                 raise ValidationError("client account roster roles must be singletons per role and wing")
             seen.add(key)
-            self._require_active_workspace_person(organization_id, workspace_id, target_person_id)
-            normalized.append({"role_key": role_key, "wing": wing, "person_id": target_person_id})
+            if principal_type == "agent":
+                self._require_eligible_roster_agent(organization_id, workspace_id, target_id)
+            elif principal_type == "person":
+                self._require_active_workspace_person(organization_id, workspace_id, target_id)
+            else:
+                raise ValidationError("client account roster principal_type must be person or agent")
+            normalized.append({"role_key": role_key, "wing": wing, "person_id": person_id if principal_type == "agent" else target_id, "principal_type": principal_type, "agent_id": target_id if principal_type == "agent" else None})
         dri = [role for role in normalized if role["role_key"] == "client_success_dri"]
         backup = [role for role in normalized if role["role_key"] == "client_success_backup"]
         if len(dri) != 1 or len(backup) != 1:
             raise ValidationError("exactly one client success DRI and one backup are required")
-        if dri[0]["person_id"] == backup[0]["person_id"]:
+        if (dri[0]["principal_type"], dri[0]["person_id"]) == (backup[0]["principal_type"], backup[0]["person_id"]):
             raise ValidationError("client success DRI and backup must be distinct")
         created_at = _now()
         effective = _parse_dt(effective_at)
@@ -216,11 +237,11 @@ class ClientOperations:
             for role in normalized:
                 self.conn.execute(
                     """INSERT INTO client_account_roster_roles(
-                        id,roster_id,organization_id,workspace_id,role_key,wing,person_id,created_at
-                    ) VALUES (?,?,?,?,?,?,?,?)""",
+                    id,roster_id,organization_id,workspace_id,role_key,wing,person_id,created_at,principal_type,agent_id
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (
                         self.new_id("rosterrole"), roster_id, organization_id, workspace_id,
-                        role["role_key"], role["wing"], role["person_id"], created_at.isoformat(),
+                        role["role_key"], role["wing"], role["person_id"], created_at.isoformat(), role["principal_type"], role["agent_id"],
                     ),
                 )
             self.conn.commit()
@@ -810,7 +831,7 @@ class ClientOperations:
         self.conn.commit(); return item
 
     def add_meeting_output(self, organization_id: str, workspace_id: str, person_id: str, meeting_id: str,
-        kind: str, statement: str, confidence: float) -> dict[str,Any]:
+        kind: str, statement: str, confidence: float, proposed_targets: list[dict[str, str]] | None = None) -> dict[str,Any]:
         self.authorize(organization_id,workspace_id,person_id,write=True)
         if not self.conn.execute("SELECT id FROM meetings WHERE workspace_id=? AND id=?",(workspace_id,meeting_id)).fetchone(): raise NotFoundError("meeting not found")
         if kind not in {"decision","commitment","action_item","request","concern","preference"}: raise ValidationError("invalid meeting output kind")
@@ -818,7 +839,16 @@ class ClientOperations:
             "status":"proposed","linked_entity_type":None,"linked_entity_id":None,"created_at":_now().isoformat()}
         self.conn.execute("INSERT INTO meeting_outputs VALUES (?,?,?,?,?,?,?,?,?)",tuple(item.values()))
         signal_type={"decision":"decision","action_item":"task_candidate","request":"request","concern":"risk"}.get(kind,"information")
-        self.create_signal(organization_id,workspace_id,person_id,signal_type,"meeting",statement,item["id"],confidence);self.conn.commit();return item
+        routes = []
+        for target in proposed_targets or []:
+            target_type = str(target.get("type") or target.get("principal_type") or "person").lower()
+            target_id = str(target.get("id") or target.get("person_id") or target.get("agent_id") or "").strip()
+            if target_type == "person": self._require_active_workspace_person(organization_id, workspace_id, target_id)
+            elif target_type == "agent": self._require_eligible_roster_agent(organization_id, workspace_id, target_id)
+            else: raise ValidationError("meeting output route target type must be person or agent")
+            route = {"id": self.new_id("meetingroute"), "organization_id": organization_id, "workspace_id": workspace_id, "meeting_id": meeting_id, "meeting_output_id": item["id"], "target_type": target_type, "target_id": target_id, "status": "proposed", "proposed_by_person_id": person_id, "created_at": _now().isoformat()}
+            self.conn.execute("INSERT INTO meeting_output_routes VALUES (?,?,?,?,?,?,?,?,?,?)", tuple(route.values())); routes.append(route)
+        self.create_signal(organization_id,workspace_id,person_id,signal_type,"meeting",statement,item["id"],confidence); self.conn.commit(); return {**item, "proposed_routes": routes}
 
     def add_meeting_participant(self, organization_id: str, workspace_id: str, person_id: str,
         meeting_id: str, participant_type: str, participant_id: str) -> None:

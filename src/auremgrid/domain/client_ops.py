@@ -11,6 +11,7 @@ from auremgrid.domain.models import iso
 class ClientAccountRosterRole:
     id: str; roster_id: str; organization_id: str; workspace_id: str; role_key: str
     wing: str | None; person_id: str; created_at: datetime
+    principal_type: str = "person"; agent_id: str | None = None
     def to_dict(self) -> dict[str, Any]:
         return {**self.__dict__, "created_at": iso(self.created_at)}
 

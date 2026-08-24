@@ -41,6 +41,13 @@ def _loads(value: Any, default: Any) -> Any:
         return default
 
 
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _stable_hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -58,6 +65,7 @@ def _action_operator_next_step(status: str) -> str:
 class AgentOperations:
     def __init__(self, conn: Any, new_id: Callable[[str], str], company: Any, approvals: Any, client_ops: Any, capacity: Any | None = None) -> None:
         self.conn, self.new_id, self.company, self.approvals, self.client_ops, self.capacity = conn, new_id, company, approvals, client_ops, capacity
+        self.intelligence_orchestrator: Any | None = None
 
     @staticmethod
     def _can(capabilities: Any, capability: str) -> bool:
@@ -557,6 +565,58 @@ class AgentOperations:
         self.conn.commit()
         return item
 
+    def request_review(
+        self,
+        organization_id: str,
+        person_id: str,
+        agent_id: str,
+        run_id: str,
+        query: str = "",
+        runbook_id: str | None = None,
+        profile_ids: Sequence[str] | None = None,
+        capabilities: Any = None,
+    ) -> dict[str, Any]:
+        run = self._run(organization_id, agent_id, run_id)
+        if run["status"] != "running":
+            raise ValidationError("running agent run required for request review")
+        workspace_id = run["workspace_id"]
+        if workspace_id is None or workspace_id not in self.visible_workspace_ids(organization_id, person_id):
+            raise AuthorizationError("agent review workspace is not visible to caller")
+        task = self.conn.execute(
+            "SELECT action_descriptor_json FROM agent_tasks WHERE id=?",
+            (run["task_id"],),
+        ).fetchone()
+        if task is not None and task["action_descriptor_json"]:
+            raise ValidationError("request review cannot attach to executable agent action tasks")
+        if self.intelligence_orchestrator is None:
+            raise ValidationError("intelligence orchestrator unavailable")
+        result = self.intelligence_orchestrator.run(
+            organization_id,
+            workspace_id,
+            person_id,
+            actor_id=None,
+            runbook_id=runbook_id,
+            profile_ids=profile_ids,
+            query=query or None,
+            capabilities=capabilities,
+            iterations=1,
+        )
+        trace_id = str(result["trace_id"])
+        trace = self.record_trace(
+            organization_id,
+            agent_id,
+            run_id,
+            "request_review",
+            "Read-only expert review requested",
+            {"orchestrator_trace_id": trace_id, "status": result.get("status")},
+        )
+        self.conn.execute(
+            "UPDATE agent_tasks SET orchestrator_trace_id=? WHERE id=? AND orchestrator_trace_id IS NULL",
+            (trace_id, run["task_id"]),
+        )
+        self.conn.commit()
+        return {"run_id": run_id, "trace_id": trace_id, "review": result, "run_trace": trace}
+
     def complete_run(
         self,
         organization_id: str,
@@ -886,11 +946,20 @@ class AgentOperations:
                 "SELECT * FROM automation_actions WHERE automation_id=? ORDER BY sequence",
                 (automation["id"],),
             ).fetchall()
-            descriptors = self._automation_action_descriptors(organization_id, automation, actions, payload)
-            if not descriptors:
+            blocked_reason = None
+            try:
+                descriptors = self._automation_action_descriptors(organization_id, automation, actions, payload)
+            except ValidationError as exc:
+                descriptors = []
+                blocked_reason = str(exc)
+            if not descriptors and blocked_reason is None:
                 continue
-            workspace_id = self._automation_workspace_id(descriptors)
-            fingerprint = self._automation_change_fingerprint(automation, trigger_type, payload, descriptors, workspace_id)
+            workspace_id = self._automation_workspace_id(descriptors) if descriptors else _optional_text(payload.get("workspace_id"))
+            fingerprint_subject = descriptors or [
+                {"type": row["type"], "one_way": bool(row["one_way"]), "config": _loads(row["config"], {})}
+                for row in actions
+            ]
+            fingerprint = self._automation_change_fingerprint(automation, trigger_type, payload, fingerprint_subject, workspace_id)
             existing = self._find_automation_run_by_fingerprint(automation["id"], fingerprint)
             if existing is not None:
                 results.append(self._automation_run_response(existing, True))
@@ -903,6 +972,22 @@ class AgentOperations:
                 "actions": descriptors,
                 "change_fingerprint": fingerprint,
             }
+            if blocked_reason:
+                approval_payload["blocked_reason"] = blocked_reason
+            auto_execute = (
+                automation["status"] == "active"
+                and automation["approval_policy"] == "auto"
+                and bool(descriptors)
+                and blocked_reason is None
+            )
+            principal = None
+            if auto_execute:
+                principal = self.conn.execute(
+                    "SELECT id FROM auth_principals WHERE organization_id=? AND person_id=? AND status='active' LIMIT 1",
+                    (organization_id, automation["created_by_person_id"]),
+                ).fetchone()
+                if principal is None:
+                    raise AuthorizationError("active principal required for automation execution")
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
                 existing = self._find_automation_run_by_fingerprint(automation["id"], fingerprint)
@@ -916,6 +1001,7 @@ class AgentOperations:
                     workspace_id,
                     approval_payload,
                     now,
+                    auto_approved=auto_execute,
                 )
                 self.conn.execute(
                     """INSERT INTO automation_runs(
@@ -927,26 +1013,47 @@ class AgentOperations:
                         automation["id"],
                         trigger_type,
                         _json(payload),
-                        "waiting_approval",
+                        "queued" if auto_execute else "waiting_approval",
                         now,
                         None,
                         approval["id"],
-                        _json({}),
+                        _json({"blocked_reason": blocked_reason} if blocked_reason else {}),
                         workspace_id,
                         None,
                         fingerprint,
                         _json(descriptors),
                     ),
                 )
+                job = None
+                if auto_execute and principal is not None:
+                    from auremgrid.services.job_ops import JobOperations
+
+                    job_payload = {
+                        "run_id": run_id,
+                        "automation_id": automation["id"],
+                        "actions": descriptors,
+                        "change_fingerprint": fingerprint,
+                    }
+
+                    def attach_job(item: dict[str, Any]) -> None:
+                        self.conn.execute("UPDATE automation_runs SET status='queued',job_id=? WHERE id=?", (item["id"], run_id))
+
+                    job = JobOperations(self.conn, self.new_id).enqueue_job(
+                        organization_id,
+                        workspace_id,
+                        principal["id"],
+                        "automation.execute",
+                        job_payload,
+                        idempotency_key=f"automation:{organization_id}:{workspace_id or 'organization'}:{fingerprint}",
+                        transaction_hook=attach_job,
+                        manage_transaction=False,
+                    )
                 self.conn.commit()
-                results.append({
-                    "run_id": run_id,
-                    "status": "waiting_approval",
-                    "approval_request_id": approval["id"],
-                    "job_id": None,
-                    "output": {},
-                    "deduped": False,
-                })
+                latest = self.conn.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
+                response = self._automation_run_response(latest, False)
+                if job is not None:
+                    response["job_id"] = job["id"]
+                results.append(response)
             except sqlite3.IntegrityError:
                 self.conn.rollback()
                 existing = self._find_automation_run_by_fingerprint(automation["id"], fingerprint)
@@ -1005,10 +1112,13 @@ class AgentOperations:
         if principal is None:
             raise AuthorizationError("active principal required for automation execution")
         workspace_id = run["workspace_id"]
+        actions = _loads(run["action_descriptor_json"], [])
+        if not actions:
+            raise ValidationError("automation run has no executable supervised actions")
         payload = {
             "run_id": run_id,
             "automation_id": run["automation_id"],
-            "actions": _loads(run["action_descriptor_json"], []),
+            "actions": actions,
             "change_fingerprint": run["change_fingerprint"],
         }
         from auremgrid.services.job_ops import JobOperations
@@ -1211,6 +1321,7 @@ class AgentOperations:
         workspace_id: str | None,
         payload: dict[str, Any],
         now: str,
+        auto_approved: bool = False,
     ) -> dict[str, Any]:
         approver = self.company.org_membership(organization_id, automation["created_by_person_id"])
         if approver is None:
@@ -1228,11 +1339,11 @@ class AgentOperations:
             "requested_for": "automation run",
             "action_type": "automation.execute",
             "payload": json.dumps(payload),
-            "reason": "Training mode or gated action",
+            "reason": "Approved active auto policy for allowlisted reversible action" if auto_approved else "Training mode or gated action",
             "approver_person_id": automation["created_by_person_id"],
-            "policy": "human",
-            "status": "pending",
-            "approved_at": None,
+            "policy": "auto" if auto_approved else "human",
+            "status": "approved" if auto_approved else "pending",
+            "approved_at": now if auto_approved else None,
             "rejected_at": None,
             "comments": "",
             "created_at": now,

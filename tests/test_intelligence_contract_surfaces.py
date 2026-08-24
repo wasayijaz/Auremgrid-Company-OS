@@ -108,6 +108,15 @@ class IntelligenceContractSurfaceTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(fetched["result"]["trace_id"], result["trace_id"])
 
+        status, latest = self.request("GET", self.scoped_path("/dashboard/intelligence/orchestrator/latest"))
+        self.assertEqual(status, 200)
+        self.assertEqual(latest["result"]["trace_id"], result["trace_id"])
+        self.assertEqual(
+            {action["action"] for action in latest["result"]["action_descriptors"]},
+            {"challenge", "save_insight", "execute_approved_plan"},
+        )
+        self.assertTrue(all(action["safe"] is False and action["disabled"] is True for action in latest["result"]["action_descriptors"]))
+
     def test_rest_denies_cross_workspace_contract_and_result_reads(self) -> None:
         status, denied = self.request(
             "GET",

@@ -95,6 +95,45 @@ class IntelligenceLearningTests(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(audit_count, 2)
 
+    def test_hypothesis_subject_and_resolution_timestamps_are_insert_time_fields(self) -> None:
+        hypothesis = self.os.intelligence_learning.record_hypothesis(
+            self.org,
+            self.ws,
+            self.person,
+            "Interpretation: approval delay was resolved by naming the reviewer.",
+            subject="Approval review",
+            evidence_for_refs=[self._source_ref()],
+            status="resolved",
+            confidence=0.7,
+            resolution="Reviewer was assigned and blocker cleared.",
+            outcome={"status": "resolved"},
+            idempotency_key="resolved-hypothesis",
+        )
+        again = self.os.intelligence_learning.record_hypothesis(
+            self.org,
+            self.ws,
+            self.person,
+            "Interpretation: approval delay was resolved by naming the reviewer.",
+            subject="Approval review",
+            evidence_for_refs=[self._source_ref()],
+            status="resolved",
+            confidence=0.7,
+            resolution="Reviewer was assigned and blocker cleared.",
+            outcome={"status": "resolved"},
+            idempotency_key="resolved-hypothesis",
+        )
+        self.assertEqual(hypothesis["id"], again["id"])
+        self.assertEqual(hypothesis["subject"], "Approval review")
+        self.assertEqual(hypothesis["updated_at"], hypothesis["created_at"])
+        self.assertEqual(hypothesis["resolved_at"], hypothesis["created_at"])
+        row = self.os.store.conn.execute(
+            "SELECT subject,updated_at,resolved_at FROM intelligence_hypotheses WHERE id=?",
+            (hypothesis["id"],),
+        ).fetchone()
+        self.assertEqual(row["subject"], "Approval review")
+        self.assertIsNotNone(row["updated_at"])
+        self.assertIsNotNone(row["resolved_at"])
+
     def test_model_and_expert_results_do_not_promote_facts_or_decisions(self) -> None:
         before_facts = self.os.store.conn.execute("SELECT COUNT(*) FROM facts WHERE workspace_id=?", (self.ws,)).fetchone()[0]
         before_decisions = self.os.store.conn.execute(

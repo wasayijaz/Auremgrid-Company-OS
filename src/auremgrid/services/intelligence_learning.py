@@ -93,6 +93,7 @@ class IntelligenceLearningService:
         person_id: str,
         text: str,
         *,
+        subject: str | None = None,
         evidence_for_refs: list[dict[str, Any]] | None = None,
         evidence_against_refs: list[dict[str, Any]] | None = None,
         status: str = "proposed",
@@ -116,6 +117,7 @@ class IntelligenceLearningService:
             self._hypothesis(organization_id, workspace_id, supersedes_hypothesis_id)
         payload = {
             "text": _text(text, "text"),
+            "subject": subject.strip() if isinstance(subject, str) and subject.strip() else None,
             "evidence_for_refs": evidence_for,
             "evidence_against_refs": evidence_against,
             "status": status,
@@ -130,6 +132,7 @@ class IntelligenceLearningService:
         if cached is not None:
             return cached
         now = _now()
+        resolved_at = now if status in {"resolved", "retired", "refuted"} or payload["resolution"] or payload["outcome"] else None
         item = {
             "id": self.new_id("ihyp"),
             "organization_id": organization_id,
@@ -137,6 +140,7 @@ class IntelligenceLearningService:
             "text": payload["text"],
             "evidence_for_refs_json": _json(evidence_for),
             "evidence_against_refs_json": _json(evidence_against),
+            "subject": payload["subject"],
             "status": status,
             "confidence": payload["confidence"],
             "assumptions_json": _json(assumptions_list),
@@ -147,13 +151,15 @@ class IntelligenceLearningService:
             "resolution": resolution.strip() if isinstance(resolution, str) and resolution.strip() else None,
             "outcome_json": _json(outcome) if outcome else None,
             "created_at": now,
+            "updated_at": now,
+            "resolved_at": resolved_at,
         }
         self.conn.execute(
             """INSERT INTO intelligence_hypotheses(
                 id,organization_id,workspace_id,text,evidence_for_refs_json,evidence_against_refs_json,
-                status,confidence,assumptions_json,generated_by_type,generated_by_id,recorded_by_person_id,
-                supersedes_hypothesis_id,resolution,outcome_json,created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                subject,status,confidence,assumptions_json,generated_by_type,generated_by_id,recorded_by_person_id,
+                supersedes_hypothesis_id,resolution,outcome_json,created_at,updated_at,resolved_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             tuple(item.values()),
         )
         result = _row_dict(item)

@@ -29,6 +29,15 @@ class ClientOperationsTests(unittest.TestCase):
         self.assertEqual(signals[0]["status"], "new")
         self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0], 0)
 
+    def test_meeting_output_route_is_proposed_without_work_creation(self) -> None:
+        agent = self.os.agent_ops.seed_primary_agents(self.org.id, self.owner.id)[0]
+        self.os.agent_ops.configure_agent(self.org.id, self.owner.id, agent["id"], "test", [], [self.client.id], [])
+        meeting = self.os.client_ops.create_meeting(self.org.id, self.client.id, self.owner.id, "Weekly", datetime.now(timezone.utc))
+        before = self.os.store.conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0]
+        output = self.os.client_ops.add_meeting_output(self.org.id, self.client.id, self.owner.id, meeting.id, "action_item", "Draft recap", 0.8, proposed_targets=[{"type": "agent", "id": agent["id"]}])
+        self.assertEqual(output["proposed_routes"][0]["status"], "proposed")
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0], before)
+
     def test_signal_routes_once_and_preserves_evidence(self) -> None:
         signal = self.os.client_ops.create_signal(
             self.org.id, self.client.id, self.owner.id, "risk", "manual", "Client expressed concern"

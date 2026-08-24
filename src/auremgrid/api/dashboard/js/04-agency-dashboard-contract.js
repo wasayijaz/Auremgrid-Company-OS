@@ -275,6 +275,7 @@ showAccessTokenDialog();
     function intelligenceScenarioSection407(rows,empty){return `<section class="intelligence-impact" data-intelligence-scenario-readout><b>Scenarios</b>${rows.length?rows.map(row=>`<article class="scenario-card"><p><strong>${esc(row.name||row.title||'Scenario')}</strong> — ${esc(row.impact||row.summary||row.downside||'Impact not established')} · ${esc(intelligenceConfidence(row.confidence))}</p><div class="scenario-actions intelligence-actions">${intelligenceActions(row.action_descriptors||row.actions||row.allowed_actions,'No scenario action descriptor returned')}</div></article>`).join(''):`<p>${esc(empty||'None returned by the server.')}</p>`}</section>`}
     function executiveIntelligencePanel407(data){
       const blocks=[
+        ['What happens if we do nothing',data.what_happens_if_do_nothing,'No inaction readout returned.'],
         ['Disagreement',data.disagreement,'No disagreement summary returned.'],
         ['Historical learning',data.historical_learning,'No historical learning summary returned.'],
         ['Scenario analysis',data.scenario_analysis,'No scenario analysis summary returned.']

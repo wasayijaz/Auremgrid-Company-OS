@@ -173,6 +173,23 @@ class IntelligenceOrchestrator:
         except (TypeError, ValueError):
             return None
 
+    def latest_run(self, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any] | None:
+        """Return the newest persisted trace visible to this exact workspace principal."""
+        self.os._require_person_access(organization_id, workspace_id, person_id)
+        row = self.os.store.conn.execute(
+            """SELECT result_json FROM intelligence_orchestrator_runs
+               WHERE organization_id=? AND workspace_id=? AND person_id=?
+               ORDER BY generated_at DESC, created_at DESC, trace_id DESC
+               LIMIT 1""",
+            (organization_id, workspace_id, person_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return _json(json.loads(row[0]))
+        except (TypeError, ValueError):
+            return None
+
     def run(
         self,
         organization_id: str,
@@ -302,6 +319,8 @@ class IntelligenceOrchestrator:
             "scenario_analysis": scenario_analysis,
             "specialists": specialists,
             "dissent": [item for specialist in specialists for item in specialist.get("dissent", [])][: self.limits.max_items],
+            "action_descriptors": self._disabled_action_descriptors(),
+            "allowed_actions": self._disabled_action_descriptors(),
             "runbook_route": {"status": "matched" if runbook else "no_match", "reason": route_reason},
             "runbook": self._contract_ref(runbook),
             "profiles": [self._contract_ref(p) for p in profiles[: self.limits.max_specialists]],
@@ -328,6 +347,15 @@ class IntelligenceOrchestrator:
                     scope.get("person_id"), result.get("status"), payload, now, now,
                 ),
             )
+
+    @staticmethod
+    def _disabled_action_descriptors() -> list[dict[str, Any]]:
+        reason = "No safe backend action descriptor was granted for this read-only orchestration trace."
+        return [
+            {"action": "challenge", "label": "Challenge", "safe": False, "disabled": True, "reason": reason},
+            {"action": "save_insight", "label": "Save insight", "safe": False, "disabled": True, "reason": reason},
+            {"action": "execute_approved_plan", "label": "Execute approved plan", "safe": False, "disabled": True, "reason": reason},
+        ]
 
     @staticmethod
     def _profile_payload(profile: Any) -> dict[str, Any]:
@@ -551,14 +579,61 @@ class IntelligenceOrchestrator:
         contradictions = []
         for left_index, left in enumerate(specialists):
             for right in specialists[left_index + 1:]:
-                if left.get("hypothesis") and right.get("hypothesis") and left["hypothesis"].strip().lower() != right["hypothesis"].strip().lower() and left.get("confidence", 0) >= 0.55 and right.get("confidence", 0) >= 0.55:
+                left_hypothesis = str(left.get("hypothesis") or "").strip()
+                right_hypothesis = str(right.get("hypothesis") or "").strip()
+                if (
+                    not left_hypothesis or not right_hypothesis
+                    or left_hypothesis.casefold() == right_hypothesis.casefold()
+                    or float(left.get("confidence") or 0) < 0.55
+                    or float(right.get("confidence") or 0) < 0.55
+                ):
+                    continue
+                reason = IntelligenceOrchestrator._material_contradiction_reason(left, right)
+                if reason:
                     contradictions.append({
                         "left": left.get("profile"), "right": right.get("profile"),
-                        "left_hypothesis": left.get("hypothesis"), "right_hypothesis": right.get("hypothesis"),
+                        "left_hypothesis": left_hypothesis, "right_hypothesis": right_hypothesis,
                         "left_evidence": left.get("evidence_for", [])[:8], "right_evidence": right.get("evidence_for", [])[:8],
-                        "reason": "Independent hypotheses differ.",
+                        "reason": reason,
                     })
         return contradictions[:MAX_ITEMS]
+
+    @staticmethod
+    def _material_contradiction_reason(left: Mapping[str, Any], right: Mapping[str, Any]) -> str | None:
+        left_for = {_ref_id(item) for item in left.get("evidence_for", []) or []}
+        right_for = {_ref_id(item) for item in right.get("evidence_for", []) or []}
+        left_against = {_ref_id(item) for item in left.get("evidence_against", []) or []}
+        right_against = {_ref_id(item) for item in right.get("evidence_against", []) or []}
+        if (left_for & right_against) or (right_for & left_against):
+            return "Specialists cite opposing evidence for the same claim."
+        left_level = IntelligenceOrchestrator._impact_level(left.get("expected_impact"))
+        right_level = IntelligenceOrchestrator._impact_level(right.get("expected_impact"))
+        if left_level is not None and right_level is not None and abs(left_level - right_level) >= 3:
+            return "Specialists materially disagree on expected impact severity."
+        left_action = IntelligenceOrchestrator._recommendation_direction(left.get("recommendation"))
+        right_action = IntelligenceOrchestrator._recommendation_direction(right.get("recommendation"))
+        if left_action and right_action and left_action != right_action:
+            return "Specialists recommend incompatible action directions."
+        return None
+
+    @staticmethod
+    def _impact_level(value: Any) -> int | None:
+        if not isinstance(value, Mapping):
+            return None
+        raw = str(value.get("level") or value.get("severity") or "").strip().lower()
+        return {
+            "none": 0, "low": 1, "minor": 1, "medium": 2, "moderate": 2,
+            "high": 4, "critical": 5, "severe": 5,
+        }.get(raw)
+
+    @staticmethod
+    def _recommendation_direction(value: Any) -> str | None:
+        text = json.dumps(_json(value), sort_keys=True).lower() if isinstance(value, Mapping) else str(value or "").lower()
+        if any(word in text for word in ("stop", "pause", "defer", "block", "reject", "do not")):
+            return "hold"
+        if any(word in text for word in ("start", "execute", "approve", "accelerate", "ship", "expand")):
+            return "act"
+        return None
 
     @staticmethod
     def _disagreement_summary(
@@ -607,6 +682,17 @@ class IntelligenceOrchestrator:
         status = "contested" if contradictions else "consensus"
         if len(ranked) > 1 and margin < 0.15:
             status = "contested"
+        lens_disagreements = []
+        if len(ranked) > 1 and not contradictions:
+            lens_disagreements = [
+                {
+                    "hypothesis": bucket["hypothesis"],
+                    "weight": round(float(bucket["weight"]), 3),
+                    "specialists": [member["specialist_id"] for member in bucket["members"]],
+                    "reason": "different_profile_lens",
+                }
+                for bucket in ranked
+            ][:MAX_ITEMS]
         minority = [
             {"hypothesis": bucket["hypothesis"], "weight": round(float(bucket["weight"]), 3),
              "specialists": [member["specialist_id"] for member in bucket["members"]]}
@@ -621,6 +707,7 @@ class IntelligenceOrchestrator:
             "majority_hypothesis": top["hypothesis"],
             "majority_specialists": [member["specialist_id"] for member in top["members"]],
             "minority": minority[:MAX_ITEMS],
+            "lens_disagreements": lens_disagreements,
             "resolution": "human_review" if status == "contested" else "weighted_consensus",
         }
 

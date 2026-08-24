@@ -88,6 +88,17 @@ class WorkflowRosterAssignmentTests(unittest.TestCase):
         after = self.os.store.conn.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0]
         self.assertEqual(before, after)
 
+    def test_agent_roster_owner_resolves_and_scope_fail_closed(self) -> None:
+        agent = self.os.agent_ops.seed_primary_agents(self.org.id, self.owner.id)[0]
+        self.os.agent_ops.configure_agent(self.org.id, self.owner.id, agent["id"], "test", [], [self.ws.id], [])
+        self.os.store.conn.execute("UPDATE agents SET capability_tags='[\"workflow_run\"]' WHERE id=?", (agent["id"],)); self.os.store.conn.commit()
+        self._create_roster(lead=self.people["Lead"], extra=[{"role_key": "wing_executive", "wing": "creative", "principal_type": "agent", "agent_id": agent["id"]}])
+        template = self._template(); template["stages"][1]["assignee"] = {"wing": "creative", "role": "Executive"}
+        run = self.ops.create_run(self.org.id, self.ws.id, self.owner.id, template)
+        self.assertEqual(run["template_snapshot"]["stages"][1]["assignee_principal_type"], "agent")
+        self.os.store.conn.execute("UPDATE agents SET status='error' WHERE id=?", (agent["id"],)); self.os.store.conn.commit()
+        with self.assertRaises(ValidationError): self.ops.create_run(self.org.id, self.ws.id, self.owner.id, template)
+
     def test_active_roster_resolves_lead_executive_and_structured_handoff(self) -> None:
         roster = self._create_roster(
             extra=[{"role_key": "wing_executive", "wing": "creative", "person_id": self.people["Creative"].id}]

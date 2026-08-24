@@ -3244,6 +3244,7 @@ MIGRATIONS = (
             text TEXT NOT NULL,
             evidence_for_refs_json TEXT NOT NULL,
             evidence_against_refs_json TEXT NOT NULL,
+            subject TEXT,
             status TEXT NOT NULL CHECK(status IN ('proposed','supported','challenged','refuted','resolved','retired')),
             confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
             assumptions_json TEXT NOT NULL,
@@ -3254,6 +3255,8 @@ MIGRATIONS = (
             resolution TEXT,
             outcome_json TEXT,
             created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            resolved_at TEXT,
             FOREIGN KEY(organization_id) REFERENCES organizations(id),
             FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
             FOREIGN KEY(recorded_by_person_id) REFERENCES people(id),
@@ -3761,6 +3764,79 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        55,
+        "durable_intelligence_hypothesis_subject_timestamps",
+        """
+        ALTER TABLE intelligence_hypotheses ADD COLUMN subject TEXT;
+        ALTER TABLE intelligence_hypotheses ADD COLUMN updated_at TEXT;
+        ALTER TABLE intelligence_hypotheses ADD COLUMN resolved_at TEXT;
+        """,
+    ),
+    Migration(
+        56,
+        "workflow_principal_rosters_and_meeting_output_routes",
+        """
+        ALTER TABLE client_account_roster_roles ADD COLUMN principal_type TEXT NOT NULL DEFAULT 'person';
+        ALTER TABLE client_account_roster_roles ADD COLUMN agent_id TEXT;
+        ALTER TABLE agents ADD COLUMN wing_ids TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE workflow_stage_runs ADD COLUMN assignee_principal_type TEXT NOT NULL DEFAULT 'person';
+        ALTER TABLE workflow_stage_runs ADD COLUMN assignee_principal_id TEXT;
+        ALTER TABLE workflow_stage_runs ADD COLUMN handoff_principal_type TEXT NOT NULL DEFAULT 'person';
+        ALTER TABLE workflow_stage_runs ADD COLUMN handoff_principal_id TEXT;
+        CREATE TABLE IF NOT EXISTS meeting_output_routes (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            meeting_id TEXT NOT NULL,
+            meeting_output_id TEXT NOT NULL,
+            target_type TEXT NOT NULL CHECK(target_type IN ('person','agent')),
+            target_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN ('proposed','accepted','rejected')),
+            proposed_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(meeting_id) REFERENCES meetings(id),
+            FOREIGN KEY(meeting_output_id) REFERENCES meeting_outputs(id),
+            FOREIGN KEY(proposed_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_meeting_output_routes_lookup
+            ON meeting_output_routes(organization_id,workspace_id,meeting_id,created_at DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_meeting_output_routes_unique
+            ON meeting_output_routes(meeting_output_id,target_type,target_id);
+        CREATE TRIGGER IF NOT EXISTS meeting_output_routes_no_update BEFORE UPDATE ON meeting_output_routes BEGIN
+            SELECT RAISE(ABORT,'meeting output routes are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS meeting_output_routes_no_delete BEFORE DELETE ON meeting_output_routes BEGIN
+            SELECT RAISE(ABORT,'meeting output routes are append-only'); END;
+        DROP TRIGGER IF EXISTS client_account_roster_roles_valid_insert;
+        CREATE TRIGGER IF NOT EXISTS client_account_roster_roles_valid_insert BEFORE INSERT ON client_account_roster_roles BEGIN
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM client_account_rosters r
+                WHERE r.id=NEW.roster_id AND r.organization_id=NEW.organization_id AND r.workspace_id=NEW.workspace_id
+            ) THEN RAISE(ABORT,'client roster role scope mismatch') END;
+            SELECT CASE WHEN NEW.role_key IN ('wing_lead','wing_executive')
+                AND (NEW.wing IS NULL OR TRIM(NEW.wing)='')
+                THEN RAISE(ABORT,'wing is required for wing roster roles') END;
+            SELECT CASE WHEN NEW.role_key NOT IN ('wing_lead','wing_executive')
+                AND NEW.wing IS NOT NULL
+                THEN RAISE(ABORT,'wing is only valid for wing roster roles') END;
+            SELECT CASE WHEN NEW.principal_type='person' AND NOT EXISTS (
+                SELECT 1 FROM people p JOIN workspace_memberships wm ON wm.person_id=p.id
+                WHERE p.id=NEW.person_id AND p.organization_id=NEW.organization_id
+                  AND p.status='active' AND wm.workspace_id=NEW.workspace_id
+            ) THEN RAISE(ABORT,'roster role person must be an active workspace member in the organization') END;
+            SELECT CASE WHEN NEW.principal_type='agent' AND NOT EXISTS (
+                SELECT 1 FROM agents a
+                WHERE a.id=COALESCE(NEW.agent_id,NEW.person_id) AND a.organization_id=NEW.organization_id
+                  AND a.status IN ('idle','running')
+                  AND instr(a.allowed_workspace_ids, NEW.workspace_id)>0
+            ) THEN RAISE(ABORT,'roster role agent must be active and workspace-eligible') END;
+            SELECT CASE WHEN NEW.principal_type NOT IN ('person','agent')
+                THEN RAISE(ABORT,'roster role principal type is invalid') END;
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
@@ -3897,6 +3973,19 @@ def _durable_automation_actions_and_delegation_depth_sql(conn: sqlite3.Connectio
     return "\n".join(statements)
 
 
+def _durable_intelligence_hypothesis_subject_timestamps_sql(conn: sqlite3.Connection) -> str:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(intelligence_hypotheses)").fetchall()}
+    statements: list[str] = []
+    for column, definition in (
+        ("subject", "TEXT"),
+        ("updated_at", "TEXT"),
+        ("resolved_at", "TEXT"),
+    ):
+        if column not in columns:
+            statements.append(f"ALTER TABLE intelligence_hypotheses ADD COLUMN {column} {definition};")
+    return "\n".join(statements)
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
@@ -3979,6 +4068,25 @@ def migrate(conn: sqlite3.Connection) -> int:
             sql = _approved_reversible_action_executions_sql(conn)
         if migration.version == 54:
             sql = _durable_automation_actions_and_delegation_depth_sql(conn)
+        if migration.version == 55:
+            sql = _durable_intelligence_hypothesis_subject_timestamps_sql(conn)
+        if migration.version == 56:
+            table_columns = {
+                table: {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                for table in ("client_account_roster_roles", "agents", "workflow_stage_runs")
+            }
+            for table, column, definition in (
+                ("client_account_roster_roles", "principal_type", "TEXT NOT NULL DEFAULT 'person'"),
+                ("client_account_roster_roles", "agent_id", "TEXT"),
+                ("agents", "wing_ids", "TEXT NOT NULL DEFAULT '[]'"),
+                ("workflow_stage_runs", "assignee_principal_type", "TEXT NOT NULL DEFAULT 'person'"),
+                ("workflow_stage_runs", "assignee_principal_id", "TEXT"),
+                ("workflow_stage_runs", "handoff_principal_type", "TEXT NOT NULL DEFAULT 'person'"),
+                ("workflow_stage_runs", "handoff_principal_id", "TEXT"),
+            ):
+                statement = f"ALTER TABLE {table} ADD COLUMN {column} {definition};"
+                if column in table_columns[table]:
+                    sql = sql.replace(statement, "")
         with conn:
             conn.executescript(sql)
             if migration.version == 19:

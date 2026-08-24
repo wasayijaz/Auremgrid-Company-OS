@@ -77,14 +77,34 @@ class AgentAutomationTests(unittest.TestCase):
         second=self.os.agent_ops.trigger_automations(self.org.id,"client_silence",{"days":9,"workspace_id":self.ws.id})[0]
         self.assertEqual(first["run_id"],second["run_id"])
         self.assertTrue(second["deduped"])
+        self.assertEqual(first["status"],"queued")
+        self.assertIsNotNone(first["job_id"])
+        approval=self.os.store.conn.execute("SELECT status,policy FROM approval_requests WHERE id=?",(first["approval_request_id"],)).fetchone()
+        self.assertEqual(dict(approval),{"status":"approved","policy":"auto"})
         self.assertEqual(len(self.os.client_ops.list_risks(self.org.id,self.ws.id,self.owner.id)),1)
-        self.os.agency_ops.decide_approval(self.org.id,self.owner.id,first["approval_request_id"],True)
-        self.os.agent_ops.execute_approved_automation_run(self.org.id,self.owner.id,first["run_id"])
         run_one_job(self.os,self.org.id,self.ws.id,"automation-active-worker")
         self.assertEqual(len(self.os.client_ops.list_risks(self.org.id,self.ws.id,self.owner.id)),2)
         third=self.os.agent_ops.trigger_automations(self.org.id,"client_silence",{"days":9,"workspace_id":self.ws.id})[0]
         self.assertEqual(third["run_id"],first["run_id"])
         self.assertEqual(len(self.os.client_ops.list_risks(self.org.id,self.ws.id,self.owner.id)),2)
+
+    def test_active_auto_unsupported_action_still_requires_human_and_never_queues_job(self) -> None:
+        automation=self.os.agent_ops.create_automation(self.org.id,self.owner.id,"External send","client_silence",
+            [{"field":"days","operator":"gt","value":5}],[{"type":"email.send","config":{"workspace_id":self.ws.id},"one_way":True}],"auto")
+        training=self.os.agent_ops.trigger_automations(self.org.id,"client_silence",{"days":6,"workspace_id":self.ws.id})[0]
+        self.os.agency_ops.decide_approval(self.org.id,self.owner.id,training["approval_request_id"],True)
+        with self.assertRaises(ValidationError):
+            self.os.agent_ops.execute_approved_automation_run(self.org.id,self.owner.id,training["run_id"])
+        self.os.store.conn.execute("UPDATE automations SET status='active' WHERE id=?",(automation["id"],))
+        self.os.store.conn.commit()
+
+        run=self.os.agent_ops.trigger_automations(self.org.id,"client_silence",{"days":9,"workspace_id":self.ws.id})[0]
+
+        self.assertEqual(run["status"],"waiting_approval")
+        self.assertIsNone(run["job_id"])
+        approval=self.os.store.conn.execute("SELECT status,policy FROM approval_requests WHERE id=?",(run["approval_request_id"],)).fetchone()
+        self.assertEqual(dict(approval),{"status":"pending","policy":"human"})
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM jobs WHERE type='automation.execute'").fetchone()[0],0)
 
     def test_concurrent_duplicate_trigger_creates_one_run_and_one_approval(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

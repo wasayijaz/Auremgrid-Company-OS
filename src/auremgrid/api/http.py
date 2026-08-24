@@ -76,6 +76,7 @@ def _route_capability(path: str, method: str) -> str:
     if path in {"/integrations/verify","/integrations/sync"}: return "integration_sync"
     if path == "/integrations": return "integration_configure"
     if path.startswith("/onboarding/imports"): return "workspace_write"
+    if path == "/agents/runs/request-review": return "brain_read"
     if path.startswith("/agents/runs") or path == "/agents/tasks": return "agent_run"
     if path == "/reports/generate": return "workspace_write"
     if path.startswith("/agents"): return "agent_configure"
@@ -449,6 +450,14 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 )
                 if result is None:
                     raise NotFoundError("orchestrator result not found")
+                self._json(200, {"result": result}); return
+            if parsed.path == "/dashboard/intelligence/orchestrator/latest":
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                result = self.os.intelligence_orchestrator.latest_run(
+                    scoped.organization_id, workspace_id, scoped.person_id,
+                )
                 self._json(200, {"result": result}); return
             if parsed.path == "/dashboard/intelligence/learning":
                 assert identity is not None
@@ -834,6 +843,7 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 scoped = self.os.auth.scope_identity(identity, workspace_id)
                 self._json(201, {"hypothesis": self.os.intelligence_learning.record_hypothesis(
                     scoped.organization_id, workspace_id, scoped.person_id, _need(payload, "text"),
+                    subject=_optional_str(payload.get("subject")),
                     evidence_for_refs=payload.get("evidence_for_refs"),
                     evidence_against_refs=payload.get("evidence_against_refs"),
                     status=str(payload.get("status") or "proposed"),
@@ -1332,6 +1342,13 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(201, self.os.agent_ops.record_trace(
                     _need(payload,"organization_id"), _need(payload,"agent_id"), _need(payload,"run_id"),
                     _need(payload,"kind"), _need(payload,"message"), payload.get("metadata") or {},
+                )); return
+            if parsed.path == "/agents/runs/request-review":
+                scoped = self.os.auth.scope_identity(identity, _need(payload, "workspace_id"))
+                self._json(201, self.os.agent_ops.request_review(
+                    scoped.organization_id, scoped.person_id, _need(payload, "agent_id"), _need(payload, "run_id"),
+                    str(payload.get("query") or ""), _optional_str(payload.get("runbook_id")),
+                    _optional_string_sequence(payload.get("profile_ids"), "profile_ids"), scoped.capabilities,
                 )); return
             if parsed.path == "/agents/runs/tool-call":
                 self._json(201, self.os.agent_ops.record_tool_call(
