@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import json
+import time
 import uuid
 from typing import Any, Callable, Mapping, Sequence
 
@@ -186,23 +187,31 @@ class IntelligenceOrchestrator:
         context = self._bounded_context(situation)
         trace.append({"stage": "situation_builder", "status": "completed", "evidence_count": len(allowed_refs)})
 
-        iteration_budget = min(self.limits.max_iterations, max(1, int(iterations)))
         runbook = self._select_runbook(
             organization_id, workspace_id, person_id, runbook_id, profile_ids,
             situation, query,
         )
         profiles = self._select_profiles(organization_id, workspace_id, person_id, profile_ids, runbook)
+        requested_iterations = max(1, int(iterations))
+        runbook_iterations = self._bounded_iterations(self._field(runbook, "max_iterations"))
+        iteration_budget = min(self.limits.max_iterations, requested_iterations, runbook_iterations)
         route_reason = "matched" if runbook else "no_match"
         trace.append({"stage": "runbook_router", "status": "completed" if runbook else "degraded", "reason": route_reason, "runbook": self._contract_ref(runbook)})
 
         specialists: list[dict[str, Any]] = []
         errors: list[str] = []
         for iteration in range(iteration_budget):
-            batch, batch_errors = self._run_specialists(profiles, context, allowed_refs)
+            active_profiles = [
+                profile for profile in profiles
+                if iteration < self._bounded_iterations(self._field(profile, "max_iterations"))
+            ]
+            if not active_profiles:
+                break
+            batch, batch_errors = self._run_specialists(active_profiles, context, allowed_refs)
             specialists.extend(batch)
             errors.extend(batch_errors)
             trace.append({"stage": "specialist_fanout", "iteration": iteration + 1, "status": "completed" if batch else "degraded", "count": len(batch), "errors": batch_errors[:8]})
-            if iterations <= 1 or not batch:
+            if requested_iterations <= 1 or not batch:
                 # One successful pass is enough; additional passes are only
                 # requested explicitly for bounded refinement.
                 if iterations <= 1:
@@ -237,7 +246,7 @@ class IntelligenceOrchestrator:
             "runbook": self._contract_ref(runbook),
             "profiles": [self._contract_ref(p) for p in profiles[: self.limits.max_specialists]],
             "trace": trace,
-            "limits": {"max_items": self.limits.max_items, "max_specialists": self.limits.max_specialists, "max_iterations": self.limits.max_iterations},
+            "limits": {"max_items": self.limits.max_items, "max_specialists": self.limits.max_specialists, "max_iterations": iteration_budget, "runbook_max_iterations": runbook_iterations},
             "scope": {"organization_id": organization_id, "workspace_id": workspace_id, "person_id": person_id},
             "generated_at": _now(),
         }
@@ -331,31 +340,43 @@ class IntelligenceOrchestrator:
         context: Mapping[str, Any],
         allowed_refs: set[str],
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """Run each specialist in an isolated future with a hard wall timeout."""
+        """Run specialists in parallel with one bounded wall-clock deadline.
+
+        Results are reassembled in profile order so concurrency never changes
+        the persisted trace or synthesis input ordering.
+        """
         results: list[dict[str, Any]] = []
         errors: list[str] = []
-        for profile in profiles[: self.limits.max_specialists]:
-            profile_key = self._profile_key(profile)
-            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="intel-specialist")
-            future = executor.submit(self._invoke_specialist, profile_key, profile, context)
-            try:
-                raw = future.result(timeout=max(0.01, float(self.limits.timeout_seconds)))
-                normalized = validate_expert_result(raw, allowed_refs=allowed_refs)
-                normalized["profile"] = self._contract_ref(profile)
-                normalized["specialist_id"] = profile_key
-                normalized["perspective"] = _text(self._field(profile, "specialty") or self._field(profile, "mission") or profile_key)
-                if isinstance(raw, Mapping) and raw.get("provider_metadata"):
-                    normalized["provider_metadata"] = _json(raw.get("provider_metadata"))
-                results.append(normalized)
-            except FutureTimeoutError:
-                future.cancel()
-                errors.append(f"{profile_key}:timeout")
-            except Exception as exc:
-                errors.append(f"{profile_key}:{type(exc).__name__}")
-            finally:
-                # Do not wait for a runaway handler after its deadline. The
-                # handler receives no store and therefore cannot mutate OS state.
-                executor.shutdown(wait=False, cancel_futures=True)
+        selected = list(profiles[: self.limits.max_specialists])
+        if not selected:
+            return results, errors
+        executor = ThreadPoolExecutor(max_workers=len(selected), thread_name_prefix="intel-specialist")
+        futures = [
+            (profile, self._profile_key(profile), executor.submit(self._invoke_specialist, self._profile_key(profile), profile, context))
+            for profile in selected
+        ]
+        deadline = time.monotonic() + max(0.01, float(self.limits.timeout_seconds))
+        try:
+            for profile, profile_key, future in futures:
+                try:
+                    remaining = max(0.0, deadline - time.monotonic())
+                    raw = future.result(timeout=remaining)
+                    normalized = validate_expert_result(raw, allowed_refs=allowed_refs)
+                    normalized["profile"] = self._contract_ref(profile)
+                    normalized["specialist_id"] = profile_key
+                    normalized["perspective"] = _text(self._field(profile, "specialty") or self._field(profile, "mission") or profile_key)
+                    if isinstance(raw, Mapping) and raw.get("provider_metadata"):
+                        normalized["provider_metadata"] = _json(raw.get("provider_metadata"))
+                    results.append(normalized)
+                except FutureTimeoutError:
+                    future.cancel()
+                    errors.append(f"{profile_key}:timeout")
+                except Exception as exc:
+                    errors.append(f"{profile_key}:{type(exc).__name__}")
+        finally:
+            # Do not wait for a runaway handler after its deadline. Handlers
+            # receive no store and therefore cannot mutate OS state.
+            executor.shutdown(wait=False, cancel_futures=True)
         return results, errors
 
     def _synthesize(self, situation: Mapping[str, Any], specialists: list[dict[str, Any]], contradictions: list[dict[str, Any]], errors: list[str], allowed_refs: set[str]) -> dict[str, Any]:
@@ -366,17 +387,50 @@ class IntelligenceOrchestrator:
                 "confidence": 0.0, "analogues": [], "risks": errors, "options": [], "recommendation": {"summary": "Review available evidence manually."},
                 "expected_impact": {"level": "unknown"}, "needs_review": True, "dissent": [],
             }, allowed_refs=allowed_refs)
-        best = max(specialists, key=lambda item: item.get("confidence", 0.0))
-        combined = dict(best)
-        combined["evidence_for"] = [item for specialist in specialists for item in specialist.get("evidence_for", [])][: self.limits.max_items]
-        combined["evidence_against"] = [item for specialist in specialists for item in specialist.get("evidence_against", [])][: self.limits.max_items]
-        combined["analogues"] = [item for specialist in specialists for item in specialist.get("analogues", [])][: self.limits.max_items]
-        combined["risks"] = [item for specialist in specialists for item in specialist.get("risks", [])][: self.limits.max_items]
-        combined["dissent"] = [item for specialist in specialists for item in specialist.get("dissent", [])][: self.limits.max_items]
-        combined["needs_review"] = bool(combined.get("needs_review") or contradictions or errors)
+        def collect(field: str) -> list[Any]:
+            return [item for specialist in specialists for item in specialist.get(field, [])][: self.limits.max_items]
+
+        def distinct_values(field: str) -> list[Any]:
+            values = [specialist.get(field) for specialist in specialists if specialist.get(field) not in (None, "", {}, [])]
+            unique: list[Any] = []
+            seen: set[str] = set()
+            for value in values:
+                marker = json.dumps(_json(value), sort_keys=True, separators=(",", ":"))
+                if marker not in seen:
+                    seen.add(marker)
+                    unique.append(value)
+            return unique
+
+        findings = distinct_values("finding")
+        hypotheses = distinct_values("hypothesis")
+        recommendations = distinct_values("recommendation")
+        impacts = distinct_values("expected_impact")
+        combined = {
+            "finding": " | ".join(str(value) for value in findings)[:MAX_TEXT] or "No finding returned.",
+            "evidence_for": collect("evidence_for"),
+            "evidence_against": collect("evidence_against"),
+            "assumptions": [item for specialist in specialists for item in specialist.get("assumptions", [])][: self.limits.max_items],
+            "unknowns": [item for specialist in specialists for item in specialist.get("unknowns", [])][: self.limits.max_items],
+            "hypothesis": hypotheses[0] if len(hypotheses) == 1 else ("Competing specialist hypotheses: " + " | ".join(str(value) for value in hypotheses))[:MAX_TEXT],
+            "confidence": round(sum(float(item.get("confidence", 0.0)) for item in specialists) / len(specialists), 3),
+            "analogues": collect("analogues"),
+            "risks": collect("risks"),
+            "options": collect("options"),
+            "recommendation": recommendations[0] if len(recommendations) == 1 else {"summary": "Review the synthesized specialist perspectives before acting.", "alternatives": recommendations[: self.limits.max_items]},
+            "expected_impact": impacts[0] if len(impacts) == 1 else {"perspectives": impacts[: self.limits.max_items]},
+            "needs_review": any(bool(item.get("needs_review")) for item in specialists) or bool(contradictions or errors),
+            "dissent": collect("dissent"),
+        }
         if contradictions:
             combined["unknowns"] = list(combined.get("unknowns", [])) + ["Independent specialists disagree on the visible signal."]
         return validate_expert_result(combined, allowed_refs=allowed_refs)
+
+    @staticmethod
+    def _bounded_iterations(value: Any, default: int = MAX_ITERATIONS) -> int:
+        try:
+            return max(1, min(MAX_ITERATIONS, int(value)))
+        except (TypeError, ValueError):
+            return default
 
     def _reality_check(self, result: dict[str, Any], situation: Mapping[str, Any], allowed_refs: set[str]) -> dict[str, Any]:
         checked = validate_expert_result(result, allowed_refs=allowed_refs)

@@ -158,8 +158,60 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
             "org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin",
             profile_ids=[f"expert-{i}" for i in range(13)],
         )
-        self.assertEqual(calls, [f"expert-{i}" for i in range(13)])
+        self.assertEqual(sorted(calls, key=lambda value: int(value.rsplit("-", 1)[1])), [f"expert-{i}" for i in range(13)])
         self.assertEqual({item["specialist_id"] for item in result["specialists"]}, set(calls))
+
+    def test_specialist_fanout_is_bounded_parallel(self):
+        def slow(_ctx):
+            time.sleep(0.08)
+            return _result()
+        started = time.monotonic()
+        result = IntelligenceOrchestrator(
+            self.os, _Contracts(3), specialist_handlers={f"expert-{i}": slow for i in range(3)},
+        ).run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin", profile_ids=["expert-0", "expert-1", "expert-2"])
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.2)
+        self.assertEqual([item["specialist_id"] for item in result["specialists"]], ["expert-0", "expert-1", "expert-2"])
+
+    def test_synthesis_balances_all_specialists_and_honors_profile_iteration_caps(self):
+        contracts = _Contracts(2)
+        contracts.profiles[0]["max_iterations"] = 1
+        contracts.profiles[1]["max_iterations"] = 2
+        contracts.runbooks[0]["max_iterations"] = 3
+        calls = {"expert-0": 0, "expert-1": 0}
+        def handler(key):
+            def run(_ctx):
+                calls[key] += 1
+                value = _result(f"hypothesis-{key}")
+                value["finding"] = f"finding-{key}"
+                value["confidence"] = 0.2 if key == "expert-0" else 0.9
+                value["recommendation"] = {"summary": f"recommend-{key}"}
+                return value
+            return run
+        result = IntelligenceOrchestrator(
+            self.os, contracts, specialist_handlers={key: handler(key) for key in calls},
+        ).run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin", profile_ids=list(calls), iterations=3)
+        self.assertEqual(calls, {"expert-0": 1, "expert-1": 2})
+        self.assertIn("finding-expert-0", result["finding"])
+        self.assertIn("finding-expert-1", result["finding"])
+        self.assertIn("hypothesis-expert-0", result["hypothesis"])
+        self.assertIn("hypothesis-expert-1", result["hypothesis"])
+        self.assertEqual(result["confidence"], 0.55)
+        self.assertEqual(len(result["recommendation"]["alternatives"]), 2)
+
+    def test_runbook_iteration_cap_limits_all_profiles(self):
+        contracts = _Contracts(2)
+        contracts.runbooks[0]["max_iterations"] = 1
+        calls = {"expert-0": 0, "expert-1": 0}
+        def handler(key):
+            def run(_ctx):
+                calls[key] += 1
+                return _result()
+            return run
+        IntelligenceOrchestrator(
+            self.os, contracts, specialist_handlers={key: handler(key) for key in calls},
+        ).run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin", profile_ids=list(calls), iterations=3)
+        self.assertEqual(calls, {"expert-0": 1, "expert-1": 1})
 
     def test_default_specialists_use_distinct_profile_methods(self):
         contracts = _Contracts(3)
