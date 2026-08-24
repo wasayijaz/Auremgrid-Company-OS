@@ -86,6 +86,15 @@ and timestamps. The allowed statuses are `new`, `acknowledged`, `acted_on`,
 an approved, current, same-scope approval request; dismissed or unresolved
 descriptors are not executable.
 
+Proactive snapshots also include read-only 8am detectors for client health,
+overdue commitments, scope usage, margin pressure, stalled reviews, team
+capacity, campaign anomalies, feedback patterns, renewals, and expansion
+opportunities. Each detector cites existing canonical source records when it
+raises an item, records `insufficient_evidence` when its source data is absent,
+and records `degraded` when the detector cannot read its source cleanly. The
+detectors reuse the snapshot fingerprint and top-three attention lifecycle, but
+they do not execute external actions or invent missing metrics.
+
 REST and MCP expose these surfaces through the same service boundaries:
 
 - REST: `/dashboard/intelligence/profiles`, `/runbooks`,

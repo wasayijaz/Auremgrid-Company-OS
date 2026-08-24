@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection
 from pathlib import Path
 
@@ -81,7 +82,103 @@ class ProactiveIntelligenceTests(unittest.TestCase):
         snapshot = self.os.proactive_intelligence.refresh_snapshot(org.id, person.id, "workspace", ws.id)
         self.assertEqual(snapshot["status"], "insufficient_evidence")
         self.assertEqual(snapshot["payload"]["degraded_reason"], "no_visible_evidence")
+        detectors = {item["type"]: item for item in snapshot["payload"]["proactive_detectors"]}
+        self.assertTrue(all(item["status"] == "insufficient_evidence" for item in detectors.values()))
         self.assertEqual(snapshot["attention"], [])
+
+    def test_executive_snapshot_includes_read_only_8am_detectors(self) -> None:
+        as_of = datetime(2026, 8, 24, 8, 0, tzinfo=timezone.utc)
+        org = self.os.create_organization("Detector org", "org_detector_intel")
+        ws = self.os.create_organization_workspace(org.id, "Detector client", "client", "ws_detector_intel")
+        person = self.os.create_person(org.id, "Owner", "detector@intel.test", role="owner", person_id="person_detector_intel")
+        self.os.add_person_to_workspace(org.id, ws.id, person.id, "admin")
+        project = self.os.create_project(org.id, ws.id, person.id, "Detector project")
+
+        self.os.store.conn.execute(
+            """INSERT INTO client_health_snapshots(
+                id, organization_id, workspace_id, overall, relationship, delivery,
+                performance, finance, communication, scope, sentiment, contributing_signals,
+                explanation, previous_score, trend, calculated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "health_detector", org.id, ws.id, 62, 65, 58, 70, 50, 72, 55, -0.2,
+                json.dumps(["late delivery", "scope concern"]), "Delivery and scope have both deteriorated.",
+                78, "down", (as_of - timedelta(hours=2)).isoformat(),
+            ),
+        )
+        self.os.work_ops.create(
+            org.id, ws.id, person.id, "Overdue detector commitment",
+            "Ship the overdue commitment", "Owner", project_id=project.id,
+            deadline="2026-08-20",
+        )
+        contract = self.os.client_ops.create_contract(
+            org.id, ws.id, person.id, "retainer", "monthly", "2026-01-01",
+            10000, renewal_date="2026-09-15",
+        )
+        allowance = self.os.client_ops.add_scope_allowance(
+            org.id, ws.id, person.id, contract["id"], "creative", "monthly",
+            included_quantity=10,
+        )
+        self.os.client_ops.record_scope_usage(
+            org.id, ws.id, person.id, contract["id"], allowance["id"],
+            "2026-08-01", delivered=12,
+        )
+        self.os.store.conn.execute(
+            """INSERT INTO client_economics(
+                id, organization_id, workspace_id, period_start, revenue, labor_cost,
+                software_cost, ai_cost, other_cost, gross_contribution, margin, calculated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "economics_detector", org.id, ws.id, "2026-08-01",
+                10000, 7800, 500, 200, 500, 1000, 0.1, as_of.isoformat(),
+            ),
+        )
+        deliverable = self.os.create_deliverable(org.id, ws.id, person.id, project.id, "Detector brief", "report")
+        review = self.os.open_review(org.id, ws.id, person.id, deliverable.id, reviewer_person_id=person.id)
+        self.os.store.conn.execute(
+            "UPDATE reviews SET opened_at=? WHERE id=?",
+            ((as_of - timedelta(days=3)).isoformat(), review.id),
+        )
+        self.os.agency_ops.calculate_capacity(org.id, person.id, person.id, "2026-08-24", 8, 12)
+        campaign = self.os.agency_ops.create_campaign(org.id, ws.id, person.id, "Detector campaign", "Lead gen", "Meta")
+        self.os.store.conn.execute(
+            "INSERT INTO campaign_anomalies VALUES (?,?,?,?,?,?,?,?)",
+            (
+                "anomaly_detector", campaign["id"], "cpl", "high",
+                "CPL spiked above the recorded control.", "campaign_metric_snapshots:latest",
+                as_of.isoformat(), "open",
+            ),
+        )
+        self.os.store.conn.execute(
+            """INSERT INTO feedback_patterns(
+                id, organization_id, workspace_id, category, pattern_key, occurrence_count,
+                first_seen_at, last_seen_at, sample_evidence, proposed_preference_id,
+                preference_status, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "feedback_detector", org.id, ws.id, "process", "wants earlier creative review",
+                3, "2026-08-01T00:00:00+00:00", as_of.isoformat(),
+                json.dumps(["Asked for review earlier", "Repeated in kickoff"]), None,
+                "observing", as_of.isoformat(), as_of.isoformat(),
+            ),
+        )
+        self.os.store.conn.commit()
+
+        snapshot = self.os.proactive_intelligence.refresh_snapshot(org.id, person.id, as_of=as_of)
+        detectors = {item["type"]: item for item in snapshot["payload"]["proactive_detectors"]}
+        expected = {
+            "health", "overdue_commitment", "scope", "margin", "stalled_review",
+            "capacity", "campaign_anomaly", "feedback", "renewal", "expansion",
+        }
+        self.assertEqual(set(detectors), expected)
+        self.assertTrue(all(detectors[item]["status"] == "open" for item in expected))
+        self.assertTrue(all(detectors[item]["evidence"] for item in expected))
+        self.assertLessEqual(len(snapshot["attention"]), 3)
+        self.assertTrue({item["title"] for item in snapshot["attention"]}.issubset({item["title"] for item in detectors.values()}))
+        self.assertTrue(all(item["action_descriptor"] is None for item in snapshot["attention"]))
+        detector_text = json.dumps(snapshot["payload"]["proactive_detectors"], sort_keys=True)
+        self.assertNotIn("action_descriptor", detector_text)
+        self.assertNotIn("action_descriptors", detector_text)
 
     def test_zero_delta_refresh_skips_append_and_changed_projection_versions(self) -> None:
         org = self.os.create_organization("Delta org", "org_delta_intel")
