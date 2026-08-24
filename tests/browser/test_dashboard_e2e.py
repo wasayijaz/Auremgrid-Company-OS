@@ -223,6 +223,48 @@ def test_intelligence_context_drawer_and_degraded_state(owner_page: Page, dashbo
     expect(page.locator(".shell")).not_to_have_class(re.compile("intelligence-open"))
 
 
+def test_intelligence_surfaces_disagreement_learning_and_scenario_analysis(owner_page: Page, dashboard_app: DashboardFixture) -> None:
+    page = owner_page
+    payload = """{
+      "status":"ready",
+      "confidence":0.64,
+      "findings":[{
+        "type":"Recommendation",
+        "title":"Contested staffing choice",
+        "summary":"The current plan has bounded disagreement.",
+        "confidence":0.64,
+        "action_descriptors":[{
+          "action":"push_plan",
+          "label":"Push plan",
+          "route":"/work/items",
+          "safe":false,
+          "reason":"Needs human approval"
+        }]
+      }],
+      "disagreement":{"status":"contested","resolution":"human_review","positions":["Capacity risk","Revenue upside"]},
+      "historical_learning":{"status":"available","lesson":"Similar launches needed staged capacity."},
+      "scenario_analysis":{"status":"bounded","scenarios":[{"name":"baseline","constraint":"No added capacity"}]}
+    }"""
+    page.route(
+        re.compile(r".*/dashboard/intelligence(\?.*)?$"),
+        lambda route: route.fulfill(status=200, content_type="application/json", body=payload),
+    )
+    open_dashboard(page, dashboard_app)
+    wait_for_command_data(page)
+    page.locator(".nav button[data-name='Intelligence']").click()
+    panel = page.locator("[data-executive-intelligence]")
+    panel.wait_for(state="visible", timeout=10_000)
+    expect(panel).to_contain_text("Disagreement")
+    expect(panel).to_contain_text("contested")
+    expect(panel).to_contain_text("Historical learning")
+    expect(panel).to_contain_text("Similar launches needed staged capacity")
+    expect(panel).to_contain_text("Scenario analysis")
+    expect(panel).to_contain_text("baseline")
+    expect(page.locator(".intelligence-actions button", has_text="Push plan unavailable")).to_be_disabled()
+    expect(page.locator("[data-intelligence-action]")).to_have_count(0)
+    assert_no_browser_errors(page)
+
+
 def test_disconnected_finance_and_integrations(owner_page: Page, dashboard_app: DashboardFixture) -> None:
     page = owner_page
     open_dashboard(page, dashboard_app)

@@ -272,6 +272,10 @@ class DashboardSurfaceTests(unittest.TestCase):
         for marker in (
             "Finding",
             "Confidence",
+            "Executive Intelligence",
+            "Disagreement",
+            "Historical learning",
+            "Scenario analysis",
             "Supporting evidence",
             "Opposing evidence",
             "Hypotheses",
@@ -284,6 +288,21 @@ class DashboardSurfaceTests(unittest.TestCase):
             "Trace",
             "Learning",
             "Attention",
+        ):
+            self.assertIn(marker, self.html)
+
+    def test_executive_intelligence_readouts_are_read_only_and_honest(self) -> None:
+        for marker in (
+            "function executiveIntelligencePanel407",
+            "data-executive-intelligence",
+            'data-executive-readout="${esc(label.toLowerCase().replaceAll(\' \',\'-\'))}"',
+            "No disagreement summary returned.",
+            "No historical learning summary returned.",
+            "No scenario analysis summary returned.",
+            "No Executive Intelligence action descriptor returned",
+            "Read only",
+            "Degraded readout",
+            "no unsupported action is exposed",
         ):
             self.assertIn(marker, self.html)
 
