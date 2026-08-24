@@ -549,6 +549,9 @@ class IntelligenceLearningService:
         pending = 0
         measured_outcome_count = 0
         evidence_ref_count = 0
+        calibration_errors: list[float] = []
+        overconfident_count = 0
+        underconfident_count = 0
         window_starts: list[str] = []
         window_ends: list[str] = []
         for recommendation in recommendations:
@@ -562,6 +565,23 @@ class IntelligenceLearningService:
             if score is None or not outcomes or not evidence_refs:
                 insufficient += 1
                 continue
+            # Compare the recorded forecast confidence with the measured
+            # outcome score only for fully evidenced evaluations.  This is a
+            # read-only calibration signal; it never rewrites confidence or
+            # promotes an outcome into canonical truth.
+            try:
+                forecast = max(0.0, min(1.0, float(recommendation["confidence"])))
+                measured = max(0.0, min(1.0, float(score)))
+                error = abs(forecast - measured)
+                calibration_errors.append(error)
+                if forecast - measured >= 0.2:
+                    overconfident_count += 1
+                elif measured - forecast >= 0.2:
+                    underconfident_count += 1
+            except (TypeError, ValueError):
+                # Existing append validation bounds these values, but malformed
+                # legacy rows remain insufficient rather than breaking reads.
+                pass
             measured_outcome_count += len(outcomes)
             evidence_ref_count += len(evidence_refs)
             window_start = evaluated.get("evaluation_window_start")
@@ -603,6 +623,18 @@ class IntelligenceLearningService:
             "evidence_scope": {
                 "measured_outcome_count": measured_outcome_count,
                 "evidence_ref_count": evidence_ref_count,
+            },
+            "confidence_calibration": {
+                "status": "ready" if calibration_errors else "insufficient_evidence",
+                "sample_count": len(calibration_errors),
+                "mean_absolute_error": (
+                    round(sum(calibration_errors) / len(calibration_errors), 3)
+                    if calibration_errors else None
+                ),
+                "overconfident_count": overconfident_count,
+                "underconfident_count": underconfident_count,
+                "threshold": 0.2,
+                "method": "absolute_difference(recommendation.confidence,evaluated.score)",
             },
             "method": {
                 "score_threshold": 0.5,

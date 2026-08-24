@@ -287,6 +287,29 @@ class IntelligenceLearningTests(unittest.TestCase):
         self.assertEqual(quality["pending_count"], 1)
         self.assertEqual(quality["evidence_scope"]["measured_outcome_count"], 1)
         self.assertEqual(quality["method"]["score_threshold"], 0.5)
+        self.assertEqual(quality["confidence_calibration"]["sample_count"], 1)
+        self.assertAlmostEqual(quality["confidence_calibration"]["mean_absolute_error"], 0.08, places=3)
+        self.assertEqual(quality["confidence_calibration"]["overconfident_count"], 0)
+
+    def test_confidence_calibration_marks_large_forecast_errors(self) -> None:
+        recommendation = self._recommendation()
+        work = self.os.work_ops.create(
+            self.org, self.ws, self.person, "Calibration outcome", "Measure recommendation.", self.person
+        )
+        outcome = {
+            "type": "work_item", "id": work.id,
+            "occurred_at": (self.now + timedelta(days=1)).isoformat(),
+            "metric": "completed_review", "value": 1,
+        }
+        self.os.intelligence_learning.append_recommendation_event(
+            self.org, self.ws, self.person, recommendation["id"], "evaluated",
+            measured_outcomes=[outcome], evidence_refs=[{"type": "work_item", "id": work.id}], score=0.2,
+        )
+        quality = self.os.intelligence_learning.recommendation_quality(self.org, self.ws, self.person)
+        calibration = quality["confidence_calibration"]
+        self.assertEqual(calibration["sample_count"], 1)
+        self.assertEqual(calibration["overconfident_count"], 1)
+        self.assertEqual(calibration["underconfident_count"], 0)
 
     def test_trace_linked_handoff_records_human_links_without_creating_canonical_actions(self) -> None:
         recommendation = self._recommendation()

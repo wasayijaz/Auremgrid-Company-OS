@@ -74,6 +74,11 @@ correct without inventing outcomes. It uses the latest evaluated event per
 recommendation, counts a scored event with measured outcomes and evidence refs
 as eligible, treats scores `>= 0.5` as correct, and reports the denominator,
 evaluation window, pending recommendations, and insufficient-evidence rows.
+It also reports `confidence_calibration`: the sample count, mean absolute error
+between the recommendation forecast and evaluated score, and bounded
+over/under-confidence counts (a 0.2 error threshold). Calibration is computed
+only for eligible, evidence-backed evaluations and is descriptive; it never
+rewrites the original forecast or changes routing.
 
 Schema 44 adds shadow-only evaluation safety. Evaluation runs can record
 provider/model/profile/runbook metadata, task class, trace linkage, latency,
