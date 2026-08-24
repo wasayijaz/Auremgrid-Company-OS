@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any, Callable, Sequence
@@ -13,7 +14,15 @@ from auremgrid.domain.models import (
     effective_capability_tags,
     normalize_agent_level,
 )
-from auremgrid.services.reversible_actions import supervised_action_catalog, validate_approved_action_descriptor
+from auremgrid.services.reversible_actions import (
+    ACTION_KINDS,
+    supervised_action_catalog,
+    validate_approved_action_descriptor,
+    validate_reversible_action_descriptor,
+)
+
+
+MAX_AGENT_DELEGATION_DEPTH = 3
 
 
 def _now() -> datetime:
@@ -29,6 +38,10 @@ def _loads(value: Any, default: Any) -> Any:
         return json.loads(value) if value else default
     except (TypeError, ValueError):
         return default
+
+
+def _stable_hash(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _action_operator_next_step(status: str) -> str:
@@ -196,6 +209,8 @@ class AgentOperations:
         action_descriptor: dict[str, Any] | None = None,
         orchestrator_trace_id: str | None = None,
         approval_request_id: str | None = None,
+        parent_task_id: str | None = None,
+        delegation_depth: int | None = None,
     ) -> dict[str, Any]:
         if self.company.org_membership(organization_id, requested_by_person_id) is None:
             raise AuthorizationError("organization membership required")
@@ -225,6 +240,7 @@ class AgentOperations:
                 approval_request_id,
                 orchestrator_trace_id,
             )
+        depth = self._validated_delegation_depth(organization_id, workspace_id, parent_task_id, delegation_depth)
 
         tags = self.validate_capability_tags(intent_tags or ("execute",))
         recommended = self.resolve_level(tags)
@@ -253,13 +269,16 @@ class AgentOperations:
             "completed_at": None,
             "action_descriptor_json": _json(action_descriptor) if action_descriptor is not None else None,
             "orchestrator_trace_id": orchestrator_trace_id,
+            "parent_task_id": parent_task_id,
+            "delegation_depth": depth,
         }
         self.conn.execute(
             """INSERT INTO agent_tasks(
                 id,organization_id,workspace_id,agent_id,title,instructions,priority,status,
                 approval_request_id,intent_tags,recommended_level,selected_level,level_override_reason,
-                created_at,started_at,completed_at,action_descriptor_json,orchestrator_trace_id
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                created_at,started_at,completed_at,action_descriptor_json,orchestrator_trace_id,
+                parent_task_id,delegation_depth
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             tuple(task.values()),
         )
         if selected != recommended:
@@ -324,8 +343,15 @@ class AgentOperations:
             "cost": None,
             "error_id": None,
             "output_id": None,
+            "delegation_depth": int(task["delegation_depth"]),
         }
-        self.conn.execute("INSERT INTO agent_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(run.values()))
+        self.conn.execute(
+            """INSERT INTO agent_runs(
+                id,organization_id,workspace_id,agent_id,task_id,status,started_at,completed_at,
+                runtime_ms,input_tokens,output_tokens,cost,error_id,output_id,delegation_depth
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tuple(run.values()),
+        )
         self.conn.execute("UPDATE agent_tasks SET status='running',started_at=? WHERE id=?", (now, task_id))
         self.conn.execute("UPDATE agents SET status='running',current_task_id=? WHERE id=?", (task_id, agent_id))
         self.conn.execute("UPDATE agent_queue_items SET status='claimed',claimed_at=? WHERE task_id=?", (now, task_id))
@@ -765,6 +791,42 @@ class AgentOperations:
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
 
+    def _validated_delegation_depth(
+        self,
+        organization_id: str,
+        workspace_id: str | None,
+        parent_task_id: str | None,
+        delegation_depth: int | None,
+    ) -> int:
+        def parsed(value: int | None) -> int | None:
+            if value is None:
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("delegation depth must be an integer") from exc
+
+        if parent_task_id is None:
+            depth = 0 if delegation_depth is None else parsed(delegation_depth)
+            if depth != 0:
+                raise ValidationError("root agent tasks must use delegation depth 0")
+        else:
+            parent = self.conn.execute(
+                "SELECT organization_id,workspace_id,delegation_depth FROM agent_tasks WHERE organization_id=? AND id=?",
+                (organization_id, parent_task_id),
+            ).fetchone()
+            if parent is None:
+                raise NotFoundError("parent agent task not found")
+            if parent["workspace_id"] != workspace_id:
+                raise AuthorizationError("delegated agent task must stay in the parent workspace")
+            depth = int(parent["delegation_depth"]) + 1
+            requested_depth = parsed(delegation_depth)
+            if requested_depth is not None and requested_depth != depth:
+                raise ValidationError("delegation depth must be parent depth plus one")
+        if depth < 0 or depth > MAX_AGENT_DELEGATION_DEPTH:
+            raise ValidationError("agent delegation depth exceeds configured bound")
+        return depth
+
     def create_automation(
         self,
         organization_id: str,
@@ -823,29 +885,74 @@ class AgentOperations:
                 "SELECT * FROM automation_actions WHERE automation_id=? ORDER BY sequence",
                 (automation["id"],),
             ).fetchall()
-            needs_approval = automation["status"] == "training" or automation["approval_policy"] != "auto" or any(action["one_way"] for action in actions)
+            descriptors = self._automation_action_descriptors(organization_id, automation, actions, payload)
+            if not descriptors:
+                continue
+            workspace_id = self._automation_workspace_id(descriptors)
+            fingerprint = self._automation_change_fingerprint(automation, trigger_type, payload, descriptors, workspace_id)
+            existing = self.conn.execute(
+                """SELECT * FROM automation_runs
+                   WHERE automation_id=? AND change_fingerprint=?""",
+                (automation["id"], fingerprint),
+            ).fetchone()
+            if existing is not None:
+                results.append({
+                    "run_id": existing["id"],
+                    "status": existing["status"],
+                    "approval_request_id": existing["approval_request_id"],
+                    "job_id": existing["job_id"],
+                    "output": _loads(existing["output"], {}),
+                    "deduped": True,
+                })
+                continue
             run_id = self.new_id("automationrun")
             now = _now().isoformat()
-            approval_id = None
-            status = "waiting_approval" if needs_approval else "completed"
-            if needs_approval:
-                approval = self.approvals.request_approval(
-                    organization_id,
-                    "automation",
-                    automation["id"],
-                    "automation run",
-                    "automation.execute",
-                    payload,
-                    "Training mode or gated action",
-                    approver_person_id=automation["created_by_person_id"],
-                )
-                approval_id = approval["id"]
-            output = self._execute_actions(organization_id, automation, actions, payload) if status == "completed" else {}
-            self.conn.execute(
-                "INSERT INTO automation_runs VALUES (?,?,?,?,?,?,?,?,?)",
-                (run_id, automation["id"], trigger_type, _json(payload), status, now, now if status == "completed" else None, approval_id, _json(output)),
+            approval = self.approvals.request_approval(
+                organization_id,
+                "automation",
+                automation["id"],
+                "automation run",
+                "automation.execute",
+                {
+                    "trigger_type": trigger_type,
+                    "trigger_payload": payload,
+                    "actions": descriptors,
+                    "change_fingerprint": fingerprint,
+                },
+                "Training mode or gated action",
+                approver_person_id=automation["created_by_person_id"],
+                workspace_id=workspace_id,
             )
-            results.append({"run_id": run_id, "status": status, "approval_request_id": approval_id, "output": output})
+            approval_id = approval["id"]
+            self.conn.execute(
+                """INSERT INTO automation_runs(
+                    id,automation_id,trigger_type,trigger_payload,status,started_at,completed_at,
+                    approval_request_id,output,workspace_id,job_id,change_fingerprint,action_descriptor_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    run_id,
+                    automation["id"],
+                    trigger_type,
+                    _json(payload),
+                    "waiting_approval",
+                    now,
+                    None,
+                    approval_id,
+                    _json({}),
+                    workspace_id,
+                    None,
+                    fingerprint,
+                    _json(descriptors),
+                ),
+            )
+            results.append({
+                "run_id": run_id,
+                "status": "waiting_approval",
+                "approval_request_id": approval_id,
+                "job_id": None,
+                "output": {},
+                "deduped": False,
+            })
         self.conn.commit()
         return results
 
@@ -883,53 +990,313 @@ class AgentOperations:
         if run is None:
             raise NotFoundError("automation run not found")
         approval = self.conn.execute("SELECT status FROM approval_requests WHERE id=?", (run["approval_request_id"],)).fetchone()
-        if run["status"] != "waiting_approval" or approval is None or approval["status"] != "approved":
+        if approval is None or approval["status"] != "approved":
             raise AuthorizationError("approved automation run required")
-        actions = self.conn.execute("SELECT * FROM automation_actions WHERE automation_id=? ORDER BY sequence", (run["automation_id"],)).fetchall()
-        payload = json.loads(run["trigger_payload"])
-        output = self._execute_actions(organization_id, run, actions, payload)
-        now = _now().isoformat()
-        self.conn.execute("UPDATE automation_runs SET status='completed',completed_at=?,output=? WHERE id=?", (now, _json(output), run_id))
+        if run["status"] in {"queued", "running", "completed"} and run["job_id"]:
+            return dict(run)
+        if run["status"] != "waiting_approval":
+            raise AuthorizationError("approved automation run required")
+        principal = self.conn.execute(
+            "SELECT id FROM auth_principals WHERE organization_id=? AND person_id=? AND status='active' LIMIT 1",
+            (organization_id, person_id),
+        ).fetchone()
+        if principal is None:
+            raise AuthorizationError("active principal required for automation execution")
+        workspace_id = run["workspace_id"]
+        payload = {
+            "run_id": run_id,
+            "automation_id": run["automation_id"],
+            "actions": _loads(run["action_descriptor_json"], []),
+            "change_fingerprint": run["change_fingerprint"],
+        }
+        from auremgrid.services.job_ops import JobOperations
+
+        def attach_job(item: dict[str, Any]) -> None:
+            self.conn.execute("UPDATE automation_runs SET status='queued',job_id=? WHERE id=?", (item["id"], run_id))
+
+        job = JobOperations(self.conn, self.new_id).enqueue_job(
+            organization_id,
+            workspace_id,
+            principal["id"],
+            "automation.execute",
+            payload,
+            idempotency_key=f"automation:{organization_id}:{workspace_id or 'organization'}:{run['change_fingerprint']}",
+            transaction_hook=attach_job,
+        )
+        latest = self.conn.execute("SELECT status,job_id FROM automation_runs WHERE id=?", (run_id,)).fetchone()
+        if latest is None or latest["job_id"] != job["id"] or latest["status"] == "waiting_approval":
+            self.conn.execute("UPDATE automation_runs SET status='queued',job_id=? WHERE id=?", (job["id"], run_id))
         self.conn.commit()
         return dict(self.conn.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone())
+
+    def execute_automation_job(self, organization_id: str, identity: Any, job_payload: dict[str, Any]) -> dict[str, Any]:
+        run = self.conn.execute(
+            """SELECT ar.*,a.created_by_person_id,a.organization_id
+               FROM automation_runs ar JOIN automations a ON a.id=ar.automation_id
+               WHERE a.organization_id=? AND ar.id=? AND ar.automation_id=?""",
+            (organization_id, job_payload.get("run_id"), job_payload.get("automation_id")),
+        ).fetchone()
+        if run is None or run["status"] not in {"queued", "running"}:
+            raise AuthorizationError("automation run scope is invalid")
+        if run["workspace_id"] != identity.workspace_id:
+            raise AuthorizationError("automation job workspace is invalid")
+        approval = self.conn.execute(
+            "SELECT status FROM approval_requests WHERE id=? AND organization_id=?",
+            (run["approval_request_id"], organization_id),
+        ).fetchone()
+        if approval is None or approval["status"] != "approved":
+            raise AuthorizationError("approved automation run required")
+        actions = _loads(run["action_descriptor_json"], [])
+        if actions != job_payload.get("actions"):
+            raise AuthorizationError("queued automation action does not match run descriptor")
+        if run["change_fingerprint"] != job_payload.get("change_fingerprint"):
+            raise AuthorizationError("queued automation fingerprint does not match run")
+        now = _now().isoformat()
+        self.conn.execute("UPDATE automation_runs SET status='running' WHERE id=?", (run["id"],))
+        self.conn.commit()
+        try:
+            output = self._execute_actions(organization_id, run, actions, json.loads(run["trigger_payload"]))
+        except Exception as exc:
+            self.conn.execute(
+                "UPDATE automation_runs SET status='failed',completed_at=?,output=? WHERE id=?",
+                (now, _json({"error": {"type": exc.__class__.__name__, "message": str(exc)}}), run["id"]),
+            )
+            self.conn.commit()
+            raise
+        self.conn.execute(
+            "UPDATE automation_runs SET status='completed',completed_at=?,output=? WHERE id=?",
+            (_now().isoformat(), _json(output), run["id"]),
+        )
+        self.conn.commit()
+        return {"run_id": run["id"], "status": "completed", "output": output}
 
     def _execute_actions(self, organization_id: str, automation: Any, actions: list[Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
         output = []
         person_id = automation["created_by_person_id"]
+        for descriptor in actions:
+            validated = validate_reversible_action_descriptor(
+                self.conn,
+                organization_id,
+                descriptor["payload"].get("workspace_id"),
+                person_id,
+                descriptor,
+            )
+            idempotency_key = str(validated["payload"].get("idempotency_key") or f"automation:{automation['id']}:{validated['payload_hash']}")
+            execution = self._begin_automation_action_execution(automation, validated, idempotency_key)
+            if execution["status"] == "succeeded":
+                output.append(_loads(execution["result_json"], {}))
+                continue
+            try:
+                result = self._execute_automation_canonical_action(organization_id, automation, person_id, validated)
+            except Exception as exc:
+                self._finish_automation_action_execution(execution["id"], "failed", None, {"type": exc.__class__.__name__, "message": str(exc)})
+                raise
+            self._finish_automation_action_execution(execution["id"], "succeeded", result, None)
+            self._record_automation_action_audit(organization_id, automation, person_id, validated, result)
+            output.append(result)
+        return output
+
+    def _execute_automation_canonical_action(
+        self,
+        organization_id: str,
+        automation: Any,
+        person_id: str,
+        validated: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = validated["payload"]
+        action = validated["action"]
+        workspace_id = payload.get("workspace_id")
+        if action == "create_risk":
+            if not workspace_id:
+                raise ValidationError("risk automation requires workspace_id")
+            risk = self.client_ops.create_risk(
+                organization_id,
+                workspace_id,
+                person_id,
+                payload["type"],
+                payload["severity"],
+                payload["probability"],
+                payload["impact"],
+                payload["evidence"],
+                payload["recommended_action"],
+                payload.get("project_id"),
+            )
+            result = risk.to_dict() if hasattr(risk, "to_dict") else dict(risk)
+            return {"action": action, "kind": validated["kind"], "entity_type": "risk", "id": result["id"], "source_refs": [result["id"]], "result": result}
+        if action == "create_notification":
+            notice = self.approvals.create_notification(
+                organization_id,
+                payload["recipient_person_id"],
+                payload["reason"],
+                payload["source_type"],
+                payload.get("source_id"),
+                workspace_id,
+                payload["severity"],
+                payload["urgency"],
+                payload["waiting_days"],
+                payload["actionable"],
+            )
+            return {"action": action, "kind": validated["kind"], "entity_type": "notification", "id": notice["id"], "source_refs": [notice["id"]], "result": notice}
+        raise ValidationError(f"unsupported automation action: {validated['kind']}")
+
+    def _begin_automation_action_execution(self, automation: Any, validated: dict[str, Any], idempotency_key: str) -> dict[str, Any]:
+        existing = self.conn.execute(
+            "SELECT * FROM automation_action_executions WHERE organization_id=? AND idempotency_key=?",
+            (automation["organization_id"], idempotency_key),
+        ).fetchone()
+        if existing is not None:
+            if existing["descriptor_hash"] != validated["descriptor_hash"] or existing["payload_hash"] != validated["payload_hash"]:
+                raise AuthorizationError("idempotency key was already used for a different automation action")
+            if existing["status"] == "succeeded":
+                return dict(existing)
+            if existing["status"] == "running":
+                raise ValidationError("automation action execution is already running")
+            raise ValidationError("automation action execution failed previously; create a new approved run or idempotency key")
+        now = _now().isoformat()
+        item = {
+            "id": self.new_id("automationaction"),
+            "organization_id": automation["organization_id"],
+            "workspace_id": validated["payload"].get("workspace_id"),
+            "automation_id": automation["automation_id"] if "automation_id" in automation.keys() else automation["id"],
+            "run_id": automation["id"],
+            "approval_request_id": automation["approval_request_id"],
+            "action": validated["action"],
+            "action_kind": validated["kind"],
+            "idempotency_key": idempotency_key,
+            "descriptor_hash": validated["descriptor_hash"],
+            "payload_hash": validated["payload_hash"],
+            "status": "running",
+            "result_json": None,
+            "error_json": None,
+            "created_at": now,
+            "completed_at": None,
+        }
+        self.conn.execute(
+            """INSERT INTO automation_action_executions(
+                id,organization_id,workspace_id,automation_id,run_id,approval_request_id,action,
+                action_kind,idempotency_key,descriptor_hash,payload_hash,status,result_json,error_json,created_at,completed_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tuple(item.values()),
+        )
+        self.conn.commit()
+        return item
+
+    def _finish_automation_action_execution(self, execution_id: str, status: str, result: dict[str, Any] | None, error: dict[str, Any] | None) -> None:
+        self.conn.execute(
+            "UPDATE automation_action_executions SET status=?,result_json=?,error_json=?,completed_at=? WHERE id=?",
+            (status, _json(result) if result is not None else None, _json(error) if error is not None else None, _now().isoformat(), execution_id),
+        )
+        self.conn.commit()
+
+    def _record_automation_action_audit(
+        self,
+        organization_id: str,
+        automation: Any,
+        person_id: str,
+        validated: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO ledger_audit(
+                id,organization_id,workspace_id,principal_type,principal_id,action,entity_type,entity_id,detail,recorded_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                self.new_id("audit"),
+                organization_id,
+                validated["payload"].get("workspace_id"),
+                "automation",
+                automation["automation_id"] if "automation_id" in automation.keys() else automation["id"],
+                "execute",
+                "automation_action",
+                result.get("id"),
+                _json({"action": validated["action"], "kind": validated["kind"], "approved_by_person_id": person_id}),
+                _now().isoformat(),
+            ),
+        )
+        self.conn.commit()
+
+    def _automation_action_descriptors(
+        self,
+        organization_id: str,
+        automation: Any,
+        actions: list[Any],
+        payload: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        descriptors = []
         for action in actions:
+            if action["one_way"]:
+                raise ValidationError("automation actions must be reversible local actions")
             config = json.loads(action["config"])
             workspace_id = config.get("workspace_id") or payload.get("workspace_id")
             if action["type"] == "risk.create":
-                if not workspace_id:
-                    raise ValidationError("risk automation requires workspace_id")
-                risk = self.client_ops.create_risk(
-                    organization_id,
-                    workspace_id,
-                    person_id,
-                    config.get("type", "relationship"),
-                    config.get("severity", "medium"),
-                    float(config.get("probability", 0.5)),
-                    config.get("impact", payload.get("reason", "Automation signal")),
-                    _json(payload),
-                    config.get("recommended_action", "Account lead review"),
-                )
-                output.append({"type": "risk", "id": risk.id})
+                descriptor_payload = {
+                    "workspace_id": workspace_id,
+                    "type": config.get("type", "relationship"),
+                    "severity": config.get("severity", "medium"),
+                    "probability": float(config.get("probability", 0.5)),
+                    "impact": config.get("impact", payload.get("reason", "Automation signal")),
+                    "evidence": config.get("evidence", _json(payload)),
+                    "recommended_action": config.get("recommended_action", "Account lead review"),
+                    "project_id": config.get("project_id"),
+                    "idempotency_key": config.get("idempotency_key"),
+                }
+                descriptor = {
+                    "action": "create_risk",
+                    "kind": ACTION_KINDS["create_risk"],
+                    "safe": True,
+                    "one_way": False,
+                    "payload": {key: value for key, value in descriptor_payload.items() if value is not None},
+                }
             elif action["type"] == "notification.create":
-                recipient = config.get("recipient_person_id") or person_id
-                notice = self.approvals.create_notification(
-                    organization_id,
-                    recipient,
-                    config.get("reason", payload.get("reason", "Automation signal")),
-                    "automation",
-                    automation["id"],
-                    workspace_id,
-                    float(config.get("severity", 0.5)),
-                    float(config.get("urgency", 0.5)),
-                )
-                output.append({"type": "notification", "id": notice["id"]})
+                descriptor_payload = {
+                    "workspace_id": workspace_id,
+                    "recipient_person_id": config.get("recipient_person_id") or automation["created_by_person_id"],
+                    "reason": config.get("reason", payload.get("reason", "Automation signal")),
+                    "source_type": "automation",
+                    "source_id": automation["id"],
+                    "severity": float(config.get("severity", 0.5)),
+                    "urgency": float(config.get("urgency", 0.5)),
+                    "waiting_days": float(config.get("waiting_days", 0)),
+                    "actionable": bool(config.get("actionable", True)),
+                    "idempotency_key": config.get("idempotency_key"),
+                }
+                descriptor = {
+                    "action": "create_notification",
+                    "kind": ACTION_KINDS["create_notification"],
+                    "safe": True,
+                    "one_way": False,
+                    "payload": {key: value for key, value in descriptor_payload.items() if value is not None},
+                }
             else:
                 raise ValidationError(f"unsupported automation action: {action['type']}")
-        return output
+            validate_reversible_action_descriptor(
+                self.conn,
+                organization_id,
+                workspace_id,
+                automation["created_by_person_id"],
+                descriptor,
+            )
+            descriptors.append(descriptor)
+        return descriptors
+
+    @staticmethod
+    def _automation_workspace_id(descriptors: list[dict[str, Any]]) -> str | None:
+        workspace_ids = {descriptor["payload"].get("workspace_id") for descriptor in descriptors}
+        if len(workspace_ids) > 1:
+            raise ValidationError("automation run actions must share one workspace scope")
+        return next(iter(workspace_ids))
+
+    @staticmethod
+    def _automation_change_fingerprint(automation: Any, trigger_type: str, payload: dict[str, Any], descriptors: list[dict[str, Any]], workspace_id: str | None) -> str:
+        return _stable_hash(
+            {
+                "automation_id": automation["id"],
+                "trigger_type": trigger_type,
+                "trigger_payload": payload,
+                "workspace_id": workspace_id,
+                "actions": descriptors,
+            }
+        )
 
     @staticmethod
     def _condition(payload: dict[str, Any], row: Any) -> bool:

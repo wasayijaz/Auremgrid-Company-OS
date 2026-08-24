@@ -99,6 +99,11 @@ successful same-key replays return the recorded local result, active executions
 block parallel replay, and failed same-key executions require a new approved
 task or idempotency key.
 
+Agent task handoffs persist `parent_task_id` and `delegation_depth`. Root tasks
+start at depth 0; delegated tasks must stay in the parent workspace and advance
+by exactly one level. The runtime rejects tasks beyond the configured depth
+bound before they enter the queue, and runs retain the accepted depth.
+
 The four-level taxonomy is the routing contract for the current level-routing
 slice. It should only be described as enforced end to end when level fields,
 resolution, persistence, API output, dashboard output, and behavior tests ship

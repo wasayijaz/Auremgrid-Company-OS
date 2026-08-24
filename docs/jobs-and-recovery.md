@@ -25,6 +25,13 @@ reader-facing projection changed. Manual refresh requests receive distinct jobs;
 an explicit caller-provided idempotency key deduplicates retries when required.
 It does not send notifications, mutate client work, or call external providers.
 
+`automation.execute` is the only path that applies approved automation actions.
+Matching triggers create durable `automation_runs` in approval state; approval
+enqueues one workspace-scoped job keyed by the automation change fingerprint.
+The worker re-authorizes the persisted principal, records per-action execution
+state, and applies only reversible local catalog actions. Repeated unchanged
+triggers return the existing run and do not create duplicate local records.
+
 ## Outbox
 
 Outbox records provide at-least-once leased publishing with payload hashes,

@@ -15,6 +15,7 @@ JOB_CAPABILITIES = {
     "connector.sync": "integration_sync",
     "proactive_intelligence.refresh": "brain_read",
     "agent.run": "workspace_write",
+    "automation.execute": "automation_execute",
 }
 
 
@@ -78,6 +79,8 @@ def run_one_job(
                 json.dumps(result, sort_keys=True),
                 source_refs=[str(ref) for ref in result.get("source_refs", [])],
             )
+        elif job["type"] == "automation.execute":
+            result = os.agent_ops.execute_automation_job(organization_id, identity, payload)
         elif job["type"] == "connector.sync":
             stream_lock=os.integrations.resume_job_stream(job["id"],worker_id,str(payload["mapping_hash"]))
             def connector_progress(value: float) -> None:

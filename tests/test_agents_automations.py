@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-from auremgrid.domain.errors import AuthorizationError
+from auremgrid.domain.errors import AuthorizationError, ValidationError
 from auremgrid.services.brain import CompanyOS
+from auremgrid.services.worker import run_one_job
 
 
 class AgentAutomationTests(unittest.TestCase):
@@ -14,6 +15,7 @@ class AgentAutomationTests(unittest.TestCase):
         self.member=self.os.create_person(self.org.id,"Member")
         self.os.add_person_to_workspace(self.org.id,self.ws.id,self.owner.id,"admin")
         self.agents=self.os.agent_ops.seed_primary_agents(self.org.id,self.owner.id)
+        self.os.auth.create_principal(self.org.id,self.owner.id,"owner@automation.test")
 
     def tearDown(self) -> None: self.os.close()
 
@@ -49,9 +51,59 @@ class AgentAutomationTests(unittest.TestCase):
             [{"field":"days","operator":"gt","value":5}],[{"type":"risk.create","config":{"workspace_id":self.ws.id,"type":"relationship","severity":"high"}}],"auto")
         run=self.os.agent_ops.trigger_automations(self.org.id,"client_silence",{"days":6,"workspace_id":self.ws.id})[0]
         self.os.agency_ops.decide_approval(self.org.id,self.owner.id,run["approval_request_id"],True)
-        completed=self.os.agent_ops.execute_approved_automation_run(self.org.id,self.owner.id,run["run_id"])
-        self.assertEqual(completed["status"],"completed");self.assertEqual(len(self.os.client_ops.list_risks(self.org.id,self.ws.id,self.owner.id)),1)
+        queued=self.os.agent_ops.execute_approved_automation_run(self.org.id,self.owner.id,run["run_id"])
+        self.assertEqual(queued["status"],"queued")
+        self.assertEqual(len(self.os.client_ops.list_risks(self.org.id,self.ws.id,self.owner.id)),0)
+        completed=run_one_job(self.os,self.org.id,self.ws.id,"automation-worker")
+        self.assertEqual(completed["status"],"succeeded");self.assertEqual(len(self.os.client_ops.list_risks(self.org.id,self.ws.id,self.owner.id)),1)
         active=self.os.agent_ops.activate_automation(self.org.id,self.owner.id,automation["id"]);self.assertEqual(active["status"],"active")
+
+    def test_active_automation_dedupes_unchanged_trigger_and_uses_worker(self) -> None:
+        automation=self.os.agent_ops.create_automation(self.org.id,self.owner.id,"Silence risk","client_silence",
+            [{"field":"days","operator":"gt","value":5}],[{"type":"risk.create","config":{"workspace_id":self.ws.id,"type":"relationship","severity":"high"}}],"auto")
+        training=self.os.agent_ops.trigger_automations(self.org.id,"client_silence",{"days":6,"workspace_id":self.ws.id})[0]
+        self.os.agency_ops.decide_approval(self.org.id,self.owner.id,training["approval_request_id"],True)
+        self.os.agent_ops.execute_approved_automation_run(self.org.id,self.owner.id,training["run_id"])
+        run_one_job(self.os,self.org.id,self.ws.id,"automation-training-worker")
+        self.os.agent_ops.activate_automation(self.org.id,self.owner.id,automation["id"])
+
+        first=self.os.agent_ops.trigger_automations(self.org.id,"client_silence",{"days":9,"workspace_id":self.ws.id})[0]
+        second=self.os.agent_ops.trigger_automations(self.org.id,"client_silence",{"days":9,"workspace_id":self.ws.id})[0]
+        self.assertEqual(first["run_id"],second["run_id"])
+        self.assertTrue(second["deduped"])
+        self.assertEqual(len(self.os.client_ops.list_risks(self.org.id,self.ws.id,self.owner.id)),1)
+        self.os.agency_ops.decide_approval(self.org.id,self.owner.id,first["approval_request_id"],True)
+        self.os.agent_ops.execute_approved_automation_run(self.org.id,self.owner.id,first["run_id"])
+        run_one_job(self.os,self.org.id,self.ws.id,"automation-active-worker")
+        self.assertEqual(len(self.os.client_ops.list_risks(self.org.id,self.ws.id,self.owner.id)),2)
+        third=self.os.agent_ops.trigger_automations(self.org.id,"client_silence",{"days":9,"workspace_id":self.ws.id})[0]
+        self.assertEqual(third["run_id"],first["run_id"])
+        self.assertEqual(len(self.os.client_ops.list_risks(self.org.id,self.ws.id,self.owner.id)),2)
+
+    def test_failed_automation_action_blocks_same_fingerprint_replay(self) -> None:
+        automation=self.os.agent_ops.create_automation(self.org.id,self.owner.id,"Bad risk","client_silence",
+            [{"field":"days","operator":"gt","value":5}],[{"type":"risk.create","config":{"workspace_id":self.ws.id,"type":"unsupported_local_type","severity":"high"}}],"auto")
+        run=self.os.agent_ops.trigger_automations(self.org.id,"client_silence",{"days":7,"workspace_id":self.ws.id})[0]
+        self.os.agency_ops.decide_approval(self.org.id,self.owner.id,run["approval_request_id"],True)
+        self.os.agent_ops.execute_approved_automation_run(self.org.id,self.owner.id,run["run_id"])
+        failed=run_one_job(self.os,self.org.id,self.ws.id,"automation-fail-worker")
+        self.assertEqual(failed["status"],"failed")
+        replay=self.os.agent_ops.trigger_automations(self.org.id,"client_silence",{"days":7,"workspace_id":self.ws.id})[0]
+        self.assertEqual(replay["run_id"],run["run_id"])
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM automation_action_executions").fetchone()[0],1)
+
+    def test_delegation_depth_is_persisted_and_bounded(self) -> None:
+        luna=next(a for a in self.agents if a["name"]=="Luna")
+        self.os.agent_ops.configure_agent(self.org.id,self.owner.id,luna["id"],"local",["work.list"],[self.ws.id],["domain.write"])
+        root=self.os.agent_ops.enqueue_task(self.org.id,self.owner.id,luna["id"],"Root","Start",self.ws.id)
+        child=self.os.agent_ops.enqueue_task(self.org.id,self.owner.id,luna["id"],"Child","Continue",self.ws.id,parent_task_id=root["id"])
+        grandchild=self.os.agent_ops.enqueue_task(self.org.id,self.owner.id,luna["id"],"Grandchild","Continue",self.ws.id,parent_task_id=child["id"])
+        last=self.os.agent_ops.enqueue_task(self.org.id,self.owner.id,luna["id"],"Last","Continue",self.ws.id,parent_task_id=grandchild["id"])
+        self.assertEqual(child["delegation_depth"],1)
+        run=self.os.agent_ops.start_run(self.org.id,self.owner.id,luna["id"],child["id"])
+        self.assertEqual(run["delegation_depth"],1)
+        with self.assertRaises(ValidationError):
+            self.os.agent_ops.enqueue_task(self.org.id,self.owner.id,luna["id"],"Too deep","Stop",self.ws.id,parent_task_id=last["id"])
 
     def test_integration_requires_admin_and_tracks_not_connected(self) -> None:
         member_principal=self.os.auth.create_principal(self.org.id,self.member.id,"member@integration.test")

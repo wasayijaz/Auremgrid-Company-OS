@@ -3709,6 +3709,58 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        54,
+        "durable_automation_actions_and_delegation_depth",
+        """
+        ALTER TABLE automation_runs ADD COLUMN workspace_id TEXT;
+        ALTER TABLE automation_runs ADD COLUMN job_id TEXT;
+        ALTER TABLE automation_runs ADD COLUMN change_fingerprint TEXT;
+        ALTER TABLE automation_runs ADD COLUMN action_descriptor_json TEXT;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_change_fingerprint
+            ON automation_runs(automation_id,change_fingerprint)
+            WHERE change_fingerprint IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_automation_runs_job
+            ON automation_runs(job_id);
+
+        ALTER TABLE agent_tasks ADD COLUMN parent_task_id TEXT;
+        ALTER TABLE agent_tasks ADD COLUMN delegation_depth INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE agent_runs ADD COLUMN delegation_depth INTEGER NOT NULL DEFAULT 0;
+        CREATE INDEX IF NOT EXISTS idx_agent_tasks_parent
+            ON agent_tasks(parent_task_id);
+
+        CREATE TABLE IF NOT EXISTS automation_action_executions (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            automation_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            approval_request_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            action_kind TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            descriptor_hash TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed')),
+            result_json TEXT,
+            error_json TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(automation_id) REFERENCES automations(id),
+            FOREIGN KEY(run_id) REFERENCES automation_runs(id),
+            FOREIGN KEY(approval_request_id) REFERENCES approval_requests(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_action_executions_idempotency
+            ON automation_action_executions(organization_id,idempotency_key);
+        CREATE INDEX IF NOT EXISTS idx_automation_action_executions_run
+            ON automation_action_executions(run_id,created_at DESC);
+        CREATE TRIGGER IF NOT EXISTS automation_action_executions_no_delete BEFORE DELETE ON automation_action_executions BEGIN
+            SELECT RAISE(ABORT, 'automation action executions are append-only');
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
@@ -3783,6 +3835,66 @@ def _approved_reversible_action_executions_sql(conn: sqlite3.Connection) -> str:
     # Fresh databases need the full ledger schema.  Returning the latest
     # migration here skipped v48 as soon as a later migration was appended.
     return next(migration.sql for migration in MIGRATIONS if migration.version == 48)
+
+
+def _durable_automation_actions_and_delegation_depth_sql(conn: sqlite3.Connection) -> str:
+    automation_run_columns = {row[1] for row in conn.execute("PRAGMA table_info(automation_runs)").fetchall()}
+    agent_task_columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_tasks)").fetchall()}
+    agent_run_columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_runs)").fetchall()}
+    statements: list[str] = []
+    for column in ("workspace_id", "job_id", "change_fingerprint", "action_descriptor_json"):
+        if column not in automation_run_columns:
+            statements.append(f"ALTER TABLE automation_runs ADD COLUMN {column} TEXT;")
+    statements.extend(
+        [
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_change_fingerprint
+            ON automation_runs(automation_id,change_fingerprint)
+            WHERE change_fingerprint IS NOT NULL;""",
+            "CREATE INDEX IF NOT EXISTS idx_automation_runs_job ON automation_runs(job_id);",
+        ]
+    )
+    if "parent_task_id" not in agent_task_columns:
+        statements.append("ALTER TABLE agent_tasks ADD COLUMN parent_task_id TEXT;")
+    if "delegation_depth" not in agent_task_columns:
+        statements.append("ALTER TABLE agent_tasks ADD COLUMN delegation_depth INTEGER NOT NULL DEFAULT 0;")
+    if "delegation_depth" not in agent_run_columns:
+        statements.append("ALTER TABLE agent_runs ADD COLUMN delegation_depth INTEGER NOT NULL DEFAULT 0;")
+    statements.append("CREATE INDEX IF NOT EXISTS idx_agent_tasks_parent ON agent_tasks(parent_task_id);")
+    statements.append(
+        """
+        CREATE TABLE IF NOT EXISTS automation_action_executions (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            automation_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            approval_request_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            action_kind TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            descriptor_hash TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed')),
+            result_json TEXT,
+            error_json TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(automation_id) REFERENCES automations(id),
+            FOREIGN KEY(run_id) REFERENCES automation_runs(id),
+            FOREIGN KEY(approval_request_id) REFERENCES approval_requests(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_action_executions_idempotency
+            ON automation_action_executions(organization_id,idempotency_key);
+        CREATE INDEX IF NOT EXISTS idx_automation_action_executions_run
+            ON automation_action_executions(run_id,created_at DESC);
+        CREATE TRIGGER IF NOT EXISTS automation_action_executions_no_delete BEFORE DELETE ON automation_action_executions BEGIN
+            SELECT RAISE(ABORT, 'automation action executions are append-only');
+        END;
+        """
+    )
+    return "\n".join(statements)
 
 
 def migrate(conn: sqlite3.Connection) -> int:
@@ -3865,6 +3977,8 @@ def migrate(conn: sqlite3.Connection) -> int:
             sql = _supervised_reversible_agent_actions_sql(conn)
         if migration.version == 48:
             sql = _approved_reversible_action_executions_sql(conn)
+        if migration.version == 54:
+            sql = _durable_automation_actions_and_delegation_depth_sql(conn)
         with conn:
             conn.executescript(sql)
             if migration.version == 19:

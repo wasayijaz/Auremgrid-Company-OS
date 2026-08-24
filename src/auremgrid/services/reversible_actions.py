@@ -280,6 +280,30 @@ def validate_approved_action_descriptor(
     canonical_approval = _canonical_payload(action, approved_payload, organization_id, workspace_id, actor_person_id)
     if canonical_descriptor != canonical_approval:
         raise AuthorizationError("approved action payload does not match descriptor")
+    return validate_reversible_action_descriptor(
+        conn,
+        organization_id,
+        workspace_id,
+        actor_person_id,
+        descriptor,
+        orchestrator_trace_id,
+        canonical_descriptor,
+    )
+
+
+def validate_reversible_action_descriptor(
+    conn: Any,
+    organization_id: str,
+    workspace_id: str | None,
+    actor_person_id: str,
+    descriptor: dict[str, Any],
+    orchestrator_trace_id: str | None = None,
+    canonical_descriptor: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    action = _basic_descriptor(descriptor)
+    if canonical_descriptor is None:
+        descriptor_payload = descriptor.get("payload") or {}
+        canonical_descriptor = _canonical_payload(action, descriptor_payload, organization_id, workspace_id, actor_person_id)
     if action == "create_notification":
         recipient = conn.execute(
             "SELECT id FROM people WHERE organization_id=? AND id=? AND status='active'",
