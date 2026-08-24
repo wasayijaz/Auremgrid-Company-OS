@@ -140,6 +140,20 @@ class SemanticRetrievalTests(unittest.TestCase):
         self.assertTrue(any(item.payload["citation_ref"] == f"document:{result.document_id}" for item in bundle.items))
         os.close()
 
+    def test_retrieval_exposes_bitemporal_freshness_explanation(self):
+        os = CompanyOS()
+        ws, actor = self._workspace(os)
+        observed = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=365)
+        result = os.ingest_text(ws.id, actor.id, "brief", "launch readiness", "memory://brief", observed_at=observed)
+        bundle = os.search(ws.id, actor.id, "launch")
+        item = next(item for item in bundle.items if item.payload.get("document_id") == result.document_id)
+        freshness = item.payload["freshness"]
+        self.assertEqual(freshness["status"], "historical")
+        self.assertEqual(freshness["method"], "observed_70_recorded_30_half_life_180d")
+        self.assertGreater(freshness["observed_age_days"], 300)
+        self.assertIn("freshness_contract", bundle.retrieval)
+        os.close()
+
     def test_retrieval_rejects_empty_or_oversized_queries(self):
         os = CompanyOS()
         ws, actor = self._workspace(os)

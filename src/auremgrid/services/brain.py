@@ -115,6 +115,45 @@ def normalize_text(value: str) -> str:
     return " ".join(value.lower().split())
 
 
+def _freshness_descriptor(
+    observed_at: datetime | None,
+    recorded_at: datetime | None,
+    as_of: datetime,
+) -> dict[str, Any]:
+    """Explain the recency signal used by hybrid retrieval.
+
+    Eligibility is still governed by bitemporal filters and knowledge-state
+    events. This descriptor is only a bounded, user-visible explanation of
+    why an otherwise eligible item received its recency contribution.
+    """
+    watermark = as_of if as_of.tzinfo is not None else as_of.replace(tzinfo=timezone.utc)
+
+    def age_days(stamp: datetime | None) -> float | None:
+        if stamp is None:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return round(max(0.0, (watermark - stamp.astimezone(timezone.utc)).total_seconds() / 86400.0), 3)
+
+    observed_age = age_days(observed_at)
+    recorded_age = age_days(recorded_at)
+    basis = observed_age if observed_age is not None else recorded_age
+    status = "unknown" if basis is None else "fresh" if basis <= 30 else "aging" if basis <= 180 else "historical"
+    # Match HybridRanker's half-life while keeping the explanation stable and
+    # independent of private ranking implementation details.
+    import math
+    observed_score = 0.5 ** (observed_age / 180.0) if observed_age is not None else 0.5
+    recorded_score = 0.5 ** (recorded_age / 180.0) if recorded_age is not None else 0.5
+    return {
+        "status": status,
+        "observed_age_days": observed_age,
+        "recorded_age_days": recorded_age,
+        "recency_score": round((0.7 * observed_score) + (0.3 * recorded_score), 6),
+        "watermark": watermark.astimezone(timezone.utc).isoformat(),
+        "method": "observed_70_recorded_30_half_life_180d",
+    }
+
+
 # Extraction can establish a strong but still non-human claim.  Promotion and
 # conflict resolution remain the only paths to ``verified``.
 HIGH_CONFIDENCE_THRESHOLD = 0.95
@@ -1261,6 +1300,7 @@ class CompanyOS:
                          "channels": list(hit.channels),
                             "citation_ref": f"document:{document.id}",
                             "score_components": score_components,
+                            "freshness": _freshness_descriptor(document.observed_at, document.recorded_at, as_of),
                         },
                         citation=Citation(
                             source_id=source.id,
@@ -1280,6 +1320,7 @@ class CompanyOS:
                 payload["channels"] = list(hit.channels)
                 payload["citation_ref"] = f"fact:{fact.id}"
                 payload["score_components"] = score_components
+                payload["freshness"] = _freshness_descriptor(fact.observed_at, fact.recorded_at, as_of)
                 items.append(
                     EvidenceItem(
                         kind="fact",
@@ -1306,6 +1347,7 @@ class CompanyOS:
             "requested_limit": limit,
             "effective_limit": limit,
             "citation_contract": "source_id+content_hash+evidence_span+observed_at",
+            "freshness_contract": "observed_at+recorded_at+as_of; observed 70% / recorded 30%, 180-day half-life",
             "ranking": {
                 "contract": "hybrid-authority-recency-v1",
                 "weights": {

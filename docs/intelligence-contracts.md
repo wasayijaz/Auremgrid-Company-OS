@@ -93,6 +93,13 @@ Scenario analysis echoes only retained inputs, projections, and constraints,
 and labels the result `bounded_inputs_only`; neither section mutates canonical
 records or silently converts a weighted consensus into a decision.
 
+Brain retrieval exposes a bounded `freshness` explanation on every returned
+document/fact. It reports observed and recorded ages at the query watermark,
+labels evidence `fresh`, `aging`, `historical`, or `unknown`, and publishes the
+same 70/30 observed-versus-recorded, 180-day-half-life contract used by hybrid
+ranking. This explains recency without weakening ACL, bitemporal, or stale
+knowledge-state exclusion.
+
 Schema 45 adds proactive attention lifecycle state for persisted Intelligence
 snapshots. Lifecycle rows dedupe by organization/workspace/person/fingerprint
 and keep status, originating snapshot, attention item, orchestration trace,
