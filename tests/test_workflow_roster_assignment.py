@@ -99,6 +99,21 @@ class WorkflowRosterAssignmentTests(unittest.TestCase):
         self.os.store.conn.execute("UPDATE agents SET status='error' WHERE id=?", (agent["id"],)); self.os.store.conn.commit()
         with self.assertRaises(ValidationError): self.ops.create_run(self.org.id, self.ws.id, self.owner.id, template)
 
+    def test_agent_owner_can_start_explicit_stage_and_ack_agent_handoff(self) -> None:
+        agent = self.os.agent_ops.seed_primary_agents(self.org.id, self.owner.id)[0]
+        self.os.agent_ops.configure_agent(self.org.id, self.owner.id, agent["id"], "test", [], [self.ws.id], [])
+        self.os.store.conn.execute("UPDATE agents SET capability_tags='[\"workflow_run\"]' WHERE id=?", (agent["id"],)); self.os.store.conn.commit()
+        self._create_roster(extra=[{"role_key": "wing_executive", "wing": "creative", "principal_type": "agent", "agent_id": agent["id"]}])
+        template = self._template(handoff={"wing": "creative", "role": "Designer"})
+        template["stages"][1]["assignee"] = {"wing": "creative", "role": "Executive"}
+        run = self.ops.create_run(self.org.id, self.ws.id, self.owner.id, template)
+        self.ops.start_stage(self.org.id, self.ws.id, self.owner.id, run["id"], "brief")
+        self.ops.submit_evidence(self.org.id, self.ws.id, self.owner.id, run["id"], "brief", "brief", text="done")
+        self.ops.complete_stage(self.org.id, self.ws.id, self.owner.id, run["id"], "brief")
+        ack = self.ops.acknowledge_handoff(self.org.id, self.ws.id, self.owner.id, run["id"], "brief", "deliver", "brief package")
+        self.assertEqual(ack["to_principal_type"], "agent")
+        self.ops.start_stage(self.org.id, self.ws.id, self.owner.id, run["id"], "deliver")
+
     def test_active_roster_resolves_lead_executive_and_structured_handoff(self) -> None:
         roster = self._create_roster(
             extra=[{"role_key": "wing_executive", "wing": "creative", "person_id": self.people["Creative"].id}]

@@ -79,7 +79,7 @@ Write-Host " passed"
 Write-Host ""
 Write-Host "=== Readiness Checklist ===" -ForegroundColor Cyan
 Write-Host "1. Reverse proxy (nginx/caddy) configured with TLS"
-Write-Host "2. Backup schedule set (auremgrid backup + verify-backup)"
+Write-Host "2. Backup schedule not installed by this script; install and verify auremgrid backup + verify-backup manually"
 Write-Host "3. Firewall restricts access to 127.0.0.1 or private network"
 Write-Host "4. Worker process configured for durable jobs"
 Write-Host "5. Secrets in environment or vault; .env.example contains no secret values"

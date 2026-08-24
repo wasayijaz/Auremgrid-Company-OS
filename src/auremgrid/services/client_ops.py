@@ -124,7 +124,7 @@ class ClientOperations:
 
     def _require_eligible_roster_agent(self, organization_id: str, workspace_id: str, agent_id: str) -> None:
         row = self.conn.execute(
-            "SELECT status,allowed_workspace_ids FROM agents WHERE organization_id=? AND id=?",
+            "SELECT status,allowed_workspace_ids,capability_tags FROM agents WHERE organization_id=? AND id=?",
             (organization_id, agent_id),
         ).fetchone()
         if row is None or row["status"] not in {"idle", "running"}:
@@ -135,6 +135,12 @@ class ClientOperations:
             allowed = []
         if workspace_id not in {str(item) for item in allowed}:
             raise ValidationError("client account roster agent must be allowed in workspace")
+        try:
+            capabilities = set(json.loads(row["capability_tags"] or "[]"))
+        except (TypeError, ValueError):
+            capabilities = set()
+        if "workflow_run" not in capabilities:
+            raise ValidationError("client account roster agent must have workflow_run capability")
 
     def _require_workspace_admin(self, organization_id: str, workspace_id: str, person_id: str) -> None:
         row = self.conn.execute(

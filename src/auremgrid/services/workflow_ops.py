@@ -159,11 +159,15 @@ class WorkflowOperations:
                     "assignee_wing": stage["assignee_wing"],
                     "assignee_role": stage["assignee_role"],
                     "assignee_person_id": stage["assignee_person_id"],
+                    "assignee_principal_type": stage.get("assignee_principal_type", "person"),
+                    "assignee_principal_id": stage.get("assignee_principal_id") or stage.get("assignee_person_id"),
                     "required_evidence": stage["required_evidence"],
                     "requires_approval": stage["requires_approval"],
                     "handoff_to_wing": stage["handoff_to_wing"],
                     "handoff_to_role": stage["handoff_to_role"],
                     "handoff_to_person_id": stage["handoff_to_person_id"],
+                    "handoff_principal_type": stage.get("handoff_principal_type", "person"),
+                    "handoff_principal_id": stage.get("handoff_principal_id") or stage.get("handoff_to_person_id"),
                     "on_reject_stage_key": stage["on_reject_stage_key"],
                     "due_at": self._stage_due_at(now, stage),
                     "blocked_reason": None,
@@ -773,11 +777,15 @@ class WorkflowOperations:
                     "acknowledged_by_person_id": person_id,
                     "from_wing": source["assignee_wing"],
                     "from_role": source["assignee_role"],
-                    "from_person_id": source["assignee_person_id"],
+                    "from_person_id": source.get("assignee_person_id"),
+                    "from_principal_type": source.get("assignee_principal_type", "person"),
+                    "from_principal_id": source.get("assignee_principal_id") or source.get("assignee_person_id"),
                     "source_stage_version": source["version"],
                     "to_wing": target["assignee_wing"],
                     "to_role": target["assignee_role"],
-                    "to_person_id": target["assignee_person_id"],
+                    "to_person_id": target.get("assignee_person_id"),
+                    "to_principal_type": target.get("assignee_principal_type", "person"),
+                    "to_principal_id": target.get("assignee_principal_id") or target.get("assignee_person_id"),
                     "artifact_contract": artifact_contract,
                     "reason": reason,
                     "created_at": now_text,
@@ -904,7 +912,7 @@ class WorkflowOperations:
         for dependency in self.repo.dependencies_for_stage(stage["id"]):
             if dependency["dependency_status"] != "completed":
                 raise ValidationError("workflow stage dependencies are not complete")
-            if dependency["handoff_to_wing"] or dependency["handoff_to_role"] or dependency["handoff_to_person_id"]:
+            if dependency["handoff_to_wing"] or dependency["handoff_to_role"] or dependency["handoff_to_person_id"] or dependency.get("handoff_principal_id"):
                 if not self.repo.has_handoff_ack(dependency["depends_on_stage_run_id"], stage["id"]):
                     raise ValidationError("workflow stage requires handoff acknowledgement")
 
@@ -1123,10 +1131,11 @@ class WorkflowOperations:
         snapshot = run.get("template_snapshot") or {}
         if not snapshot.get("client_roster_id"):
             raise ValidationError("workflow stage cannot start without an active client roster owner")
-        self._require_eligible_owner(
+        self._require_eligible_principal(
             organization_id,
             workspace_id,
-            stage.get("assignee_person_id"),
+            stage.get("assignee_principal_type", "person"),
+            stage.get("assignee_principal_id") or stage.get("assignee_person_id"),
             f"stage {stage['stage_key']} owner",
         )
 
@@ -1140,7 +1149,8 @@ class WorkflowOperations:
             matches = self._matching_roster_rows(roster, stage["assignee_role"], stage["assignee_wing"])
             explicit = stage.get("assignee_principal_id") or stage.get("assignee_person_id")
             if explicit:
-                if len(matches) != 1 or matches[0]["person_id"] != explicit:
+                expected_id = matches[0].get("agent_id") if matches and matches[0].get("principal_type") == "agent" else (matches[0]["person_id"] if matches else None)
+                if len(matches) != 1 or expected_id != explicit:
                     raise ValidationError(
                         f"explicit assignee for stage {stage['key']} does not match active client roster"
                     )
@@ -1161,7 +1171,7 @@ class WorkflowOperations:
 
             # Only structured handoffs can be roster-resolved. Opaque legacy
             # handoff_target values remain untouched and never drive guessing.
-            if stage.get("handoff_structured") and not stage.get("handoff_to_person_id"):
+            if stage.get("handoff_structured") and not stage.get("handoff_principal_id") and not stage.get("handoff_to_person_id"):
                 handoff_matches = self._matching_roster_rows(
                     roster, stage.get("handoff_to_role"), stage.get("handoff_to_wing")
                 )
@@ -1169,22 +1179,27 @@ class WorkflowOperations:
                     raise ValidationError(
                         f"active client roster has {len(handoff_matches)} matches for handoff from stage {stage['key']}"
                     )
-                stage["handoff_to_person_id"] = handoff_matches[0]["person_id"]
-            elif stage.get("handoff_structured") and stage.get("handoff_to_person_id"):
+                stage["handoff_principal_type"] = handoff_matches[0].get("principal_type") or "person"
+                stage["handoff_principal_id"] = handoff_matches[0].get("agent_id") if stage["handoff_principal_type"] == "agent" else handoff_matches[0]["person_id"]
+                stage["handoff_to_person_id"] = stage["handoff_principal_id"] if stage["handoff_principal_type"] == "person" else None
+            elif stage.get("handoff_structured") and (stage.get("handoff_principal_id") or stage.get("handoff_to_person_id")):
                 handoff_matches = self._matching_roster_rows(
                     roster, stage.get("handoff_to_role"), stage.get("handoff_to_wing")
                 )
-                if len(handoff_matches) != 1 or handoff_matches[0]["person_id"] != stage["handoff_to_person_id"]:
+                expected_id = handoff_matches[0].get("agent_id") if handoff_matches and handoff_matches[0].get("principal_type") == "agent" else (handoff_matches[0]["person_id"] if handoff_matches else None)
+                explicit_handoff = stage.get("handoff_principal_id") or stage.get("handoff_to_person_id")
+                if len(handoff_matches) != 1 or expected_id != explicit_handoff:
                     raise ValidationError(
                         f"explicit handoff person from stage {stage['key']} does not match active client roster"
                     )
             if stage.get("handoff_structured"):
-                stage["handoff_to_person_id"] = self._require_eligible_owner(
+                stage["handoff_principal_id"] = self._require_eligible_principal(
                     roster["organization_id"],
                     roster["workspace_id"],
-                    stage["handoff_to_person_id"],
+                    stage.get("handoff_principal_type", "person"), stage.get("handoff_principal_id") or stage.get("handoff_to_person_id"),
                     f"handoff owner from stage {stage['key']}",
                 )
+                stage["handoff_to_person_id"] = stage["handoff_principal_id"] if stage.get("handoff_principal_type", "person") == "person" else None
 
     def _validate_dependencies(self, stages: list[dict[str, Any]]) -> None:
         stage_keys = {stage["key"] for stage in stages}

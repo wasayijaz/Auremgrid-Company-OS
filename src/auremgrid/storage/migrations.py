@@ -3784,6 +3784,10 @@ MIGRATIONS = (
         ALTER TABLE workflow_stage_runs ADD COLUMN assignee_principal_id TEXT;
         ALTER TABLE workflow_stage_runs ADD COLUMN handoff_principal_type TEXT NOT NULL DEFAULT 'person';
         ALTER TABLE workflow_stage_runs ADD COLUMN handoff_principal_id TEXT;
+        ALTER TABLE workflow_handoff_acknowledgements ADD COLUMN from_principal_type TEXT NOT NULL DEFAULT 'person';
+        ALTER TABLE workflow_handoff_acknowledgements ADD COLUMN from_principal_id TEXT;
+        ALTER TABLE workflow_handoff_acknowledgements ADD COLUMN to_principal_type TEXT NOT NULL DEFAULT 'person';
+        ALTER TABLE workflow_handoff_acknowledgements ADD COLUMN to_principal_id TEXT;
         CREATE TABLE IF NOT EXISTS meeting_output_routes (
             id TEXT PRIMARY KEY,
             organization_id TEXT NOT NULL,
@@ -4073,7 +4077,7 @@ def migrate(conn: sqlite3.Connection) -> int:
         if migration.version == 56:
             table_columns = {
                 table: {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-                for table in ("client_account_roster_roles", "agents", "workflow_stage_runs")
+                for table in ("client_account_roster_roles", "agents", "workflow_stage_runs", "workflow_handoff_acknowledgements")
             }
             for table, column, definition in (
                 ("client_account_roster_roles", "principal_type", "TEXT NOT NULL DEFAULT 'person'"),
@@ -4083,6 +4087,10 @@ def migrate(conn: sqlite3.Connection) -> int:
                 ("workflow_stage_runs", "assignee_principal_id", "TEXT"),
                 ("workflow_stage_runs", "handoff_principal_type", "TEXT NOT NULL DEFAULT 'person'"),
                 ("workflow_stage_runs", "handoff_principal_id", "TEXT"),
+                ("workflow_handoff_acknowledgements", "from_principal_type", "TEXT NOT NULL DEFAULT 'person'"),
+                ("workflow_handoff_acknowledgements", "from_principal_id", "TEXT"),
+                ("workflow_handoff_acknowledgements", "to_principal_type", "TEXT NOT NULL DEFAULT 'person'"),
+                ("workflow_handoff_acknowledgements", "to_principal_id", "TEXT"),
             ):
                 statement = f"ALTER TABLE {table} ADD COLUMN {column} {definition};"
                 if column in table_columns[table]:

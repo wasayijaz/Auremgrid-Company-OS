@@ -65,6 +65,21 @@ class ClientHQAccountabilityTests(unittest.TestCase):
         self.assertEqual(updated["meeting_responsibilities"][0]["facilitator_person_id"], self.backup.id)
         self.assertEqual(updated["meeting_responsibilities"][0]["source"]["facilitator"], "explicit")
 
+    def test_agent_roster_slot_is_rendered_as_named_agent(self) -> None:
+        agent = self.os.agent_ops.seed_primary_agents(self.org.id, self.owner.id)[0]
+        self.os.agent_ops.configure_agent(self.org.id, self.owner.id, agent["id"], "test", [], [self.client.id], [])
+        self.os.store.conn.execute("UPDATE agents SET capability_tags='[\"workflow_run\"]' WHERE id=?", (agent["id"],)); self.os.store.conn.commit()
+        self.os.client_ops.create_client_roster(
+            self.org.id, self.client.id, self.owner.id,
+            [
+                {"role_key": "client_success_dri", "principal_type": "agent", "agent_id": agent["id"]},
+                {"role_key": "client_success_backup", "person_id": self.backup.id},
+            ], datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        view = self.os.dashboard.client_hq(self.identity, self.org.id, self.client.id, self.owner.id)
+        self.assertEqual(view["account_team"]["dri"]["principal_type"], "agent")
+        self.assertEqual(view["account_team"]["dri"]["agent_id"], agent["id"])
+
     def test_cross_workspace_and_forged_identity_are_denied_without_disclosure(self) -> None:
         with self.assertRaises(AuthorizationError):
             self.os.dashboard.client_hq(self.identity, self.org.id, self.other.id, self.owner.id)

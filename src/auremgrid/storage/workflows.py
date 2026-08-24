@@ -292,8 +292,10 @@ class WorkflowRepository:
             self.conn.execute(
                 """
                 SELECT d.*, s.status AS dependency_status, s.handoff_to_wing, s.handoff_to_role,
-                       s.handoff_to_person_id, s.assignee_wing AS dependency_wing,
-                       s.assignee_role AS dependency_role, s.assignee_person_id AS dependency_person_id
+                       s.handoff_to_person_id, s.handoff_principal_type, s.handoff_principal_id,
+                       s.assignee_wing AS dependency_wing,
+                       s.assignee_role AS dependency_role, s.assignee_person_id AS dependency_person_id,
+                       s.assignee_principal_type AS dependency_principal_type, s.assignee_principal_id AS dependency_principal_id
                 FROM workflow_stage_dependencies d
                 JOIN workflow_stage_runs s ON s.id=d.depends_on_stage_run_id
                 WHERE d.stage_run_id=?
@@ -445,9 +447,9 @@ class WorkflowRepository:
             """
             INSERT INTO workflow_handoff_acknowledgements(
                 id, run_id, from_stage_run_id, to_stage_run_id, acknowledged_by_person_id,
-                from_wing, from_role, from_person_id, source_stage_version, to_wing, to_role, to_person_id,
+                from_wing, from_role, from_person_id, from_principal_type, from_principal_id, source_stage_version, to_wing, to_role, to_person_id, to_principal_type, to_principal_id,
                 artifact_contract, reason, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 acknowledgement["id"],
@@ -458,10 +460,14 @@ class WorkflowRepository:
                 acknowledgement["from_wing"],
                 acknowledgement["from_role"],
                 acknowledgement["from_person_id"],
+                acknowledgement.get("from_principal_type", "person"),
+                acknowledgement.get("from_principal_id") or acknowledgement.get("from_person_id"),
                 acknowledgement["source_stage_version"],
                 acknowledgement["to_wing"],
                 acknowledgement["to_role"],
                 acknowledgement["to_person_id"],
+                acknowledgement.get("to_principal_type", "person"),
+                acknowledgement.get("to_principal_id") or acknowledgement.get("to_person_id"),
                 acknowledgement["artifact_contract"],
                 acknowledgement["reason"],
                 acknowledgement["created_at"],

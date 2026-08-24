@@ -106,6 +106,71 @@ class AgentAutomationTests(unittest.TestCase):
         self.assertEqual(dict(approval),{"status":"pending","policy":"human"})
         self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM jobs WHERE type='automation.execute'").fetchone()[0],0)
 
+    def _activate_after_training(self, actions: list[dict[str, object]]) -> dict[str, object]:
+        automation=self.os.agent_ops.create_automation(self.org.id,self.owner.id,"Allowlisted action","manual_trigger",
+            [{"field":"ready","operator":"eq","value":True}],actions,"auto")
+        training=self.os.agent_ops.trigger_automations(self.org.id,"manual_trigger",{"ready":True,"workspace_id":self.ws.id})[0]
+        self.os.agency_ops.decide_approval(self.org.id,self.owner.id,training["approval_request_id"],True)
+        self.os.agent_ops.execute_approved_automation_run(self.org.id,self.owner.id,training["run_id"])
+        run_one_job(self.os,self.org.id,self.ws.id,"automation-training-worker")
+        return self.os.agent_ops.activate_automation(self.org.id,self.owner.id,automation["id"])
+
+    def _trigger_active_auto(self, payload: dict[str, object]) -> dict[str, object]:
+        run=self.os.agent_ops.trigger_automations(self.org.id,"manual_trigger",{"ready":True,"workspace_id":self.ws.id,**payload})[0]
+        self.assertEqual(run["status"],"queued")
+        self.assertIsNotNone(run["job_id"])
+        approval=self.os.store.conn.execute("SELECT status,policy FROM approval_requests WHERE id=?",(run["approval_request_id"],)).fetchone()
+        self.assertEqual(dict(approval),{"status":"approved","policy":"auto"})
+        completed=run_one_job(self.os,self.org.id,self.ws.id,"automation-active-worker")
+        self.assertEqual(completed["status"],"succeeded")
+        return run
+
+    def test_active_auto_acknowledge_attention_runs_unattended(self) -> None:
+        now=datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        snapshot_id=self.os.jobs.new_id("intelsnap")
+        attention_id=self.os.jobs.new_id("intelattn")
+        fingerprint="attention-auto-fingerprint"
+        self.os.store.conn.execute(
+            "INSERT INTO proactive_intelligence_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (snapshot_id,self.org.id,self.ws.id,self.owner.id,"workspace",1,"ready",None,"attention-auto-projection",now,"{}", "[]", now),
+        )
+        self.os.store.conn.execute(
+            "INSERT INTO proactive_intelligence_attention_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (attention_id,snapshot_id,self.org.id,self.ws.id,self.owner.id,1,"Follow up","Client response is quiet","open","[]",now,now),
+        )
+        self.os.store.conn.execute(
+            "INSERT INTO proactive_intelligence_attention_lifecycle VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (self.os.jobs.new_id("intelcycle"),self.org.id,self.ws.id,self.owner.id,fingerprint,snapshot_id,attention_id,"new",None,None,"{}",None,"seeded for automation test",now,now),
+        )
+        self.os.store.conn.commit()
+        self._activate_after_training([{"type":"proactive_attention.acknowledge","config":{"workspace_id":self.ws.id,"fingerprint":fingerprint}}])
+
+        self._trigger_active_auto({"fingerprint":fingerprint})
+
+        latest=self.os.store.conn.execute("SELECT status FROM proactive_intelligence_attention_lifecycle WHERE fingerprint=?",(fingerprint,)).fetchone()
+        self.assertEqual(latest["status"],"acknowledged")
+
+    def test_active_auto_add_work_comment_runs_unattended(self) -> None:
+        work=self.os.work_ops.create(self.org.id,self.ws.id,self.owner.id,"Follow up","Check account","Owner")
+        self._activate_after_training([{"type":"work.comment.create","config":{"workspace_id":self.ws.id,"work_item_id":work.id,"body":"Automation comment"}}])
+
+        self._trigger_active_auto({"work_item_id":work.id})
+
+        comment=self.os.store.conn.execute("SELECT body FROM work_comments WHERE work_item_id=? ORDER BY created_at DESC LIMIT 1",(work.id,)).fetchone()
+        self.assertEqual(comment["body"],"Automation comment")
+
+    def test_active_auto_create_proposal_runs_unattended(self) -> None:
+        self._activate_after_training([{"type":"brain.proposal.create","config":{
+            "workspace_id":self.ws.id,"proposer_type":"automation","kind":"memory",
+            "content":"Client prefers concise updates.","payload":{"preference":"concise updates"},
+            "evidence":"Automation observed repeated concise-update signal","confidence":0.8,
+        }}])
+
+        self._trigger_active_auto({"run_marker":"active"})
+
+        proposal=self.os.store.conn.execute("SELECT kind,status,content FROM memory_proposals WHERE organization_id=? ORDER BY created_at DESC LIMIT 1",(self.org.id,)).fetchone()
+        self.assertEqual(dict(proposal),{"kind":"memory","status":"pending","content":"Client prefers concise updates."})
+
     def test_concurrent_duplicate_trigger_creates_one_run_and_one_approval(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"automation-race.sqlite"

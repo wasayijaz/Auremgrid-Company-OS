@@ -26,8 +26,10 @@ Auremgrid runs as a local-first Python process with SQLite. This checklist cover
 
 ## Backup and recovery
 
-- [ ] Schedule `auremgrid backup` to run at least daily (cron / Task Scheduler)
-- [ ] Schedule `auremgrid verify-backup` after each backup
+- [ ] Install an operator-owned daily backup schedule manually; `scripts/prepare-deploy.ps1` does not create cron or Task Scheduler entries
+- [ ] Make the scheduled command run `auremgrid backup --db <db> --output <backup-file>` and then `auremgrid verify-backup --backup <backup-file>` in the same job
+- [ ] Verify installation without changing host state by listing the scheduler entry (`Get-ScheduledTask -TaskName <name>` on Windows, `crontab -l` or the relevant systemd timer listing on Linux) and confirming the command includes both `backup` and `verify-backup`
+- [ ] Verify operation after the first run by checking that the backup file exists and `auremgrid verify-backup --backup <backup-file>` exits successfully
 - [ ] Rotate backup files (keep at least 7 daily, 4 weekly)
 - [ ] Store backups on a separate filesystem or remote destination
 - [ ] Test restore on a separate machine at least once per month
@@ -43,6 +45,7 @@ Auremgrid runs as a local-first Python process with SQLite. This checklist cover
 
 - [ ] Poll `/health` from an external monitor (uptime check)
 - [ ] Check that `/health` or `/health/detailed` reports schema version 56 for this release line, or the later schema version shipped by the artifact being deployed
+- [ ] Before production cutover, run a forward-migration rehearsal on a copy of the database and verify `/health/detailed` reports schema version 56 for this release line
 - [ ] Alert on process crashes, backup failures, or recovery mode activation
 
 ## Secrets

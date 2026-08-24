@@ -69,7 +69,23 @@ class P6P15ReleaseEvidenceTests(unittest.TestCase):
         for document in (self.doc, upgrade, checklist):
             self.assertIn("56", document)
             self.assertNotIn("schema 54", document)
+        self.assertIn("forward-migration rehearsal", checklist)
+        self.assertIn("/health/detailed", checklist)
         self.assertIn('"durable_automation_actions_and_delegation_depth"', migrations)
+
+    def test_operator_docs_keep_active_auto_bounded_and_scheduler_manual(self) -> None:
+        operator = ROOT.joinpath("docs", "operator-runtime.md").read_text(encoding="utf-8")
+        checklist = ROOT.joinpath("docs", "production-checklist.md").read_text(encoding="utf-8")
+        prepare = ROOT.joinpath("scripts", "prepare-deploy.ps1").read_text(encoding="utf-8")
+        for document in (self.doc, operator):
+            self.assertIn("allowlisted", document)
+            self.assertIn("reversible local actions", document)
+            self.assertIn("one-way actions remain human-gated", document)
+        for document in (operator, checklist, prepare):
+            self.assertIn("backup", document)
+            self.assertIn("verify-backup", document)
+        self.assertIn("does not create", operator)
+        self.assertNotIn("Backup schedule set", prepare)
 
     def test_feedback_performance_forecast_retention_batch_is_separate_from_p6_p15_matrix(self) -> None:
         for route in (

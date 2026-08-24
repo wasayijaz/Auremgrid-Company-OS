@@ -443,6 +443,8 @@ class _ExistingDashboardService:
 
         roster = self.os.client_ops.get_client_roster(organization_id, workspace_id, person_id)
         people_by_id = {str(item["id"]): item for item in workspace_people}
+        agent_ids = {str(role.get("agent_id")) for role in (roster or {}).get("roles", []) if role.get("principal_type") == "agent" and role.get("agent_id")}
+        agents_by_id = {str(row["id"]): dict(row) for row in self.conn.execute("SELECT id,name,status FROM agents WHERE organization_id=? AND id IN ({})".format(",".join("?" for _ in agent_ids) or "NULL"), (organization_id, *sorted(agent_ids))).fetchall()} if agent_ids else {}
 
         def person_ref(person_id: str | None) -> dict[str, Any] | None:
             if not person_id:
@@ -457,13 +459,19 @@ class _ExistingDashboardService:
                 "title": item["title"], "department": item["department"], "role": item["role"],
             }
 
+        def principal_ref(role: dict[str, Any]) -> dict[str, Any] | None:
+            if role.get("principal_type") == "agent":
+                agent = agents_by_id.get(str(role.get("agent_id")))
+                return {"id": agent["id"], "agent_id": agent["id"], "name": agent["name"], "status": agent["status"], "principal_type": "agent"} if agent else None
+            return person_ref(role.get("person_id"))
+
         slots: dict[str, Any] = {
             "dri": None, "backup": None, "account": {"lead": None, "executive": None},
             "cadence": None, "escalation": None, "wings": {},
         }
         if roster:
             for role in roster.get("roles", []):
-                role_key, ref = role.get("role_key"), person_ref(role.get("person_id"))
+                role_key, ref = role.get("role_key"), principal_ref(role)
                 if role_key == "client_success_dri": slots["dri"] = ref
                 elif role_key == "client_success_backup": slots["backup"] = ref
                 elif role_key == "account_lead": slots["account"]["lead"] = ref
@@ -1075,6 +1083,7 @@ class DashboardService(_ExistingDashboardService):
         assignee_ids = sorted({
             str(stage["assignee_person_id"]) for stage in stages if stage.get("assignee_person_id")
         })
+        assignee_agent_ids = sorted({str(stage.get("assignee_principal_id")) for stage in stages if stage.get("assignee_principal_type") == "agent" and stage.get("assignee_principal_id")})
         people_by_id: dict[str, dict[str, Any]] = {}
         if assignee_ids:
             people_marks = ",".join("?" for _ in assignee_ids)
@@ -1088,6 +1097,10 @@ class DashboardService(_ExistingDashboardService):
                     (organization_id, workspace_id, *assignee_ids),
                 ).fetchall()
             }
+        agents_by_id = {}
+        if assignee_agent_ids:
+            marks = ",".join("?" for _ in assignee_agent_ids)
+            agents_by_id = {str(row["id"]): dict(row) for row in self.conn.execute(f"SELECT id,name,status FROM agents WHERE organization_id=? AND id IN ({marks})", (organization_id, *assignee_agent_ids)).fetchall()}
 
         history_by_stage: dict[str, list[dict[str, Any]]] = defaultdict(list)
         history_by_run: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1193,10 +1206,15 @@ class DashboardService(_ExistingDashboardService):
                 identity,workspace_id,stage,ready,not missing,approval_view,request_view,
                 missing_handoffs
             )
-            assignee_person = people_by_id.get(str(stage["assignee_person_id"])) if stage["assignee_person_id"] else None
+            assignee_person = people_by_id.get(str(stage["assignee_person_id"])) if stage.get("assignee_person_id") else None
+            assignee_agent = agents_by_id.get(str(stage.get("assignee_principal_id"))) if stage.get("assignee_principal_type") == "agent" else None
             owner = {
                 "wing": stage["assignee_wing"], "role": stage["assignee_role"],
                 "person_id": stage["assignee_person_id"], "person": assignee_person,
+                "principal_type": stage.get("assignee_principal_type", "person"),
+                "principal_id": stage.get("assignee_principal_id") or stage.get("assignee_person_id"),
+                "agent_id": assignee_agent["id"] if assignee_agent else None,
+                "agent": assignee_agent,
             }
             expected_duration_hours = stage.get("expected_duration_hours")
             rendered_stages.append({

@@ -63,6 +63,13 @@ durable jobs with a separate `worker-once` process. Secrets belong in an
 external environment or secret manager and enter SQLite only as references and
 fingerprints, never values.
 
+For production, install backup scheduling yourself rather than relying on the
+readiness script. The schedule should run `backup` and then `verify-backup` in
+one operator-owned job. Verify the schedule by listing the installed cron,
+systemd timer, or Task Scheduler entry and confirming both commands are present;
+after the first run, verify the generated backup file again with
+`auremgrid verify-backup --backup <backup-file>`.
+
 The generic OAuth routes need an operator-owned provider app registration,
 allowlisted redirect, deployment key, and injected token-exchange transport.
 No Google client credentials are bundled, and the default completion path fails

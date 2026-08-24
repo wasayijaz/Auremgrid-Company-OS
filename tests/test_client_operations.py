@@ -31,7 +31,9 @@ class ClientOperationsTests(unittest.TestCase):
 
     def test_meeting_output_route_is_proposed_without_work_creation(self) -> None:
         agent = self.os.agent_ops.seed_primary_agents(self.org.id, self.owner.id)[0]
-        self.os.agent_ops.configure_agent(self.org.id, self.owner.id, agent["id"], "test", [], [self.client.id], [])
+        self.os.agent_ops.configure_agent(self.org.id, self.owner.id, agent["id"], "test", ["workflow_run"], [self.client.id], [])
+        self.os.store.conn.execute("UPDATE agents SET capability_tags='[\"workflow_run\"]' WHERE id=?", (agent["id"],))
+        self.os.store.conn.commit()
         meeting = self.os.client_ops.create_meeting(self.org.id, self.client.id, self.owner.id, "Weekly", datetime.now(timezone.utc))
         before = self.os.store.conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0]
         output = self.os.client_ops.add_meeting_output(self.org.id, self.client.id, self.owner.id, meeting.id, "action_item", "Draft recap", 0.8, proposed_targets=[{"type": "agent", "id": agent["id"]}])

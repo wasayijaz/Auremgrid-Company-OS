@@ -66,6 +66,7 @@ class AgentOperations:
     def __init__(self, conn: Any, new_id: Callable[[str], str], company: Any, approvals: Any, client_ops: Any, capacity: Any | None = None) -> None:
         self.conn, self.new_id, self.company, self.approvals, self.client_ops, self.capacity = conn, new_id, company, approvals, client_ops, capacity
         self.intelligence_orchestrator: Any | None = None
+        self.os: Any | None = None
 
     @staticmethod
     def _can(capabilities: Any, capability: str) -> bool:
@@ -1170,7 +1171,7 @@ class AgentOperations:
         self.conn.execute("UPDATE automation_runs SET status='running' WHERE id=?", (run["id"],))
         self.conn.commit()
         try:
-            output = self._execute_actions(organization_id, run, actions, json.loads(run["trigger_payload"]))
+            output = self._execute_actions(organization_id, identity, run, actions, json.loads(run["trigger_payload"]))
         except Exception as exc:
             self.conn.execute(
                 "UPDATE automation_runs SET status='failed',completed_at=?,output=? WHERE id=?",
@@ -1185,7 +1186,7 @@ class AgentOperations:
         self.conn.commit()
         return {"run_id": run["id"], "status": "completed", "output": output}
 
-    def _execute_actions(self, organization_id: str, automation: Any, actions: list[Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def _execute_actions(self, organization_id: str, identity: Any, automation: Any, actions: list[Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
         output = []
         person_id = automation["created_by_person_id"]
         for descriptor in actions:
@@ -1202,7 +1203,7 @@ class AgentOperations:
                 output.append(_loads(execution["result_json"], {}))
                 continue
             try:
-                result = self._execute_automation_canonical_action(organization_id, automation, person_id, validated)
+                result = self._execute_automation_canonical_action(organization_id, identity, automation, person_id, validated)
             except Exception as exc:
                 self._finish_automation_action_execution(execution["id"], "failed", None, {"type": exc.__class__.__name__, "message": str(exc)})
                 raise
@@ -1214,6 +1215,7 @@ class AgentOperations:
     def _execute_automation_canonical_action(
         self,
         organization_id: str,
+        identity: Any,
         automation: Any,
         person_id: str,
         validated: dict[str, Any],
@@ -1252,6 +1254,41 @@ class AgentOperations:
                 payload["actionable"],
             )
             return {"action": action, "kind": validated["kind"], "entity_type": "notification", "id": notice["id"], "source_refs": [notice["id"]], "result": notice}
+        if self.os is None:
+            raise ValidationError("automation execution service unavailable")
+        if action == "acknowledge_attention":
+            item = self.os.proactive_intelligence.update_attention_status(
+                identity,
+                payload["fingerprint"],
+                "acknowledged",
+                payload["reason"],
+            )
+            return {"action": action, "kind": validated["kind"], "entity_type": "proactive_attention", "id": item["id"], "source_refs": [item["id"]], "result": item}
+        if action == "add_work_comment":
+            if not workspace_id:
+                raise ValidationError("work comment automation requires workspace_id")
+            item = self.os.work_ops.add_comment(
+                organization_id,
+                workspace_id,
+                person_id,
+                payload["work_item_id"],
+                payload["body"],
+            )
+            return {"action": action, "kind": validated["kind"], "entity_type": "work_comment", "id": item["id"], "source_refs": [item["id"]], "result": item}
+        if action == "create_proposal":
+            item = self.os.brain_ops.create_proposal(
+                organization_id,
+                workspace_id,
+                payload["proposer_type"],
+                identity,
+                payload["kind"],
+                payload["content"],
+                payload["payload"],
+                payload["evidence"],
+                payload["confidence"],
+                payload.get("source_id"),
+            )
+            return {"action": action, "kind": validated["kind"], "entity_type": "memory_proposal", "id": item["id"], "source_refs": [item["id"]], "result": item}
         raise ValidationError(f"unsupported automation action: {validated['kind']}")
 
     def _begin_automation_action_execution(self, automation: Any, validated: dict[str, Any], idempotency_key: str) -> dict[str, Any]:
@@ -1459,6 +1496,53 @@ class AgentOperations:
                 descriptor = {
                     "action": "create_notification",
                     "kind": ACTION_KINDS["create_notification"],
+                    "safe": True,
+                    "one_way": False,
+                    "payload": {key: value for key, value in descriptor_payload.items() if value is not None},
+                }
+            elif action["type"] == "proactive_attention.acknowledge":
+                descriptor_payload = {
+                    "workspace_id": workspace_id,
+                    "fingerprint": config.get("fingerprint") or payload.get("fingerprint"),
+                    "reason": config.get("reason", payload.get("reason", "Automation acknowledgement")),
+                    "idempotency_key": config.get("idempotency_key"),
+                }
+                descriptor = {
+                    "action": "acknowledge_attention",
+                    "kind": ACTION_KINDS["acknowledge_attention"],
+                    "safe": True,
+                    "one_way": False,
+                    "payload": {key: value for key, value in descriptor_payload.items() if value is not None},
+                }
+            elif action["type"] == "work.comment.create":
+                descriptor_payload = {
+                    "workspace_id": workspace_id,
+                    "work_item_id": config.get("work_item_id") or payload.get("work_item_id"),
+                    "body": config.get("body", payload.get("body", "Automation review note")),
+                    "idempotency_key": config.get("idempotency_key"),
+                }
+                descriptor = {
+                    "action": "add_work_comment",
+                    "kind": ACTION_KINDS["add_work_comment"],
+                    "safe": True,
+                    "one_way": False,
+                    "payload": {key: value for key, value in descriptor_payload.items() if value is not None},
+                }
+            elif action["type"] == "brain.proposal.create":
+                descriptor_payload = {
+                    "workspace_id": workspace_id,
+                    "proposer_type": config.get("proposer_type", "automation"),
+                    "kind": config.get("kind", "memory"),
+                    "content": config.get("content", payload.get("content", "Automation proposal")),
+                    "payload": config.get("payload", payload.get("proposal_payload", {})),
+                    "evidence": config.get("evidence", payload.get("evidence", "Automation signal")),
+                    "confidence": float(config.get("confidence", payload.get("confidence", 0.5))),
+                    "source_id": config.get("source_id"),
+                    "idempotency_key": config.get("idempotency_key"),
+                }
+                descriptor = {
+                    "action": "create_proposal",
+                    "kind": ACTION_KINDS["create_proposal"],
                     "safe": True,
                     "one_way": False,
                     "payload": {key: value for key, value in descriptor_payload.items() if value is not None},

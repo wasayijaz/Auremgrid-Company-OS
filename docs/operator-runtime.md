@@ -29,6 +29,10 @@ catalog enforced by the executor. Agent run detail also returns approved action
 execution rows with decoded result/error state and a replay boundary, so an
 operator can distinguish completed idempotent replay, active fenced execution,
 and failed same-key execution that needs a new approved task or idempotency key.
+Automation status `active` with policy `auto` only permits the same allowlisted
+reversible local actions enforced by that catalog. Unsafe, external, arbitrary
+connector-write, or one-way actions remain human-gated and are not queued for
+automatic execution.
 
 The compose template binds the stdlib server only to loopback and puts TLS at
 the reverse proxy. Copy `.env.example` to `deploy/.env`, replace
@@ -38,6 +42,13 @@ deploy/docker-compose.yml ...`. Do not expose port 8791 directly. The template
 is an operator-owned proxy/TLS pattern, not managed hosting. Operators remain
 responsible for certificate issuance, firewall rules, per-person session
 provisioning, backup/restore rehearsal, and secret rotation.
+
+`scripts/prepare-deploy.ps1` is a readiness check only. It does not create
+cron entries, Task Scheduler entries, systemd timers, services, or external
+credentials. Operators install the backup schedule themselves and verify it by
+listing the scheduler entry and confirming the command runs both `backup` and
+`verify-backup`; after the first run, verify the produced backup again with
+`auremgrid verify-backup --backup <backup-file>`.
 
 First-run setup is CSV-first after the owner login exists. Use
 `import-templates`, `import-preview`, and `import-commit` for client
