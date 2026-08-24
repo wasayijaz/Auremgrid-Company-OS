@@ -187,6 +187,89 @@ def run_intelligence_evaluations() -> dict[str, Any]:
         )
         dissent_ok = "dissent" in dissent_run and isinstance(dissent_run["dissent"], list)
         checks.append(_case("orchestrator_dissent_retention", dissent_ok, "bounded dissent remains in the offline result"))
+
+        # Exercise every native runbook contract through the same offline
+        # orchestrator boundary. One profile receives an intentionally
+        # unauthorized citation so each case proves fail-closed citation
+        # handling, bounded specialist fan-out, and a usable degraded brief.
+        runbooks = owner_os.intelligence_contracts.list_runbooks(
+            "org_demo", "ws_alpha", "person_demo_owner"
+        )
+        canonical_tables = ("facts", "decisions", "work_items")
+        before_counts = {
+            table: owner_os.store.conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE workspace_id=?",
+                ("ws_alpha",),
+            ).fetchone()[0]
+            for table in canonical_tables
+        }
+        def visible_refs(value: Any) -> set[tuple[str, str]]:
+            refs: set[tuple[str, str]] = set()
+            def visit(node: Any) -> None:
+                if isinstance(node, dict):
+                    ref = node.get("object_ref") or node.get("ref")
+                    if isinstance(ref, dict) and ref.get("type") and ref.get("id"):
+                        refs.add((str(ref["type"]), str(ref["id"])))
+                    for child in node.values():
+                        visit(child)
+                elif isinstance(node, list):
+                    for child in node:
+                        visit(child)
+            visit(owner)
+            return refs
+        allowed_refs = visible_refs(owner)
+        for runbook in runbooks:
+            runbook_id = str(runbook["id"])
+            profile_ids_for_runbook = [str(item) for item in runbook.get("profile_ids", [])]
+            malformed_profile = profile_ids_for_runbook[0] if profile_ids_for_runbook else None
+            def malformed(_context: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "finding": "malformed citation fixture", "evidence_for": [{"ref": "unauthorized"}],
+                    "evidence_against": [], "assumptions": [], "unknowns": [],
+                    "hypothesis": "fixture hypothesis", "confidence": 0.8,
+                    "analogues": [], "risks": [], "options": [],
+                    "recommendation": {"summary": "Review the bounded fallback."},
+                    "expected_impact": {"level": "unknown"}, "needs_review": False,
+                }
+            degraded = IntelligenceOrchestrator(
+                owner_os,
+                owner_os.intelligence_contracts,
+                specialist_handlers={malformed_profile: malformed} if malformed_profile else {},
+            ).run(
+                "org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin",
+                runbook_id=runbook_id, profile_ids=profile_ids_for_runbook,
+            )
+            safe_citations = all(
+                (str(item.get("ref", {}).get("type")), str(item.get("ref", {}).get("id"))) in allowed_refs
+                for specialist in degraded.get("specialists", [])
+                for field in ("evidence_for", "evidence_against", "analogues", "dissent")
+                for item in specialist.get(field, [])
+                if isinstance(item, dict) and isinstance(item.get("ref"), dict)
+            )
+            usable = isinstance(degraded.get("recommendation"), dict) and bool(
+                degraded.get("recommendation", {}).get("summary")
+            )
+            checks.append(_case(
+                f"runbook_{runbook_id}",
+                degraded.get("runbook_route", {}).get("status") == "matched"
+                and degraded.get("runbook", {}).get("id") == runbook_id
+                and degraded.get("status") == "degraded"
+                and len(degraded.get("profiles", [])) <= 13
+                and safe_citations and usable and degraded.get("needs_review") is True,
+                f"{runbook_id}: bounded degraded fallback with citation safety",
+            ))
+        after_counts = {
+            table: owner_os.store.conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE workspace_id=?",
+                ("ws_alpha",),
+            ).fetchone()[0]
+            for table in canonical_tables
+        }
+        checks.append(_case(
+            "runbook_evaluation_no_canonical_writes",
+            before_counts == after_counts,
+            "all twelve runbook evaluations leave facts, decisions, and work items unchanged",
+        ))
     finally:
         owner_os.close()
 

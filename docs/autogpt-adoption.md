@@ -27,6 +27,13 @@ implementation and runs without network access or additional dependencies.
 - Separation between reasoning and execution. Auremgrid returns approval and
   workflow descriptors; it does not let an evaluation or model call execute a
   write.
+
+The offline evaluation includes one bounded degraded-fallback scenario for
+each of the twelve native Intelligence runbooks. Every runbook case injects an
+unauthorized citation, verifies the citation is rejected and review is required,
+checks the recommendation remains usable and specialist fan-out bounded, and
+asserts that facts, decisions, and work items are unchanged. This gives the
+runbook pack an explicit per-contract safety gate without contacting providers.
 - Deterministic fallback as a first-class result when an optional provider is
   absent or malformed.
 
@@ -51,4 +58,3 @@ can be retained as release evidence.
 - Autonomous tool execution, hidden memory, or model-generated canonical
   records. All Auremgrid writes remain behind normal ACL, workflow, and human
   approval boundaries.
-
