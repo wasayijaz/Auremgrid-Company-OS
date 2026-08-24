@@ -78,6 +78,7 @@ from auremgrid.services.proactive_intelligence import ProactiveIntelligenceServi
 from auremgrid.services.onboarding import OnboardingService
 from auremgrid.services.report_delivery import ReportDeliveryService
 from auremgrid.services.asset_recovery import AssetRecoveryService
+from auremgrid.services.operator_readiness import OperatorReadinessService
 from auremgrid.adapters.semantic import (
     DeterministicFallbackEmbeddingProvider,
     EmbeddingProvider,
@@ -189,6 +190,7 @@ class CompanyOS:
         self.onboarding = OnboardingService(self, self.store.conn, new_id, self._require_person_access)
         self.report_delivery = ReportDeliveryService(self, new_id)
         self.asset_recovery = AssetRecoveryService(self.store.conn, new_id)
+        self.operator_readiness = OperatorReadinessService(self)
         self.rebuild_projections(rebuild_graph=graph_projection is None)
         if graph_projection is not None:
             self._restore_durable_graph_generations()

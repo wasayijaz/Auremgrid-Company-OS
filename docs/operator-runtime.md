@@ -13,6 +13,17 @@ is the packaged loop. Use `scripts/worker-loop.ps1` on Windows or
 last redacted result. Pause is an operator control in the durable scheduler
 state; recovery mode and outbound dispatch controls remain separate gates.
 
+For local readiness reviews, `CompanyOS.operator_readiness` exposes a read-only
+admin service. `supervised_operations_export(...)` returns a bounded, redacted
+packet covering scheduler heartbeats, agent runs, traces, tool calls, approved
+action executions, automation definitions/runs, jobs, and evaluation circuit
+events. `readiness_report(...)` turns that packet into operator checks without
+mutating work. `postgres_portability_assessment()` is intentionally a dry
+assessment: it opens no provider connection and reports the current SQLite-only
+runtime, migration dialect, FTS, trigger, id generation, catalog, and transaction
+blockers that must be resolved before a PostgreSQL deployment can be called
+ready.
+
 The compose template binds the stdlib server only to loopback and puts TLS at
 the reverse proxy. Replace `AUREMGRID_DOMAIN` and provide a protected `.env`
 before deployment; do not expose port 8791 directly. The template is an
