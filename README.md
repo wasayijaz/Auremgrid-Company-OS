@@ -652,9 +652,20 @@ The offline suite must not require Docker, provider credentials, a private vault
 - Docker and Compose files are private single-host packaging templates. They verify build/static boundaries and loopback proxy defaults, not managed hosting, Docker runtime boot, live browser runtime behavior, or provider connectivity.
 - Unattended automations, remote semantic providers, upstream OSS engines, and externally visible sends remain experimental or future gates. Local semantic retrieval and its deterministic fallback are available behind the provider/index boundary described above.
 - SQLite is local-first, not a multi-region distributed database. External binary assets require a separate backup policy.
+- Local administrators can issue hash-only, expiring, one-time invites and
+  inspect or revoke sessions by ID. These are authenticated provisioning and
+  recovery controls, not public signup, password reset, email delivery, or
+  client self-service authentication. The workspace-scoped read-only Asset
+  Registry (`GET /assets` and `/assets/detail`) exposes recorded metadata,
+  checksums, retention, creative-review state where present, and recovery audit
+  history; it does not upload, fetch, distribute, or restore external objects.
 - The standard-library HTTP server is appropriate for local/private operation; hardened public deployment needs an explicit reverse proxy, TLS, and access review.
 
-The next safe increments are OAuth/PKCE with a write-capable secret backend, webhooks and multiple provider installations, a transactional outbox boundary for externally visible sends, richer provider adapters for the existing strategic-reasoning boundary, and continued rehearsal of the asset backup policy.
+The remaining hosted-product increments require operator-owned infrastructure:
+provider applications and credentials, public TLS ingress, a managed secret
+backend, sender transport, real CRM/ads/accounting adapters and reconciliation,
+managed PostgreSQL, plus object storage/CDN, signed delivery, scanning, and
+restore workers for binary assets.
 
 ## Documentation map
 
