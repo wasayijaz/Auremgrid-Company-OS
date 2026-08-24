@@ -118,6 +118,21 @@ class ClientPortalOperationsTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError):
             self.os.client_portal.decline_intake_request(self.org.id, self.ws.id, self.client_person.id, item["id"])
 
+    def test_org_client_cannot_escalate_via_staff_workspace_role(self) -> None:
+        # Service calls must enforce the org/workspace capability intersection,
+        # not trust a contradictory workspace role inserted by an admin.
+        rogue = self.os.create_person(self.org.id, "Rogue Client", role="client")
+        self.os.add_person_to_workspace(self.org.id, self.ws.id, rogue.id, "admin")
+        item = self.os.client_portal.submit_intake_request(
+            self.org.id, self.ws.id, self.client_person.id, "Title", "Request",
+        )
+        with self.assertRaises(AuthorizationError):
+            self.os.client_portal.list_intake_queue(self.org.id, self.ws.id, rogue.id)
+        with self.assertRaises(AuthorizationError):
+            self.os.client_portal.accept_intake_request(self.org.id, self.ws.id, rogue.id, item["id"])
+        with self.assertRaises(AuthorizationError):
+            self.os.client_portal.decline_intake_request(self.org.id, self.ws.id, rogue.id, item["id"])
+
     def test_accept_intake_validates_workspace_assignee_and_decision_maker(self) -> None:
         other_staff = self.os.create_person(self.org.id, "Other Staff", role="member")
         self.os.add_person_to_workspace(self.org.id, self.other_ws.id, other_staff.id, "operator")

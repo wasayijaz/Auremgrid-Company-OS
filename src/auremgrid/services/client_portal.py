@@ -43,10 +43,13 @@ class ClientPortalOperations:
 
     def _require_staff_membership(self, organization_id: str, workspace_id: str, person_id: str) -> None:
         scope = self.company.workspace_scope(workspace_id)
+        organization_membership = self.company.org_membership(organization_id, person_id)
         membership = self.company.workspace_membership(workspace_id, person_id)
         if (
             scope is None
             or scope["organization_id"] != organization_id
+            or organization_membership is None
+            or organization_membership.role == "client"
             or membership is None
             or membership.role in {"viewer", "client"}
         ):
