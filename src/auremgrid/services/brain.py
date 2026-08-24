@@ -59,7 +59,7 @@ from auremgrid.services.workflow_ops import WorkflowOperations
 from auremgrid.services.auth import AuthService
 from auremgrid.services.job_ops import JobOperations
 from auremgrid.services.secrets import EnvironmentSecretStore, SecretBindingService
-from auremgrid.services.integration_security import OAuthConnectorService
+from auremgrid.services.integration_security import OAuthConnectorService, OutboundSendService
 from auremgrid.services.provider_imports import ProviderImportService
 from auremgrid.services.scheduler import DurableScheduler
 from auremgrid.services.integration_ops import IntegrationOperations
@@ -231,6 +231,7 @@ class CompanyOS:
         self.onboarding = OnboardingService(self, self.store.conn, new_id, self._require_person_access)
         self.report_delivery = ReportDeliveryService(self, new_id)
         self.asset_recovery = AssetRecoveryService(self.store.conn, new_id)
+        self.outbound = OutboundSendService(self.store.conn, new_id, self.jobs)
         self.operator_readiness = OperatorReadinessService(self)
         self.rebuild_projections(rebuild_graph=graph_projection is None)
         if graph_projection is not None:
@@ -720,7 +721,7 @@ class CompanyOS:
         review_id: str, annotation_type: str, body: str = "", source_locator: str | None = None,
         coordinates: dict[str, Any] | None = None, page_number: int | None = None,
         start_seconds: float | None = None, end_seconds: float | None = None,
-        idempotency_key: str | None = None) -> dict[str, Any]:
+        idempotency_key: str | None = None, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         review, deliverable = self._annotation_scope(organization_id, workspace_id, person_id, review_id)
         allowed = {"general_comment", "image_point", "image_region", "document_page", "document_region", "video_timestamp", "video_range"}
         if annotation_type not in allowed:
@@ -768,19 +769,69 @@ class CompanyOS:
             "source_locator": source_locator or deliverable.final_url or deliverable.preview_url,
             "coordinates_json": json.dumps(coords, separators=(",", ":")), "page_number": page_number,
             "start_seconds": start_seconds, "end_seconds": end_seconds, "created_at": now,
-            "idempotency_key": idempotency_key}
-        self.store.conn.execute("INSERT INTO review_annotations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(item.values()))
+            "idempotency_key": idempotency_key, "metadata_json": json.dumps(metadata or {}, sort_keys=True, separators=(",", ":"))}
+        self.store.conn.execute("INSERT INTO review_annotations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(item.values()))
         event = {"id": new_id("annotationevent"), "organization_id": organization_id, "workspace_id": workspace_id,
             "annotation_id": item["id"], "actor_person_id": person_id, "action": "created",
             "replacement_annotation_id": None, "idempotency_key": (f"{idempotency_key}:created" if idempotency_key else None),
             "payload_json": json.dumps({"annotation_type": annotation_type}), "created_at": now}
         self.store.conn.execute("INSERT INTO review_annotation_events VALUES (?,?,?,?,?,?,?,?,?,?)", tuple(event.values()))
         self.store.conn.commit()
-        return {**item, "coordinates": coords, "status": "open"}
+        return {**item, "coordinates": coords, "metadata": metadata or {}, "status": "open"}
+
+    def register_review_media_contract(
+        self, organization_id: str, workspace_id: str, person_id: str, review_id: str,
+        source_locator: str, media_kind: str, metadata: dict[str, Any] | None = None,
+        width_px: int | None = None, height_px: int | None = None,
+        duration_seconds: float | None = None, frame_rate: float | None = None,
+        page_count: int | None = None,
+    ) -> dict[str, Any]:
+        """Persist source metadata used by richer visual/video review UIs."""
+        review, deliverable = self._annotation_scope(organization_id, workspace_id, person_id, review_id)
+        if media_kind not in {"image", "document", "video"} or not source_locator.strip():
+            raise ValidationError("media_kind and source_locator are required")
+        attached = {x for x in (deliverable.preview_url, deliverable.final_url) if x}
+        if not attached:
+            source = self.store.conn.execute("SELECT url FROM deliverable_files WHERE deliverable_id=? ORDER BY version DESC,created_at DESC LIMIT 1", (deliverable.id,)).fetchone()
+            if source and source[0]: attached.add(source[0])
+        if source_locator not in attached:
+            raise ValidationError("source_locator must match an attached deliverable source")
+        for label, value in (("width_px", width_px), ("height_px", height_px), ("page_count", page_count)):
+            if value is not None and int(value) < 1:
+                raise ValidationError(f"{label} must be positive")
+        for label, value in (("duration_seconds", duration_seconds), ("frame_rate", frame_rate)):
+            if value is not None and float(value) < 0:
+                raise ValidationError(f"{label} must be non-negative")
+        safe = metadata or {}
+        payload = json.dumps(safe, sort_keys=True, separators=(",", ":"))
+        prior = self.store.conn.execute("SELECT * FROM review_media_contracts WHERE review_id=? AND source_locator=?", (review_id, source_locator)).fetchone()
+        if prior is not None:
+            item = dict(prior); item["metadata"] = json.loads(item.pop("metadata_json") or "{}"); return item
+        now = utcnow().isoformat()
+        item = {"id": new_id("review_media"), "organization_id": organization_id, "workspace_id": workspace_id,
+            "review_id": review_id, "deliverable_id": deliverable.id, "version": review.version,
+            "source_locator": source_locator, "media_kind": media_kind, "width_px": width_px, "height_px": height_px,
+            "duration_seconds": duration_seconds, "frame_rate": frame_rate, "page_count": page_count,
+            "metadata_json": payload, "created_at": now}
+        self.store.conn.execute("INSERT INTO review_media_contracts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(item.values())); self.store.conn.commit()
+        return {**item, "metadata": safe}
+
+    def list_review_media_contracts(self, organization_id: str, workspace_id: str, person_id: str, review_id: str) -> list[dict[str, Any]]:
+        self._require_person_access(organization_id, workspace_id, person_id)
+        rows = self.store.conn.execute("SELECT * FROM review_media_contracts WHERE organization_id=? AND workspace_id=? AND review_id=? ORDER BY created_at,id", (organization_id, workspace_id, review_id)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try: item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+            except (TypeError, ValueError): item["metadata"] = {}; item.pop("metadata_json", None)
+            result.append(item)
+        return result
 
     def _annotation_dict(self, row: Any) -> dict[str, Any]:
         item = dict(row)
         item["coordinates"] = json.loads(item.pop("coordinates_json") or "{}")
+        try: item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        except (TypeError, ValueError): item["metadata"] = {}; item.pop("metadata_json", None)
         # rowid preserves append order even when the UTC clock is second-level
         # precision and create/resolve happen in the same second.
         events = self.store.conn.execute("SELECT action,replacement_annotation_id,created_at FROM review_annotation_events WHERE annotation_id=? ORDER BY rowid DESC", (item["id"],)).fetchall()

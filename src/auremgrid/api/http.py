@@ -38,8 +38,9 @@ def _route_capability(path: str, method: str) -> str:
         if path == "/capacity": return "workspace_read"
         if path in {"/agents", "/agents/detail"} or path.startswith("/agents/runs"): return "agent_run"
         if path in {"/integrations"}: return "integration_configure"
+        if path == "/webhooks/provider/status": return "integration_sync"
         if path == "/connectors/catalog": return "workspace_read"
-        if path in {"/assets", "/assets/detail", "/asset-registry", "/asset-registry/detail"}: return "workspace_read"
+        if path in {"/assets", "/assets/detail", "/assets/backups", "/asset-registry", "/asset-registry/detail"}: return "workspace_read"
         if path == "/operator/health": return "workspace_read"
         if path in {"/operator/pause", "/operator/resume"}: return "job_manage"
         if path == "/onboarding/templates" or path.startswith("/onboarding/imports"): return "workspace_read"
@@ -92,7 +93,7 @@ def _route_capability(path: str, method: str) -> str:
     if path in {"/client-portal/intake/accept", "/client-portal/intake/decline"}: return "people_manage"
     if path.startswith("/reports/portal"): return "workspace_write"
     if path in {"/client-portal/intake", "/client-portal/reviews/comment", "/client-portal/reviews/decide"} and method == "POST": return "client_portal"
-    if path in {"/reviews/annotations", "/reviews/annotations/resolve", "/reviews/annotations/supersede"}: return "workspace_write"
+    if path in {"/reviews/annotations", "/reviews/annotations/resolve", "/reviews/annotations/supersede", "/reviews/media", "/assets/backups", "/assets/backups/status"}: return "workspace_write"
     if path in {"/organizations", "/workspaces"}: return "organization_manage"
     return "workspace_write"
 
@@ -287,6 +288,10 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/reviews/annotations":
                 organization_id, workspace_id, person_id = _need(params, "organization_id"), _need(params, "workspace_id"), _need(params, "person_id")
                 self._json(200, {"annotations": self.os.list_review_annotations(organization_id, workspace_id, person_id, params.get("review_id"), params.get("include_closed", "1") != "0")})
+                return
+            if parsed.path == "/reviews/media":
+                organization_id, workspace_id, person_id = _need(params, "organization_id"), _need(params, "workspace_id"), _need(params, "person_id")
+                self._json(200, {"media": self.os.list_review_media_contracts(organization_id, workspace_id, person_id, _need(params, "review_id"))})
                 return
             if parsed.path == "/clients/roster":
                 organization_id, workspace_id, person_id = _need(params, "organization_id"), _need(params, "workspace_id"), _need(params, "person_id")
@@ -554,6 +559,12 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200, self.os.asset_recovery.asset_detail(
                     scoped, scoped.organization_id, workspace_id, _need(params, "asset_id")
                 )); return
+            if parsed.path == "/assets/backups":
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, {"backups": self.os.asset_recovery.list_asset_backups(scoped, scoped.organization_id, workspace_id, _optional_str(params.get("asset_id")))})
+                return
             if parsed.path == "/notifications":
                 self._json(200,{"notifications":self.os.agency_ops.attention(_need(params,"organization_id"),_need(params,"person_id"),_int(params.get("limit",20),"limit"))}); return
             if parsed.path == "/agents":
@@ -640,6 +651,10 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 ).fetchall()
                 quarantines = self.os.store.conn.execute("SELECT provider,object_type,external_id,reason,evidence_digest,created_at FROM provider_import_quarantines WHERE organization_id=? ORDER BY created_at DESC LIMIT 50", (identity.organization_id,)).fetchall()
                 self._json(200, {"imports": [dict(row) for row in rows], "quarantines": [dict(row) for row in quarantines]}); return
+            if parsed.path == "/webhooks/provider/status":
+                assert identity is not None
+                from auremgrid.services.integration_security import WebhookIntakeService
+                self._json(200, WebhookIntakeService(self.os.store.conn, self.os.jobs.new_id).status(identity)); return
             if parsed.path == "/oauth/callback":
                 if "code_verifier" in params:
                     raise ValidationError("code_verifier is not accepted on OAuth callback")
@@ -1438,9 +1453,32 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                     _need(payload, "review_id"), _need(payload, "annotation_type"), str(payload.get("body", "")),
                     _optional_str(payload.get("source_locator")), payload.get("coordinates") or {},
                     _optional_int(payload.get("page_number")), _optional_float(payload.get("start_seconds")),
-                    _optional_float(payload.get("end_seconds")), _optional_str(payload.get("idempotency_key")),
+                    _optional_float(payload.get("end_seconds")), _optional_str(payload.get("idempotency_key")), payload.get("metadata") or {},
                 )
                 self._json(201, item); return
+            if parsed.path == "/reviews/media":
+                item = self.os.register_review_media_contract(
+                    _need(payload, "organization_id"), _need(payload, "workspace_id"), _need(payload, "person_id"),
+                    _need(payload, "review_id"), _need(payload, "source_locator"), _need(payload, "media_kind"),
+                    payload.get("metadata") or {}, _optional_int(payload.get("width_px")), _optional_int(payload.get("height_px")),
+                    _optional_float(payload.get("duration_seconds")), _optional_float(payload.get("frame_rate")), _optional_int(payload.get("page_count")),
+                )
+                self._json(201, item); return
+            if parsed.path == "/assets/backups":
+                assert identity is not None
+                workspace_id = _optional_str(payload.get("workspace_id"))
+                scoped = self.os.auth.scope_identity(identity, workspace_id) if workspace_id else identity
+                item = self.os.asset_recovery.register_asset_backup(
+                    scoped, _need(payload, "organization_id"), workspace_id, _need(payload, "asset_id"),
+                    _need(payload, "backup_manifest_id"), _optional_str(payload.get("target_locator")), payload.get("detail") or {},
+                )
+                self._json(201, item); return
+            if parsed.path == "/assets/backups/status":
+                assert identity is not None
+                item = self.os.asset_recovery.update_asset_backup_status(
+                    identity, _need(payload, "organization_id"), _need(payload, "manifest_id"), _need(payload, "status"), payload.get("detail") or {},
+                )
+                self._json(200, item); return
             if parsed.path == "/reviews/annotations/resolve":
                 item = self.os.resolve_review_annotation(
                     _need(payload, "organization_id"), _need(payload, "workspace_id"), _need(payload, "person_id"),
@@ -1596,22 +1634,43 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "webhook_receipts_disabled"})
             return
         installation_id = path.removeprefix("/webhooks/provider/").strip()
+        webhooks = WebhookIntakeService(self.os.store.conn, self.os.jobs.new_id)
         if not installation_id or "/" in installation_id or len(installation_id) > 128:
             get_metrics().inc("webhook.receipt.rejected")
+            webhooks.quarantine(installation_id, b"", self.headers.get("X-Webhook-Signature", ""), "invalid_path",
+                                self.headers.get("X-Provider-Event-ID"))
             self._json(404, {"error": "webhook_not_found"})
             return
         length = int(self.headers.get("Content-Length", "0"))
         if length < 0 or length > 1_048_576:
             get_metrics().inc("webhook.receipt.rejected")
+            webhooks.quarantine(
+                installation_id, b"", self.headers.get("X-Webhook-Signature", ""),
+                "payload_too_large", self.headers.get("X-Provider-Event-ID"),
+                {"content_length": length},
+            )
             self._json(413, {"error": "webhook_payload_too_large"})
             return
         body = self.rfile.read(length) if length else b""
         row = self.os.store.conn.execute(
-            "SELECT organization_id,workspace_id FROM provider_installations WHERE id=? AND status='active'",
+            "SELECT organization_id,workspace_id,status FROM provider_installations WHERE id=?",
             (installation_id,),
         ).fetchone()
         if row is None:
             get_metrics().inc("webhook.receipt.rejected")
+            webhooks.quarantine(
+                installation_id, body, self.headers.get("X-Webhook-Signature", ""),
+                "unknown_installation", self.headers.get("X-Provider-Event-ID"),
+            )
+            self._json(404, {"error": "webhook_not_found"})
+            return
+        if row["status"] != "active":
+            get_metrics().inc("webhook.receipt.rejected")
+            webhooks.quarantine(
+                installation_id, body, self.headers.get("X-Webhook-Signature", ""),
+                "inactive_installation", self.headers.get("X-Provider-Event-ID"),
+                {"status": row["status"]},
+            )
             self._json(404, {"error": "webhook_not_found"})
             return
         identity = AuthenticatedIdentity(
@@ -1619,7 +1678,7 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             "webhook", frozenset({"integration_sync"}), workspace_id=row["workspace_id"],
         )
         try:
-            result = WebhookIntakeService(self.os.store.conn, self.os.jobs.new_id).receive(
+            result = webhooks.receive(
                 identity,
                 installation_id,
                 body,

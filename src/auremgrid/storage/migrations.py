@@ -3841,6 +3841,140 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        57,
+        "phase14_outbound_asset_review_contracts",
+        """
+        CREATE TABLE IF NOT EXISTS outbound_send_attempts (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            intent_id TEXT NOT NULL,
+            outbox_event_id TEXT NOT NULL,
+            attempt INTEGER NOT NULL CHECK(attempt > 0),
+            status TEXT NOT NULL CHECK(status IN ('claimed','sent','failed','blocked')),
+            lease_token_digest TEXT,
+            error_code TEXT,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(intent_id) REFERENCES outbound_send_intents(id),
+            FOREIGN KEY(outbox_event_id) REFERENCES outbox_events(id),
+            UNIQUE(intent_id, attempt, status)
+        );
+        CREATE INDEX IF NOT EXISTS idx_outbound_send_attempts_scope
+            ON outbound_send_attempts(organization_id, workspace_id, created_at DESC);
+        CREATE TRIGGER IF NOT EXISTS outbound_send_attempts_no_update BEFORE UPDATE ON outbound_send_attempts BEGIN
+            SELECT RAISE(ABORT, 'outbound send attempts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS outbound_send_attempts_no_delete BEFORE DELETE ON outbound_send_attempts BEGIN
+            SELECT RAISE(ABORT, 'outbound send attempts are append-only');
+        END;
+
+        CREATE TABLE IF NOT EXISTS asset_backup_manifests (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            asset_id TEXT NOT NULL,
+            backup_manifest_id TEXT NOT NULL,
+            asset_sha256 TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+            status TEXT NOT NULL CHECK(status IN ('recorded','verified','missing','restored')),
+            target_locator TEXT,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            verified_at TEXT,
+            restored_at TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(asset_id) REFERENCES asset_registry(id),
+            FOREIGN KEY(backup_manifest_id) REFERENCES backup_manifests(id),
+            UNIQUE(asset_id, backup_manifest_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_asset_backup_manifests_scope
+            ON asset_backup_manifests(organization_id, workspace_id, status, created_at DESC);
+        CREATE TRIGGER IF NOT EXISTS asset_backup_manifests_no_update BEFORE UPDATE ON asset_backup_manifests BEGIN
+            SELECT RAISE(ABORT, 'asset backup manifests are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS asset_backup_manifests_no_delete BEFORE DELETE ON asset_backup_manifests BEGIN
+            SELECT RAISE(ABORT, 'asset backup manifests are append-only');
+        END;
+
+        CREATE TABLE IF NOT EXISTS review_media_contracts (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            review_id TEXT NOT NULL,
+            deliverable_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            source_locator TEXT NOT NULL,
+            media_kind TEXT NOT NULL CHECK(media_kind IN ('image','document','video')),
+            width_px INTEGER,
+            height_px INTEGER,
+            duration_seconds REAL,
+            frame_rate REAL,
+            page_count INTEGER,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(review_id) REFERENCES reviews(id),
+            FOREIGN KEY(deliverable_id) REFERENCES deliverables(id),
+            UNIQUE(review_id, source_locator)
+        );
+        CREATE INDEX IF NOT EXISTS idx_review_media_contract_scope
+            ON review_media_contracts(organization_id, workspace_id, review_id, created_at DESC);
+        CREATE TRIGGER IF NOT EXISTS review_media_contracts_no_update BEFORE UPDATE ON review_media_contracts BEGIN
+            SELECT RAISE(ABORT, 'review media contracts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS review_media_contracts_no_delete BEFORE DELETE ON review_media_contracts BEGIN
+            SELECT RAISE(ABORT, 'review media contracts are append-only');
+        END;
+        ALTER TABLE review_annotations ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
+        """,
+    ),
+    Migration(
+        58,
+        "phase14_webhook_quarantine_contracts",
+        """
+        CREATE TABLE IF NOT EXISTS webhook_quarantines (
+            id TEXT PRIMARY KEY,
+            installation_id TEXT,
+            organization_id TEXT,
+            workspace_id TEXT,
+            provider TEXT,
+            event_digest TEXT NOT NULL,
+            signature_digest TEXT NOT NULL,
+            provider_event_id TEXT,
+            reason TEXT NOT NULL CHECK(reason IN (
+                'unknown_installation',
+                'inactive_installation',
+                'missing_secret',
+                'timestamp_invalid',
+                'timestamp_skew',
+                'signature_rejected',
+                'payload_too_large',
+                'invalid_path'
+            )),
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            received_at TEXT NOT NULL,
+            FOREIGN KEY(installation_id) REFERENCES provider_installations(id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_webhook_quarantines_scope
+            ON webhook_quarantines(organization_id, workspace_id, received_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_webhook_quarantines_installation
+            ON webhook_quarantines(installation_id, received_at DESC);
+        CREATE TRIGGER IF NOT EXISTS webhook_quarantines_no_update BEFORE UPDATE ON webhook_quarantines BEGIN
+            SELECT RAISE(ABORT, 'webhook quarantines are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS webhook_quarantines_no_delete BEFORE DELETE ON webhook_quarantines BEGIN
+            SELECT RAISE(ABORT, 'webhook quarantines are append-only');
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

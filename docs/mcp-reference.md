@@ -25,6 +25,7 @@ lookup. It exposes:
 - workflows.handoffs.acknowledge
 - integrations.list, integrations.configure, integrations.credentials.bind
 - integrations.verify, integrations.sync
+- provider.webhooks.status
 - intelligence.profiles.list, intelligence.profiles.get
 - intelligence.runbooks.list, intelligence.runbooks.get
 - intelligence.orchestrator.run, intelligence.orchestrator.result
@@ -71,6 +72,11 @@ health, and `live_enabled`. Google mapping contracts use `folder:<id>` or
 `drive:<id>` for Drive and `label:<id>` for Gmail; configuration does not imply
 provider verification or historical ingestion. `integrations.sync` is enabled
 for Google only after account, scope, and mapping verification.
+
+`provider.webhooks.status` requires `integration_sync` and returns scoped
+digest-only accepted webhook receipts plus quarantine metadata. Quarantine
+details are redacted and never include raw payloads, provider secrets, or
+signature strings.
 
 Google credential references are external `env:` bindings whose value is a
 strict JSON bundle containing `client_id`, `client_secret`, and `refresh_token`.

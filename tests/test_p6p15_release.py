@@ -67,8 +67,8 @@ class P6P15ReleaseEvidenceTests(unittest.TestCase):
         checklist = ROOT.joinpath("docs", "production-checklist.md").read_text(encoding="utf-8")
         migrations = ROOT.joinpath("src", "auremgrid", "storage", "migrations.py").read_text(encoding="utf-8")
         for document in (self.doc, upgrade, checklist):
-            self.assertIn("56", document)
-            self.assertNotIn("schema 54", document)
+            self.assertIn("58", document)
+            self.assertNotIn("schema 56", document)
         self.assertIn("forward-migration rehearsal", checklist)
         self.assertIn("/health/detailed", checklist)
         self.assertIn('"durable_automation_actions_and_delegation_depth"', migrations)

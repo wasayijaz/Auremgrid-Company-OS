@@ -368,22 +368,66 @@ class WebhookIntakeService:
     def __init__(self, conn: Any, new_id: Callable[[str], str], secret_store: Any | None = None) -> None:
         self.conn, self.new_id, self.secrets = conn, new_id, secret_store or EnvironmentSecretStore()
 
+    def quarantine(
+        self,
+        installation_id: str,
+        body: bytes,
+        signature: str,
+        reason: str,
+        provider_event_id: str | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = self.conn.execute("SELECT * FROM provider_installations WHERE id=?", (installation_id,)).fetchone()
+        event_digest, signature_digest = _digest(body), _digest(signature or "")
+        item = {
+            "id": self.new_id("webhook_q"),
+            "installation_id": row["id"] if row is not None else None,
+            "organization_id": row["organization_id"] if row is not None else None,
+            "workspace_id": row["workspace_id"] if row is not None else None,
+            "provider": row["provider"] if row is not None else None,
+            "event_digest": event_digest,
+            "signature_digest": signature_digest,
+            "provider_event_id": provider_event_id,
+            "reason": reason,
+            "detail_json": json.dumps(redact(detail or {}), sort_keys=True, separators=(",", ":"), default=str),
+            "received_at": _iso(_now()),
+        }
+        self.conn.execute(
+            """INSERT INTO webhook_quarantines(
+                id,installation_id,organization_id,workspace_id,provider,event_digest,
+                signature_digest,provider_event_id,reason,detail_json,received_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            tuple(item.values()),
+        )
+        self.conn.commit()
+        return item
+
     def receive(self, identity: AuthenticatedIdentity, installation_id: str, body: bytes, signature: str, provider_event_id: str | None = None, enqueue: Callable[[dict[str, Any]], Any] | None = None, timestamp: int | str | None = None, max_skew_seconds: int = 300) -> dict[str, Any]:
         row = self.conn.execute("SELECT * FROM provider_installations WHERE id=?", (installation_id,)).fetchone()
-        if row is None or row["status"] != "active": raise NotFoundError("provider installation not found")
+        if row is None:
+            self.quarantine(installation_id, body, signature, "unknown_installation", provider_event_id)
+            raise NotFoundError("provider installation not found")
+        if row["status"] != "active":
+            self.quarantine(installation_id, body, signature, "inactive_installation", provider_event_id, {"status": row["status"]})
+            raise NotFoundError("provider installation not found")
         _scope(identity, row["organization_id"], row["workspace_id"], "integration_sync")
-        if not row["webhook_secret_reference"]: raise ValidationError("webhook secret is not configured")
+        if not row["webhook_secret_reference"]:
+            self.quarantine(installation_id, body, signature, "missing_secret", provider_event_id)
+            raise ValidationError("webhook secret is not configured")
         secret = self.secrets.resolve(row["webhook_secret_reference"])
         if timestamp is not None:
             try:
                 if abs(int(_now().timestamp()) - int(timestamp)) > max_skew_seconds:
+                    self.quarantine(installation_id, body, signature, "timestamp_skew", provider_event_id)
                     raise AuthorizationError("webhook replay window exceeded")
             except (TypeError, ValueError) as exc:
+                self.quarantine(installation_id, body, signature, "timestamp_invalid", provider_event_id)
                 raise AuthorizationError("webhook timestamp is invalid") from exc
         expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
         event_digest, signature_digest = _digest(body), _digest(signature)
         if not hmac.compare_digest(expected, signature):
-            self.conn.execute("INSERT INTO webhook_events VALUES (?,?,?,?,?,?,?,?)", (self.new_id("webhook"), installation_id, row["organization_id"], event_digest, signature_digest, provider_event_id, _iso(_now()), "rejected")); self.conn.commit(); raise AuthorizationError("webhook signature rejected")
+            self.quarantine(installation_id, body, signature, "signature_rejected", provider_event_id)
+            raise AuthorizationError("webhook signature rejected")
         try:
             self.conn.execute("INSERT INTO webhook_events VALUES (?,?,?,?,?,?,?,?)", (self.new_id("webhook"), installation_id, row["organization_id"], event_digest, signature_digest, provider_event_id, _iso(_now()), "accepted"))
         except sqlite3.IntegrityError:
@@ -391,6 +435,40 @@ class WebhookIntakeService:
         self.conn.commit()
         if enqueue is not None: enqueue({"installation_id": installation_id, "event_digest": event_digest, "provider_event_id": provider_event_id})
         return {"duplicate": False, "event_digest": event_digest}
+
+    def status(self, identity: AuthenticatedIdentity, limit: int = 50) -> dict[str, Any]:
+        identity.require("integration_sync")
+        limit = max(1, min(int(limit), 200))
+        params: tuple[Any, ...] = (identity.organization_id,)
+        workspace_clause = ""
+        if identity.workspace_id is not None:
+            workspace_clause = " AND i.workspace_id IS ?"
+            params = (identity.organization_id, identity.workspace_id)
+        events = self.conn.execute(
+            f"""SELECT e.installation_id,i.workspace_id,i.provider,i.account_id,e.event_digest,
+                       e.provider_event_id,e.received_at,e.status
+                FROM webhook_events e
+                JOIN provider_installations i ON i.id=e.installation_id
+                WHERE e.organization_id=?{workspace_clause}
+                ORDER BY e.received_at DESC LIMIT ?""",
+            (*params, limit),
+        ).fetchall()
+        quarantines = self.conn.execute(
+            f"""SELECT installation_id,workspace_id,provider,event_digest,provider_event_id,
+                       signature_digest,reason,detail_json,received_at
+                FROM webhook_quarantines
+                WHERE organization_id=?{workspace_clause.replace('i.', '')}
+                ORDER BY received_at DESC LIMIT ?""",
+            (*params, limit),
+        ).fetchall()
+        return {
+            "events": [dict(row) for row in events],
+            "quarantines": [
+                {**{key: value for key, value in dict(row).items() if key not in {"detail_json", "signature_digest"}},
+                 "detail": json.loads(row["detail_json"] or "{}")}
+                for row in quarantines
+            ],
+        }
 
 
 class OutboundSendService:
@@ -433,15 +511,21 @@ class OutboundSendService:
             raise NotFoundError("outbound intent not found")
         if row["status"] == "sent":
             return dict(row)
+        if row["status"] == "blocked":
+            raise AuthorizationError("outbound intent is blocked by its approval or recovery fence")
         install = self.conn.execute("SELECT status,organization_id,workspace_id FROM provider_installations WHERE id=?", (row["installation_id"],)).fetchone()
         approval = self.conn.execute("SELECT status,organization_id,workspace_id,action_type FROM approval_requests WHERE id=?", (row["approval_request_id"],)).fetchone()
         if (install is None or install["status"] != "active" or approval is None
                 or approval["status"] != "approved" or approval["action_type"] != "external_send"
                 or approval["organization_id"] != row["organization_id"]
                 or approval["workspace_id"] != row["workspace_id"]):
+            with self.conn:
+                self.conn.execute("UPDATE outbound_send_intents SET status='blocked',last_error=?,updated_at=? WHERE id=? AND status!='sent'", ("approval_or_installation_fence", _iso(_now()), intent_id))
             raise AuthorizationError("outbound approval or installation is no longer valid")
         controls = {r["key"]: r["value"] for r in self.conn.execute("SELECT key,value FROM system_state WHERE key IN ('recovery_mode','outbound_dispatch')")}
         if controls.get("recovery_mode") == "1" or controls.get("outbound_dispatch") == "disabled":
+            with self.conn:
+                self.conn.execute("UPDATE outbound_send_intents SET status='blocked',last_error=?,updated_at=? WHERE id=? AND status!='sent'", ("recovery_or_dispatch_fence", _iso(_now()), intent_id))
             raise ValidationError("outbound dispatch is blocked in recovery mode")
         payload = json.loads(row["payload"])
         worker = "outbound-" + secrets.token_urlsafe(12)
@@ -460,6 +544,11 @@ class OutboundSendService:
             )
             if claimed.rowcount != 1:
                 raise ValidationError("outbound intent is already leased")
+            self.conn.execute(
+                "INSERT INTO outbound_send_attempts(id,organization_id,workspace_id,intent_id,outbox_event_id,attempt,status,lease_token_digest,error_code,detail_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (self.new_id("send_attempt"), row["organization_id"], row["workspace_id"], intent_id,
+                 event["id"], int(row["attempts"]) + 1, "claimed", _digest(lease_token), None, "{}", _iso(now)),
+            )
         try:
             transport(payload)
         except Exception as exc:
@@ -469,6 +558,11 @@ class OutboundSendService:
             with self.conn:
                 self.conn.execute("UPDATE outbound_send_intents SET status=?,attempts=?,last_error=?,updated_at=? WHERE id=?", (status, attempts, exc.__class__.__name__, now, intent_id))
                 self.conn.execute("UPDATE outbox_events SET status=?,attempts=?,last_error=?,lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=?,version=version+1 WHERE aggregate_id=? AND aggregate_type='outbound_send' AND lease_owner=? AND lease_token=?", ("failed" if status == "failed" else "pending", attempts, exc.__class__.__name__, now, intent_id, worker, lease_token))
+                self.conn.execute(
+                    "INSERT INTO outbound_send_attempts(id,organization_id,workspace_id,intent_id,outbox_event_id,attempt,status,lease_token_digest,error_code,detail_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (self.new_id("send_attempt"), row["organization_id"], row["workspace_id"], intent_id,
+                     event["id"], attempts, "failed", _digest(lease_token), exc.__class__.__name__, "{}", now),
+                )
             return dict(self.conn.execute("SELECT * FROM outbound_send_intents WHERE id=?", (intent_id,)).fetchone())
         now = _iso(_now())
         with self.conn:
@@ -476,4 +570,25 @@ class OutboundSendService:
             if updated.rowcount != 1:
                 raise ValidationError("outbound lease fencing rejected completion")
             self.conn.execute("UPDATE outbound_send_intents SET status='sent',attempts=attempts+1,last_error=NULL,updated_at=? WHERE id=?", (now, intent_id))
+            self.conn.execute(
+                "INSERT INTO outbound_send_attempts(id,organization_id,workspace_id,intent_id,outbox_event_id,attempt,status,lease_token_digest,error_code,detail_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (self.new_id("send_attempt"), row["organization_id"], row["workspace_id"], intent_id,
+                 event["id"], int(row["attempts"]) + 1, "sent", _digest(lease_token), None, "{}", now),
+            )
         return dict(self.conn.execute("SELECT * FROM outbound_send_intents WHERE id=?", (intent_id,)).fetchone())
+
+    def list_attempts(self, organization_id: str, intent_id: str) -> list[dict[str, Any]]:
+        """Return redacted, append-only local attempt metadata for an intent."""
+        rows = self.conn.execute(
+            "SELECT id,organization_id,workspace_id,intent_id,outbox_event_id,attempt,status,error_code,detail_json,created_at FROM outbound_send_attempts WHERE organization_id=? AND intent_id=? ORDER BY rowid",
+            (organization_id, intent_id),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["detail"] = json.loads(item.pop("detail_json") or "{}")
+            except (TypeError, ValueError):
+                item["detail"] = {}; item.pop("detail_json", None)
+            result.append(item)
+        return result

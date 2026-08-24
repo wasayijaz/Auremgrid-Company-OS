@@ -74,6 +74,7 @@ class McpToolRouter:
             {"name": "integrations.credentials.bind", "description": "Bind an external secret reference to an integration."},
             {"name": "integrations.verify", "description": "Verify a bound credential with its provider."},
             {"name": "integrations.sync", "description": "Enqueue durable synchronization for a verified integration."},
+            {"name": "provider.webhooks.status", "description": "Read redacted webhook receipt and quarantine metadata."},
             {"name": "intelligence.profiles.list", "description": "List ACL-scoped immutable expert profiles."},
             {"name": "intelligence.profiles.get", "description": "Get one ACL-scoped immutable expert profile."},
             {"name": "intelligence.runbooks.list", "description": "List ACL-scoped immutable intelligence runbooks."},
@@ -118,6 +119,7 @@ class McpToolRouter:
                 "workflows.stages.complete","workflows.evidence.add","workflows.approvals.request",
                 "workflows.approvals.decide","workflows.handoffs.acknowledge","integrations.list",
                 "integrations.configure","integrations.credentials.bind","integrations.verify","integrations.sync",
+                "provider.webhooks.status",
                 "intelligence.profiles.list","intelligence.profiles.get","intelligence.runbooks.list",
                 "intelligence.runbooks.get","intelligence.orchestrator.run","intelligence.orchestrator.result",
                 "intelligence.learning.get","intelligence.recommendations.quality","intelligence.hypotheses.record","intelligence.recommendations.record",
@@ -487,6 +489,11 @@ class McpToolRouter:
             return {"jobs":self.os.integrations.enqueue_sync(self.identity,integration_id,
                 int(arguments.get("priority",0)),int(arguments.get("max_attempts",5)),
                 _optional_str(arguments.get("idempotency_key")))}
+        if name == "provider.webhooks.status":
+            from auremgrid.services.integration_security import WebhookIntakeService
+            return WebhookIntakeService(self.os.store.conn, self.os.jobs.new_id).status(
+                self.identity, int(arguments.get("limit", 50))
+            )
         if name == "intelligence.profiles.list":
             workspace = _required(arguments, "workspace_id")
             return {"profiles": list(self.os.intelligence_contracts.list_profiles(
@@ -754,7 +761,7 @@ def _mcp_capability(name: str) -> str:
     if name in {"clients.roster.create", "meetings.responsibilities.set"}: return "people_manage"
     if name in {"integrations.list","integrations.configure"}: return "integration_configure"
     if name == "integrations.credentials.bind": return "secret_bind"
-    if name in {"integrations.verify","integrations.sync"}: return "integration_sync"
+    if name in {"integrations.verify","integrations.sync","provider.webhooks.status"}: return "integration_sync"
     if name.startswith("workflows.approvals") or name.startswith("workflows.handoffs") or name.startswith("workflows.stages"):
         return "workflow_gate"
     if name == "workflows.runs.create": return "workflow_run"

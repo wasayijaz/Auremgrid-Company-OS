@@ -29,7 +29,11 @@ The packaged HTTP receipt boundary is `POST /webhooks/provider/<installation>`
 and is disabled unless `AUREMGRID_WEBHOOK_RECEIPTS_ENABLED=1` is explicitly
 configured. It accepts a bounded body, validates the installation secret,
 timestamp window, and event dedupe through `WebhookIntakeService`, and returns
-only status plus a digest. Rejected receipts are quarantined as rejected event
-metadata; accepted receipts are durable intake records. No raw body, secret,
+only status plus a digest. Rejected receipts write append-only
+`webhook_quarantines` rows with installation scope when known, event/signature
+digests, provider event ID, fixed reason code, and redacted details. Accepted
+receipts remain durable intake records in `webhook_events`. No raw body, secret,
 or provider write is emitted, and the internal metrics use fixed low-cardinality
-names (`webhook.receipt.*`).
+names (`webhook.receipt.*`). Authenticated operators can read scoped digest-only
+receipt/quarantine status through `GET /webhooks/provider/status` or MCP
+`provider.webhooks.status`.

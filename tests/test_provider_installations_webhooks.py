@@ -9,7 +9,8 @@ import time
 import unittest
 from http.client import HTTPConnection
 
-from auremgrid.domain.errors import AuthorizationError
+from auremgrid.api.mcp import McpToolRouter
+from auremgrid.domain.errors import AuthorizationError, NotFoundError
 from auremgrid.domain.security import AuthenticatedIdentity
 from auremgrid.services.brain import CompanyOS, new_id
 from auremgrid.services.integration_security import ProviderInstallationService, WebhookIntakeService
@@ -45,6 +46,41 @@ class ProviderInstallationWebhookTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError): self.webhooks.receive(self.identity, b["id"], body, signature)
         with self.assertRaises(AuthorizationError): self.webhooks.receive(self.identity, a["id"], body, signature, timestamp=int(time.time()) - 1000)
         self.assertNotIn(body.decode(), str(self.os.store.conn.execute("SELECT * FROM webhook_events").fetchall()))
+        quarantines = self.webhooks.status(self.identity)["quarantines"]
+        self.assertEqual({item["reason"] for item in quarantines}, {"timestamp_skew", "signature_rejected"})
+        self.assertNotIn(body.decode(), str(quarantines))
+        self.assertNotIn("secret-a", str(quarantines))
+
+    def test_unknown_installation_is_quarantined_without_payload_or_secret(self) -> None:
+        body = b'{"secret":"do-not-store"}'
+        with self.assertRaises(NotFoundError):
+            self.webhooks.receive(self.identity, "missing-install", body, "sha256=bad", provider_event_id="evt-missing")
+        row = self.os.store.conn.execute("SELECT * FROM webhook_quarantines").fetchone()
+        self.assertEqual(row["reason"], "unknown_installation")
+        self.assertEqual(row["provider_event_id"], "evt-missing")
+        self.assertIsNone(row["organization_id"])
+        self.assertNotIn("do-not-store", str(dict(row)))
+
+    def test_mcp_webhook_status_is_scoped_and_redacted(self) -> None:
+        install = self.installs.create(
+            self.identity, self.org.id, None, "slack", "team-status", "https://app.test/cb",
+            webhook_secret_reference="env:HOOK_A",
+        )
+        self.os.store.conn.execute("UPDATE provider_installations SET status='active' WHERE id=?", (install["id"],))
+        self.os.store.conn.commit()
+        body = b'{"event":"ok"}'
+        self.webhooks.receive(
+            self.identity, install["id"], body,
+            "sha256=" + hmac.new(b"secret-a", body, hashlib.sha256).hexdigest(),
+            provider_event_id="evt-status", timestamp=int(time.time()),
+        )
+        with self.assertRaises(AuthorizationError):
+            self.webhooks.receive(self.identity, install["id"], body, "sha256=bad", provider_event_id="evt-bad")
+        status = McpToolRouter(self.os, self.identity).call("provider.webhooks.status", {"organization_id": self.org.id})
+        self.assertEqual(status["events"][0]["provider_event_id"], "evt-status")
+        self.assertEqual(status["quarantines"][0]["reason"], "signature_rejected")
+        self.assertNotIn("signature_digest", json.dumps(status))
+        self.assertNotIn(body.decode(), json.dumps(status))
 
 
 class ProviderWebhookHttpBoundaryTests(unittest.TestCase):
@@ -72,6 +108,12 @@ class ProviderWebhookHttpBoundaryTests(unittest.TestCase):
         connection = HTTPConnection(self.host, self.port, timeout=5); connection.request("POST", f"/webhooks/provider/{self.install['id']}", body=body, headers=headers)
         response = connection.getresponse(); result = json.loads(response.read()); connection.close(); return response.status, result
 
+    def request_installation(self, installation_id: str, body: bytes, signature: str = "", timestamp: str | None = None, event_id: str = "evt-http") -> tuple[int, dict]:
+        headers = {"Content-Type": "application/octet-stream", "X-Webhook-Signature": signature, "X-Provider-Event-ID": event_id}
+        if timestamp is not None: headers["X-Webhook-Timestamp"] = timestamp
+        connection = HTTPConnection(self.host, self.port, timeout=5); connection.request("POST", f"/webhooks/provider/{installation_id}", body=body, headers=headers)
+        response = connection.getresponse(); result = json.loads(response.read()); connection.close(); return response.status, result
+
     def test_receipt_is_disabled_by_default_and_dedupes_when_enabled(self) -> None:
         body = b'{"event":"ok"}'; signature = "sha256=" + hmac.new(b"secret-http", body, hashlib.sha256).hexdigest(); now = str(int(time.time()))
         status, disabled = self.request(body, signature, now); self.assertEqual(status, 404); self.assertEqual(disabled["error"], "webhook_receipts_disabled")
@@ -84,6 +126,20 @@ class ProviderWebhookHttpBoundaryTests(unittest.TestCase):
         os.environ["AUREMGRID_WEBHOOK_RECEIPTS_ENABLED"] = "1"; body = b'{"secret":"do-not-echo"}'
         status, result = self.request(body, "sha256=bad", str(int(time.time())))
         self.assertEqual(status, 401); self.assertNotIn("do-not-echo", json.dumps(result))
+        row = self.os.store.conn.execute("SELECT reason,detail_json FROM webhook_quarantines").fetchone()
+        self.assertEqual(row["reason"], "signature_rejected")
+        self.assertNotIn("do-not-echo", str(dict(row)))
+
+    def test_unknown_http_installation_is_quarantined_without_echoing_payload(self) -> None:
+        os.environ["AUREMGRID_WEBHOOK_RECEIPTS_ENABLED"] = "1"; body = b'{"secret":"do-not-echo"}'
+        status, result = self.request_installation("missing-install", body, "sha256=bad", str(int(time.time())), "evt-missing-http")
+        self.assertEqual(status, 404)
+        self.assertNotIn("do-not-echo", json.dumps(result))
+        row = self.os.store.conn.execute("SELECT reason,provider_event_id,organization_id FROM webhook_quarantines").fetchone()
+        self.assertEqual(row["reason"], "unknown_installation")
+        self.assertEqual(row["provider_event_id"], "evt-missing-http")
+        self.assertIsNone(row["organization_id"])
+        self.assertNotIn("do-not-echo", str(dict(row)))
 
 
 if __name__ == "__main__": unittest.main()

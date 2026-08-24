@@ -2,7 +2,7 @@
 
 Opening a database runs ordered, append-only schema migrations recorded in
 `schema_migrations`. The current documented release-line schema version is
-**56** (`principal_aware_workflow_roster_and_meeting_routes`); `/health` or `/health/detailed` is the
+**58** (`webhook_quarantine_receipts`); `/health` or `/health/detailed` is the
 authoritative runtime evidence for the exact artifact being upgraded.
 
 Before upgrading:
@@ -12,7 +12,7 @@ Before upgrading:
 3. Run the full test suite against a copy.
 4. Start Auremgrid; migrations apply in order.
 5. Check `/health` (or `/health/detailed`) for the schema version; a healthy
-   schema-56 release-line installation reports `56`, and later artifacts must
+   schema-58 release-line installation reports `58`, and later artifacts must
    report their shipped schema version.
 6. Rebuild local projections with CompanyOS.rebuild_projections when required.
 
@@ -48,6 +48,8 @@ fingerprints, and bounded delegated task depth.
 Schema 55 adds durable Hypothesis subjects and lifecycle timestamps. Schema 56
 adds principal-aware workflow roster ownership and append-only proposed meeting
 output routes.
+Schema 57 adds outbound-send attempt fencing, asset backup manifest links, and
+review-media contracts. Schema 58 adds digest-only webhook quarantine receipts.
 
 Schema 11-era databases also need the authenticated identity bootstrap. After
 migration, use the local `bootstrap-auth` command for an existing organization

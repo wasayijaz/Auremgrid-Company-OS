@@ -107,6 +107,14 @@
     return parsed;
   }
 
+  function parsedMetadata(values){
+    const raw = values.get ? values.get('metadata') : values.metadata;
+    if(!raw) return {};
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if(parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Annotation metadata is invalid');
+    return parsed;
+  }
+
   function buildAnnotationPayload(auth, review, values, idempotencyKey){
     if(!review || !review.id || !review.workspace_id) throw new Error('Choose a review before annotating');
     const type = String(values.get ? values.get('annotation_type') : values.annotation_type);
@@ -120,6 +128,7 @@
       annotation_type: type,
       body,
       coordinates: parsedCoordinates(values),
+      metadata: parsedMetadata(values),
       idempotency_key: idempotencyKey
     };
     if(sourceLocator) payload.source_locator = sourceLocator;
@@ -156,6 +165,7 @@
       '<form class="annotation-entry" data-annotation-form>',
       '<input type="hidden" name="review_id">',
       '<input type="hidden" name="coordinates">',
+      '<input type="hidden" name="metadata">',
       '<label>Annotation type<select name="annotation_type" required>',
       '<option value="general_comment">General comment</option>',
       '<option value="image_point">Image point</option>',
@@ -543,7 +553,7 @@
   window.AuremgridAnnotationReview = {
     install,
     openReviewAnnotation,
-    _test: {buildAnnotationPayload, findReview, reviewRows, requiredFields, sourceKind}
+    _test: {buildAnnotationPayload, findReview, reviewRows, requiredFields, sourceKind, parsedMetadata}
   };
   window.openReviewAnnotation = openReviewAnnotation;
 

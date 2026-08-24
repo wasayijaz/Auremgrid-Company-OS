@@ -218,6 +218,115 @@ class AssetRecoveryService:
             self._audit(identity, organization_id, None, "verify", "backup_manifest", manifest_id, {"sha256": verification["sha256"], "size_bytes": verification["size_bytes"]})
         return dict(self.conn.execute("SELECT * FROM backup_manifests WHERE id=?", (manifest_id,)).fetchone())
 
+    def register_asset_backup(
+        self,
+        identity: AuthenticatedIdentity,
+        organization_id: str,
+        workspace_id: str | None,
+        asset_id: str,
+        backup_manifest_id: str,
+        target_locator: str | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Link an asset to an already verified database backup manifest.
+
+        This records a provider-neutral recovery contract only; it never reads
+        or uploads the binary asset.  A manifest is accepted only when its
+        organization, scope, checksum, and byte count match the asset row.
+        """
+        _scope(identity, organization_id, workspace_id, "backup_create")
+        asset = self.conn.execute(
+            "SELECT * FROM asset_registry WHERE organization_id=? AND workspace_id IS ? AND id=?",
+            (organization_id, workspace_id, asset_id),
+        ).fetchone()
+        if asset is None:
+            raise NotFoundError("asset not found")
+        manifest = self.conn.execute(
+            "SELECT * FROM backup_manifests WHERE organization_id=? AND id=? AND status='verified'",
+            (organization_id, backup_manifest_id),
+        ).fetchone()
+        if manifest is None:
+            raise ValidationError("a verified backup manifest is required")
+        # The SQLite manifest covers the database backup itself; external
+        # binary assets retain their own checksum/size in this link record.
+        safe_target = validate_locator(target_locator) if target_locator else None
+        safe_detail = redact(detail or {})
+        if safe_detail != (detail or {}):
+            raise ValidationError("asset backup detail contains credential material")
+        prior = self.conn.execute(
+            "SELECT * FROM asset_backup_manifests WHERE asset_id=? AND backup_manifest_id=?",
+            (asset_id, backup_manifest_id),
+        ).fetchone()
+        if prior is not None:
+            return self._asset_backup_dict(prior)
+        now = _now()
+        item = {
+            "id": self.new_id("asset_backup"), "organization_id": organization_id,
+            "workspace_id": workspace_id, "asset_id": asset_id,
+            "backup_manifest_id": backup_manifest_id, "asset_sha256": asset["sha256"],
+            "size_bytes": int(asset["size_bytes"]), "status": "verified",
+            "target_locator": safe_target,
+            "detail_json": json.dumps(safe_detail, sort_keys=True, separators=(",", ":")),
+            "created_at": now, "verified_at": now, "restored_at": None,
+        }
+        with self.conn:
+            self.conn.execute("INSERT INTO asset_backup_manifests VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(item.values()))
+            self._audit(identity, organization_id, workspace_id, "record_verified", "asset_backup_manifest", item["id"], {"asset_id": asset_id, "backup_manifest_id": backup_manifest_id})
+        return self._asset_backup_dict(item)
+
+    def list_asset_backups(
+        self,
+        identity: AuthenticatedIdentity,
+        organization_id: str,
+        workspace_id: str,
+        asset_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self._read_scope(identity, organization_id, workspace_id)
+        sql = "SELECT * FROM asset_backup_manifests WHERE organization_id=? AND workspace_id=?"
+        args: list[Any] = [organization_id, workspace_id]
+        if asset_id:
+            sql += " AND asset_id=?"; args.append(asset_id)
+        rows = self.conn.execute(sql + " ORDER BY created_at DESC,id", args).fetchall()
+        return [self._asset_backup_dict(row) for row in rows]
+
+    def update_asset_backup_status(
+        self,
+        identity: AuthenticatedIdentity,
+        organization_id: str,
+        manifest_id: str,
+        status: str,
+        detail: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Append a recovery audit event and return the immutable manifest.
+
+        The manifest row itself is append-only.  Status changes are represented
+        in the existing recovery audit stream so a provider worker can report
+        missing/restored state without mutating history.
+        """
+        _scope(identity, organization_id, None, "backup_restore")
+        if status not in {"missing", "restored"}:
+            raise ValidationError("asset backup status must be missing or restored")
+        row = self.conn.execute(
+            "SELECT * FROM asset_backup_manifests WHERE organization_id=? AND id=?",
+            (organization_id, manifest_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("asset backup manifest not found")
+        safe_detail = redact(detail or {})
+        if safe_detail != (detail or {}):
+            raise ValidationError("asset recovery detail contains credential material")
+        self._audit(identity, organization_id, row["workspace_id"], status, "asset_backup_manifest", manifest_id, safe_detail)
+        return {**self._asset_backup_dict(row), "reported_status": status, "reported_at": _now(), "detail": safe_detail}
+
+    @staticmethod
+    def _asset_backup_dict(row: Any) -> dict[str, Any]:
+        item = dict(row)
+        try:
+            item["detail"] = json.loads(item.pop("detail_json") or "{}")
+        except (TypeError, ValueError):
+            item["detail"] = {}; item.pop("detail_json", None)
+        return item
+
     def create_recovery_plan(self, identity: AuthenticatedIdentity, organization_id: str, workspace_id: str | None, backup_manifest_id: str, external_provider: str, target_locator: str, rpo_minutes: int, rto_minutes: int, notes: str = "") -> dict[str, Any]:
         _scope(identity, organization_id, workspace_id, "backup_restore")
         if not external_provider.strip() or rpo_minutes < 0 or rto_minutes < 0:
