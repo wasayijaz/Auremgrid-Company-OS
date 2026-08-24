@@ -32,3 +32,49 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Check git diff
         run: git diff --check
+  private-host-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare no-secret private-host environment
+        run: cp .env.example deploy/.env
+      - name: Validate private-host compose configuration
+        run: docker compose --env-file deploy/.env -f deploy/docker-compose.yml config --quiet
+      - name: Build private-host Docker image
+        run: docker build -t auremgrid-company-os:ci .
+      - name: Run container health smoke
+        run: |
+          docker run -d --name auremgrid-private-host-ci \
+            --read-only \
+            --tmpfs /tmp \
+            --mount type=volume,source=auremgrid-ci-data,target=/data \
+            --security-opt no-new-privileges \
+            --cap-drop ALL \
+            -p 127.0.0.1:8791:8791 \
+            auremgrid-company-os:ci
+          python - <<'PY'
+          import json
+          import time
+          from urllib.request import urlopen
+
+          deadline = time.time() + 30
+          last_error = None
+          while time.time() < deadline:
+              try:
+                  with urlopen("http://127.0.0.1:8791/health", timeout=2) as response:
+                      body = json.loads(response.read())
+                  if body.get("ok") is True:
+                      raise SystemExit(0)
+                  last_error = f"unexpected health payload: {body!r}"
+              except Exception as exc:
+                  last_error = str(exc)
+              time.sleep(1)
+          raise SystemExit(f"container health check failed: {last_error}")
+          PY
+      - name: Clean up container smoke
+        if: always()
+        run: |
+          docker logs --tail 100 auremgrid-private-host-ci || true
+          docker rm -f auremgrid-private-host-ci || true
+          docker volume rm auremgrid-ci-data || true

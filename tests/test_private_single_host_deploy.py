@@ -65,6 +65,20 @@ class PrivateSingleHostDeployTests(unittest.TestCase):
         self.assertTrue(result["checks"]["restore_recovery_mode"])
         self.assertTrue(result["checks"]["restore_outbound_disabled"])
 
+    def test_ci_builds_container_and_validates_private_host_compose(self) -> None:
+        workflow = ROOT.joinpath(".github", "workflows", "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("private-host-container:", workflow)
+        self.assertIn("cp .env.example deploy/.env", workflow)
+        self.assertIn("docker compose --env-file deploy/.env -f deploy/docker-compose.yml config --quiet", workflow)
+        self.assertIn("docker build -t auremgrid-company-os:ci .", workflow)
+        self.assertIn("http://127.0.0.1:8791/health", workflow)
+        self.assertIn("-p 127.0.0.1:8791:8791", workflow)
+        self.assertIn("--read-only", workflow)
+        self.assertIn("--cap-drop ALL", workflow)
+        self.assertNotIn("--pull", workflow)
+        for forbidden in ("AUREMGRID_ACCESS_TOKEN", "CLIENT_SECRET", "API_KEY"):
+            self.assertNotIn(forbidden, workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
