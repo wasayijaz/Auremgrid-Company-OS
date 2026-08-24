@@ -48,6 +48,17 @@ class OAuthConnectorLifecycleTests(unittest.TestCase):
         self.assertEqual(revoked["status"], "revoked")
         self.assertFalse(service.health(self.identity, installed["installation_id"])["healthy"])
 
+    def test_missing_granted_scope_does_not_activate_installation(self) -> None:
+        service = OAuthConnectorService(
+            self.os.store.conn, new_id, self.vault,
+            {"google": {"https://app.test/callback"}},
+            exchange_transport=lambda **_: {"access_token": "access-secret", "account_id": "acct-1", "scope": "openid"},
+        )
+        started = service.begin(self.identity, self.org.id, None, "google", "client", "https://app.test/callback", "openid drive.readonly")
+        with self.assertRaises(Exception):
+            service.complete(started["state"], "auth-code", started["code_verifier"], "https://app.test/callback", "google")
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM provider_installations").fetchone()[0], 0)
+
 
 class OAuthHttpCallbackSecurityTests(unittest.TestCase):
     def setUp(self) -> None:

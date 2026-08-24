@@ -164,6 +164,13 @@ class OAuthPKCEService:
         self.conn.execute("INSERT INTO oauth_states VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (self.new_id("oauth"), _digest(state), organization_id, workspace_id, installation_id, provider, client_id, redirect_uri, challenge, scope, _iso(expires), None, _iso(now)))
         self.conn.commit()
         self._verifiers[_digest(state)] = verifier
+        # Persist only an encrypted verifier envelope when a deployment key is
+        # available; the in-memory cache remains a local-dev fallback.
+        try:
+            vault = EncryptedSecretVault(self.conn, self.new_id)
+            vault.put(organization_id, workspace_id, f"oauth-pkce:{_digest(state)}", verifier)
+        except ValidationError:
+            pass
         return {"state": state, "code_verifier": verifier, "code_challenge": challenge, "expires_at": _iso(expires)}
 
     def _consume_with_verifier(
@@ -176,6 +183,13 @@ class OAuthPKCEService:
             raise ValidationError("OAuth state expired or redirect mismatch")
         state_digest = _digest(state)
         verifier = code_verifier or self._verifiers.pop(state_digest, None)
+        if verifier is None:
+            try:
+                verifier = EncryptedSecretVault(self.conn, self.new_id).resolve(
+                    row["organization_id"], row["workspace_id"], f"oauth-pkce:{state_digest}"
+                )
+            except (ValidationError, NotFoundError):
+                verifier = None
         if not verifier:
             raise ValidationError("OAuth verifier handoff is unavailable")
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -185,6 +199,12 @@ class OAuthPKCEService:
         if updated.rowcount != 1:
             raise ValidationError("OAuth state is already used")
         self._verifiers.pop(state_digest, None)
+        try:
+            EncryptedSecretVault(self.conn, self.new_id).revoke(
+                row["organization_id"], row["workspace_id"], f"oauth-pkce:{state_digest}"
+            )
+        except ValidationError:
+            pass
         self.conn.commit()
         return {
             "installation_id": row["installation_id"],
@@ -261,6 +281,9 @@ class OAuthConnectorService:
             scopes = tuple(item for item in scopes.split() if item)
         else:
             scopes = tuple(str(item) for item in (scopes or ()))
+        requested_scopes = {item for item in str(context["scope"]).split() if item}
+        if not requested_scopes.issubset(set(scopes)):
+            raise AuthorizationError("OAuth provider response is missing requested scopes")
         expires_at = result.get("expires_at")
         if not expires_at:
             expires_in = int(result.get("expires_in") or 3600)
@@ -337,7 +360,7 @@ class ProviderInstallationService:
             raise ValidationError("provider, account, and redirect URI are required")
         if webhook_secret_reference and ENV_REFERENCE.fullmatch(webhook_secret_reference) is None:
             raise ValidationError("webhook secret must be an env reference")
-        now = _iso(_now()); item = {"id": self.new_id("install"), "organization_id": organization_id, "workspace_id": workspace_id, "provider": provider, "account_id": account_id.strip(), "account_label": account_label, "client_id": client_id, "redirect_uri": redirect_uri, "webhook_secret_reference": webhook_secret_reference, "status": "active", "created_at": now, "updated_at": now}
+        now = _iso(_now()); item = {"id": self.new_id("install"), "organization_id": organization_id, "workspace_id": workspace_id, "provider": provider, "account_id": account_id.strip(), "account_label": account_label, "client_id": client_id, "redirect_uri": redirect_uri, "webhook_secret_reference": webhook_secret_reference, "status": "disabled", "created_at": now, "updated_at": now}
         self.conn.execute("INSERT INTO provider_installations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", tuple(item.values())); self.conn.commit(); return item
 
 

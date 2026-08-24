@@ -34,6 +34,8 @@ class ProviderInstallationWebhookTests(unittest.TestCase):
     def test_multiple_accounts_are_isolated_and_webhook_dedupes(self) -> None:
         a = self.installs.create(self.identity, self.org.id, None, "slack", "team-a", "https://app.test/cb", webhook_secret_reference="env:HOOK_A")
         b = self.installs.create(self.identity, self.org.id, None, "slack", "team-b", "https://app.test/cb", webhook_secret_reference="env:HOOK_B")
+        self.assertEqual((a["status"], b["status"]), ("disabled", "disabled"))
+        self.os.store.conn.execute("UPDATE provider_installations SET status='active' WHERE id IN (?,?)", (a["id"], b["id"])); self.os.store.conn.commit()
         self.assertNotEqual(a["id"], b["id"])
         body = b'{"event":"ok"}'; signature = "sha256=" + hmac.new(b"secret-a", body, hashlib.sha256).hexdigest(); queued = []
         first = self.webhooks.receive(self.identity, a["id"], body, signature, provider_event_id="evt", enqueue=queued.append, timestamp=int(time.time()))
@@ -54,6 +56,7 @@ class ProviderWebhookHttpBoundaryTests(unittest.TestCase):
         self.install = ProviderInstallationService(self.os.store.conn, new_id).create(
             self.install_identity, self.org.id, None, "slack", "team-http", "https://app.test/callback", webhook_secret_reference="env:HOOK_HTTP"
         )
+        self.os.store.conn.execute("UPDATE provider_installations SET status='active' WHERE id=?", (self.install["id"],)); self.os.store.conn.commit()
         os.environ["HOOK_HTTP"] = "secret-http"
         self.server = serve(self.os, "127.0.0.1", 0)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True); self.thread.start()

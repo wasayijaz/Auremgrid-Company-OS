@@ -13,6 +13,7 @@ class OutboundDispatchBoundaryTests(unittest.TestCase):
         self.os = CompanyOS(":memory:"); self.org = self.os.create_organization("Secure")
         self.identity = AuthenticatedIdentity("p", self.org.id, "person", "session", frozenset({"integration_configure", "external_send"}))
         self.install = ProviderInstallationService(self.os.store.conn, new_id).create(self.identity, self.org.id, None, "github", "acct", "https://app.test/cb")
+        self.os.store.conn.execute("UPDATE provider_installations SET status='active' WHERE id=?", (self.install["id"],)); self.os.store.conn.commit()
         now = "2026-08-22T00:00:00+00:00"
         self.approval = new_id("approval")
         self.os.store.conn.execute("INSERT INTO approval_requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (self.approval, self.org.id, None, "person", "p", "provider", "external_send", "{}", "test", "person", "human", "approved", now, None, "", now)); self.os.store.conn.commit()

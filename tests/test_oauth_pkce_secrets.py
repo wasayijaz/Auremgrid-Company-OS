@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import os
 from datetime import timedelta
 
 from auremgrid.domain.errors import ValidationError
@@ -37,6 +38,20 @@ class OAuthPkceSecretsTests(unittest.TestCase):
         with self.assertRaises(ValidationError): oauth.consume(expired["state"], expired["code_verifier"], "https://app.test/callback", "google")
         bad = oauth.begin(self.identity, self.org.id, None, "google", "client", "https://app.test/callback", "openid")
         with self.assertRaises(ValidationError): oauth.consume(bad["state"], "wrong", "https://app.test/callback", "google")
+
+    def test_verifier_survives_service_restart_without_plaintext_storage(self) -> None:
+        os.environ["AUREMGRID_DEPLOYMENT_KEY"] = "deployment-key-123456"
+        try:
+            first = OAuthPKCEService(self.os.store.conn, new_id, {"google": {"https://app.test/callback"}})
+            state = first.begin(self.identity, self.org.id, None, "google", "client", "https://app.test/callback", "openid")
+            second = OAuthPKCEService(self.os.store.conn, new_id, {"google": {"https://app.test/callback"}})
+            consumed = second.consume(state["state"], None, "https://app.test/callback", "google")
+            self.assertEqual(consumed["client_id"], "client")
+            rows = self.os.store.conn.execute("SELECT ciphertext FROM local_secret_vault").fetchall()
+            self.assertTrue(rows)
+            self.assertNotIn(state["code_verifier"], rows[0]["ciphertext"])
+        finally:
+            os.environ.pop("AUREMGRID_DEPLOYMENT_KEY", None)
 
 
 if __name__ == "__main__": unittest.main()
