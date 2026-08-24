@@ -635,8 +635,15 @@ class IntelligenceOrchestrator:
             if str(item).strip()
         }
         if not domains:
-            return dict(context)
+            result = dict(context)
+            tools = self._field(profile, "allowed_tools") or self._field(profile, "allowed_tool_refs") or ()
+            result["allowed_tools"] = [str(item) for item in tools][:MAX_ITEMS]
+            result["tools"] = list(result["allowed_tools"])
+            return result
         result = dict(context)
+        tools = self._field(profile, "allowed_tools") or self._field(profile, "allowed_tool_refs") or ()
+        result["allowed_tools"] = [str(item) for item in tools][:MAX_ITEMS]
+        result["tools"] = list(result["allowed_tools"])
         findings = []
         for item in context.get("findings", []) or []:
             if not isinstance(item, Mapping):
