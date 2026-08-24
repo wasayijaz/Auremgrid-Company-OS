@@ -31,9 +31,11 @@ operator can distinguish completed idempotent replay, active fenced execution,
 and failed same-key execution that needs a new approved task or idempotency key.
 
 The compose template binds the stdlib server only to loopback and puts TLS at
-the reverse proxy. Replace `AUREMGRID_DOMAIN` and provide a protected `.env`
-before deployment; do not expose port 8791 directly. The template is an
-operator-owned proxy/TLS pattern, not managed hosting. Operators remain
+the reverse proxy. Copy `.env.example` to `deploy/.env`, replace
+`AUREMGRID_DOMAIN`, and protect that file before deployment; `deploy/.env` is
+the path used by `docker compose --env-file deploy/.env -f
+deploy/docker-compose.yml ...`. Do not expose port 8791 directly. The template
+is an operator-owned proxy/TLS pattern, not managed hosting. Operators remain
 responsible for certificate issuance, firewall rules, per-person session
 provisioning, backup/restore rehearsal, and secret rotation.
 

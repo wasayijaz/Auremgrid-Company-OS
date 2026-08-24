@@ -45,6 +45,8 @@ class PrivateSingleHostDeployTests(unittest.TestCase):
         env_example = ROOT.joinpath(".env.example").read_text(encoding="utf-8")
         prepare = ROOT.joinpath("scripts", "prepare-deploy.ps1").read_text(encoding="utf-8")
         caddyfile = ROOT.joinpath("deploy", "Caddyfile").read_text(encoding="utf-8")
+        local_deployment = ROOT.joinpath("docs", "local-deployment.md").read_text(encoding="utf-8")
+        operator_runtime = ROOT.joinpath("docs", "operator-runtime.md").read_text(encoding="utf-8")
         self.assertIn("AUREMGRID_ORGANIZATION_ID=org_your_agency", env_example)
         self.assertIn("AUREMGRID_DOMAIN=localhost", env_example)
         self.assertIn("AUREMGRID_UPSTREAM=127.0.0.1:8791", env_example)
@@ -52,6 +54,10 @@ class PrivateSingleHostDeployTests(unittest.TestCase):
         self.assertIn("private_host_smoke.py", prepare)
         self.assertIn("{$AUREMGRID_DOMAIN:localhost}", caddyfile)
         self.assertIn("{$AUREMGRID_UPSTREAM:127.0.0.1:8791}", caddyfile)
+        self.assertIn("Copy `.env.example` to `deploy/.env`", local_deployment)
+        self.assertIn("env_file: .env", local_deployment)
+        self.assertIn("docker compose --env-file deploy/.env -f deploy/docker-compose.yml config --quiet", local_deployment)
+        self.assertIn("Copy `.env.example` to `deploy/.env`", operator_runtime)
         for forbidden in ("AUREMGRID_ACCESS_TOKEN=", "PASSWORD=", "TOKEN=", "API_KEY=", "CLIENT_SECRET="):
             self.assertNotIn(forbidden, env_example)
 

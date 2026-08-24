@@ -413,19 +413,32 @@ class ProactiveIntelligenceService:
             return "ready"
         return "degraded"
 
-    def _evidence_refs(self, payload: dict[str, Any]) -> dict[str, list[str]]:
-        refs: dict[str, set[str]] = {"sources": set(), "documents": set(), "facts": set(), "objects": set()}
+    def _evidence_refs(self, payload: dict[str, Any]) -> dict[str, list[Any]]:
+        refs: dict[str, list[Any]] = {"sources": [], "documents": [], "facts": [], "objects": []}
+
+        def add(bucket: str, value: Any) -> None:
+            if value in (None, ""):
+                return
+            marker = _json_dump(value) if isinstance(value, (dict, list)) else str(value)
+            if all((_json_dump(item) if isinstance(item, (dict, list)) else str(item)) != marker for item in refs[bucket]):
+                refs[bucket].append(value)
 
         def visit(value: Any) -> None:
             if isinstance(value, dict):
                 object_ref = value.get("object_ref")
                 if object_ref is not None:
-                    refs["objects"].add(str(object_ref))
+                    if isinstance(object_ref, dict):
+                        # Preserve the canonical reference shape.  Calling
+                        # str(dict) here produced Python-repr strings that
+                        # could not be consumed as evidence references.
+                        add("objects", {str(k): object_ref[k] for k in sorted(object_ref)})
+                    else:
+                        add("objects", {"id": str(object_ref)})
                 citation = value.get("citation")
                 if isinstance(citation, dict):
                     for key, target in (("source_id", "sources"), ("document_id", "documents"), ("fact_id", "facts")):
                         if citation.get(key):
-                            refs[target].add(str(citation[key]))
+                            add(target, str(citation[key]))
                 for child in value.values():
                     visit(child)
             elif isinstance(value, list):
@@ -434,7 +447,8 @@ class ProactiveIntelligenceService:
 
         visit(payload.get("sections", {}))
         visit(payload.get("findings", []))
-        return {key: sorted(values) for key, values in refs.items() if values}
+        visit(payload.get("proactive_detectors", []))
+        return {key: sorted(values, key=lambda item: _json_dump(item) if isinstance(item, (dict, list)) else str(item)) for key, values in refs.items() if values}
 
     def _projection_fingerprint(self, payload: dict[str, Any]) -> str:
         normalized = self._without_volatile_metadata(payload)

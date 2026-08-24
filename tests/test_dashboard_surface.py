@@ -119,6 +119,26 @@ class DashboardSurfaceTests(unittest.TestCase):
         self.assertEqual(fixture_payload.get("kind"), "fact")
         self.assertNotIn("one_of:uri,text,object_type", fixture_payload)
 
+    def test_feedback_retention_actions_are_operable_and_evidence_refs_are_safe(self) -> None:
+        for marker in (
+            "feedbackDescriptors407",
+            "pattern_id:item.id",
+            "/feedback/patterns/promote",
+            "/feedback/patterns/decide",
+            "retention-policy-dialog",
+            "/retention/policies",
+            "scope_id:values.scope==='workspace'?(values.scope_id||workspace)",
+            "canonicalEvidenceRef407",
+            "object_ref",
+            "data-executive-evidence",
+            "proactiveEvidencePill407",
+            "Evidence reference is not linkable in this dashboard.",
+            "'Feedback'",
+            "'Retention'",
+        ):
+            self.assertIn(marker, self.html)
+        self.assertNotIn("Action available after record selection", self.html[self.html.rfind("renderagencyModule=async function"):])
+
     def test_responsive_layout_and_read_only_controls(self) -> None:
         for width in ("max-width:1000px", "max-width:620px"):
             self.assertIn(width, self.html)

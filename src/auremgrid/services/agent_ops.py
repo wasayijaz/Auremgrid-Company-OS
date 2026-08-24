@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Callable, Sequence
 
@@ -890,70 +891,71 @@ class AgentOperations:
                 continue
             workspace_id = self._automation_workspace_id(descriptors)
             fingerprint = self._automation_change_fingerprint(automation, trigger_type, payload, descriptors, workspace_id)
-            existing = self.conn.execute(
-                """SELECT * FROM automation_runs
-                   WHERE automation_id=? AND change_fingerprint=?""",
-                (automation["id"], fingerprint),
-            ).fetchone()
+            existing = self._find_automation_run_by_fingerprint(automation["id"], fingerprint)
             if existing is not None:
-                results.append({
-                    "run_id": existing["id"],
-                    "status": existing["status"],
-                    "approval_request_id": existing["approval_request_id"],
-                    "job_id": existing["job_id"],
-                    "output": _loads(existing["output"], {}),
-                    "deduped": True,
-                })
+                results.append(self._automation_run_response(existing, True))
                 continue
             run_id = self.new_id("automationrun")
             now = _now().isoformat()
-            approval = self.approvals.request_approval(
-                organization_id,
-                "automation",
-                automation["id"],
-                "automation run",
-                "automation.execute",
-                {
-                    "trigger_type": trigger_type,
-                    "trigger_payload": payload,
-                    "actions": descriptors,
-                    "change_fingerprint": fingerprint,
-                },
-                "Training mode or gated action",
-                approver_person_id=automation["created_by_person_id"],
-                workspace_id=workspace_id,
-            )
-            approval_id = approval["id"]
-            self.conn.execute(
-                """INSERT INTO automation_runs(
-                    id,automation_id,trigger_type,trigger_payload,status,started_at,completed_at,
-                    approval_request_id,output,workspace_id,job_id,change_fingerprint,action_descriptor_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    run_id,
-                    automation["id"],
-                    trigger_type,
-                    _json(payload),
-                    "waiting_approval",
-                    now,
-                    None,
-                    approval_id,
-                    _json({}),
+            approval_payload = {
+                "trigger_type": trigger_type,
+                "trigger_payload": payload,
+                "actions": descriptors,
+                "change_fingerprint": fingerprint,
+            }
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                existing = self._find_automation_run_by_fingerprint(automation["id"], fingerprint)
+                if existing is not None:
+                    self.conn.commit()
+                    results.append(self._automation_run_response(existing, True))
+                    continue
+                approval = self._insert_automation_approval(
+                    organization_id,
+                    automation,
                     workspace_id,
-                    None,
-                    fingerprint,
-                    _json(descriptors),
-                ),
-            )
-            results.append({
-                "run_id": run_id,
-                "status": "waiting_approval",
-                "approval_request_id": approval_id,
-                "job_id": None,
-                "output": {},
-                "deduped": False,
-            })
-        self.conn.commit()
+                    approval_payload,
+                    now,
+                )
+                self.conn.execute(
+                    """INSERT INTO automation_runs(
+                        id,automation_id,trigger_type,trigger_payload,status,started_at,completed_at,
+                        approval_request_id,output,workspace_id,job_id,change_fingerprint,action_descriptor_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        run_id,
+                        automation["id"],
+                        trigger_type,
+                        _json(payload),
+                        "waiting_approval",
+                        now,
+                        None,
+                        approval["id"],
+                        _json({}),
+                        workspace_id,
+                        None,
+                        fingerprint,
+                        _json(descriptors),
+                    ),
+                )
+                self.conn.commit()
+                results.append({
+                    "run_id": run_id,
+                    "status": "waiting_approval",
+                    "approval_request_id": approval["id"],
+                    "job_id": None,
+                    "output": {},
+                    "deduped": False,
+                })
+            except sqlite3.IntegrityError:
+                self.conn.rollback()
+                existing = self._find_automation_run_by_fingerprint(automation["id"], fingerprint)
+                if existing is None:
+                    raise
+                results.append(self._automation_run_response(existing, True))
+            except Exception:
+                self.conn.rollback()
+                raise
         return results
 
     def activate_automation(self, organization_id: str, person_id: str, automation_id: str) -> dict[str, Any]:
@@ -1036,7 +1038,7 @@ class AgentOperations:
                WHERE a.organization_id=? AND ar.id=? AND ar.automation_id=?""",
             (organization_id, job_payload.get("run_id"), job_payload.get("automation_id")),
         ).fetchone()
-        if run is None or run["status"] not in {"queued", "running"}:
+        if run is None or run["status"] not in {"queued", "running", "completed"}:
             raise AuthorizationError("automation run scope is invalid")
         if run["workspace_id"] != identity.workspace_id:
             raise AuthorizationError("automation job workspace is invalid")
@@ -1051,7 +1053,10 @@ class AgentOperations:
             raise AuthorizationError("queued automation action does not match run descriptor")
         if run["change_fingerprint"] != job_payload.get("change_fingerprint"):
             raise AuthorizationError("queued automation fingerprint does not match run")
+        if run["status"] == "completed":
+            return {"run_id": run["id"], "status": "completed", "output": _loads(run["output"], [])}
         now = _now().isoformat()
+        self._reconcile_stale_automation_action_executions(run, now)
         self.conn.execute("UPDATE automation_runs SET status='running' WHERE id=?", (run["id"],))
         self.conn.commit()
         try:
@@ -1180,6 +1185,86 @@ class AgentOperations:
         )
         self.conn.commit()
         return item
+
+    def _find_automation_run_by_fingerprint(self, automation_id: str, fingerprint: str) -> Any:
+        return self.conn.execute(
+            """SELECT * FROM automation_runs
+               WHERE automation_id=? AND change_fingerprint=?""",
+            (automation_id, fingerprint),
+        ).fetchone()
+
+    @staticmethod
+    def _automation_run_response(row: Any, deduped: bool) -> dict[str, Any]:
+        return {
+            "run_id": row["id"],
+            "status": row["status"],
+            "approval_request_id": row["approval_request_id"],
+            "job_id": row["job_id"],
+            "output": _loads(row["output"], {}),
+            "deduped": deduped,
+        }
+
+    def _insert_automation_approval(
+        self,
+        organization_id: str,
+        automation: Any,
+        workspace_id: str | None,
+        payload: dict[str, Any],
+        now: str,
+    ) -> dict[str, Any]:
+        approver = self.company.org_membership(organization_id, automation["created_by_person_id"])
+        if approver is None:
+            raise AuthorizationError("automation approver must belong to organization")
+        if workspace_id is not None:
+            scope = self.company.workspace_scope(workspace_id)
+            if scope is None or scope["organization_id"] != organization_id:
+                raise NotFoundError("workspace not found")
+        item = {
+            "id": self.new_id("approval"),
+            "organization_id": organization_id,
+            "workspace_id": workspace_id,
+            "requested_by_type": "automation",
+            "requested_by_id": automation["id"],
+            "requested_for": "automation run",
+            "action_type": "automation.execute",
+            "payload": json.dumps(payload),
+            "reason": "Training mode or gated action",
+            "approver_person_id": automation["created_by_person_id"],
+            "policy": "human",
+            "status": "pending",
+            "approved_at": None,
+            "rejected_at": None,
+            "comments": "",
+            "created_at": now,
+        }
+        self.conn.execute("INSERT INTO approval_requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(item.values()))
+        return item
+
+    def _reconcile_stale_automation_action_executions(self, run: Any, now: str) -> None:
+        running = self.conn.execute(
+            """SELECT id FROM automation_action_executions
+               WHERE run_id=? AND status='running'
+               ORDER BY created_at ASC""",
+            (run["id"],),
+        ).fetchall()
+        if not running:
+            return
+        job = self.conn.execute("SELECT status,attempts,lease_expires_at FROM jobs WHERE id=?", (run["job_id"],)).fetchone()
+        if job is not None and job["attempts"] <= 1 and job["status"] in {"leased", "running"} and (job["lease_expires_at"] is None or job["lease_expires_at"] > now):
+            return
+        error = _json(
+            {
+                "type": "LeaseRecovered",
+                "message": "stale running automation action fenced after job lease recovery",
+            }
+        )
+        self.conn.execute(
+            """UPDATE automation_action_executions
+               SET status='failed',error_json=?,completed_at=?
+               WHERE run_id=? AND status='running'""",
+            (error, now, run["id"]),
+        )
+        self.conn.commit()
 
     def _finish_automation_action_execution(self, execution_id: str, status: str, result: dict[str, Any] | None, error: dict[str, Any] | None) -> None:
         self.conn.execute(

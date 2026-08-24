@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import unittest
 
@@ -281,6 +282,42 @@ def test_intelligence_surfaces_disagreement_learning_and_scenario_analysis(owner
     assert_no_browser_errors(page)
 
 
+def test_intelligence_evidence_refs_deep_link_to_safe_dashboard_surfaces(owner_page: Page, dashboard_app: DashboardFixture) -> None:
+    page = owner_page
+    work = page.request.get(
+        f"{dashboard_app.base_url}/dashboard/client?organization_id={dashboard_app.organization_id}"
+        f"&workspace_id={dashboard_app.workspaces[0]}&person_id={dashboard_app.owner_person_id}",
+        headers={"Authorization": f"Bearer {dashboard_app.owner_token}"},
+    ).json()["work"][0]
+    payload = {
+        "status": "ready",
+        "findings": [{
+            "type": "Finding",
+            "title": "Canonical work evidence",
+            "summary": "A repaired canonical ref should open inside the dashboard.",
+            "evidence": [{
+                "label": "Open work evidence",
+                "object_ref": {"type": "work_item", "id": work["id"], "workspace_id": dashboard_app.workspaces[0]},
+            }, {
+                "label": "Unsafe external evidence",
+                "object_ref": {"type": "external_url", "id": "https://example.invalid"},
+            }],
+        }],
+    }
+    page.route(
+        re.compile(r".*/dashboard/intelligence(\?.*)?$"),
+        lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps(payload)),
+    )
+    open_dashboard(page, dashboard_app)
+    wait_for_command_data(page)
+    page.locator(".nav button[data-name='Intelligence']").click()
+    expect(page.get_by_role("button", name="Unsafe external evidence")).to_be_disabled()
+    page.get_by_role("button", name="Open work evidence").click()
+    expect(page.locator("#work-side-inspector")).to_have_class(re.compile("open"))
+    expect(page.locator("#inspector-title")).to_contain_text(work["title"])
+    assert_no_browser_errors(page)
+
+
 def test_disconnected_finance_and_integrations(owner_page: Page, dashboard_app: DashboardFixture) -> None:
     page = owner_page
     open_dashboard(page, dashboard_app)
@@ -544,6 +581,42 @@ def test_content_cards_open_and_advance_backend_lifecycle(owner_page: Page, dash
     with page.expect_response(lambda response: response.url.endswith("/content/advance") and response.request.method == "POST"):
         advance.click()
     expect(page.locator("#toast")).to_contain_text("Content advanced to")
+    assert_no_browser_errors(page)
+
+
+def test_feedback_and_retention_modules_execute_safe_backend_actions(owner_page: Page, dashboard_app: DashboardFixture) -> None:
+    page = owner_page
+    open_dashboard(page, dashboard_app)
+    wait_for_command_data(page)
+
+    page.locator(".nav button[data-name='Feedback']").click()
+    action = page.locator("[data-action-descriptor]").first
+    action.wait_for(state="visible", timeout=10_000)
+    action.click()
+    dialog = page.locator("#dashboard-action-dialog")
+    expect(dialog).to_be_visible()
+    with page.expect_response(
+        lambda response: (
+            response.url.endswith("/feedback/patterns/promote")
+            or response.url.endswith("/feedback/patterns/decide")
+        )
+        and response.request.method == "POST"
+    ):
+        dialog.get_by_role("button", name="Confirm").click()
+    expect(page.locator("#toast")).to_contain_text("Action completed")
+
+    page.locator(".nav button[data-name='Retention']").click()
+    page.get_by_role("button", name="Create retention policy").click()
+    retention = page.locator("#retention-policy-dialog")
+    expect(retention).to_be_visible()
+    retention.locator("select[name=scope]").select_option("workspace")
+    retention.locator("input[name=data_category]").fill("browser_retention")
+    retention.locator("input[name=max_age_days]").fill("45")
+    retention.locator("select[name=action]").select_option("archive")
+    with page.expect_response(lambda response: response.url.endswith("/retention/policies") and response.request.method == "POST"):
+        retention.get_by_role("button", name="Create policy").click()
+    expect(page.locator("#toast")).to_contain_text("Retention policy created")
+    expect(page.locator("#system-modules")).to_contain_text("browser_retention")
     assert_no_browser_errors(page)
 
 

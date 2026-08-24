@@ -395,6 +395,45 @@ class ExpertResult:
     # the canonical contract name while emitting the compatibility alias.
     context_budget: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if self.status not in {"available", "ready", "degraded", "insufficient_evidence", "needs_review"}:
+            raise ValidationError(f"expert result has invalid status: {self.status}")
+        if not isinstance(self.scope, dict):
+            raise ValidationError("expert result scope must be an object")
+        try:
+            score = float(self.confidence)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("expert result confidence must be numeric") from exc
+        if not (0.0 <= score <= 1.0):
+            raise ValidationError("expert result confidence must be between 0 and 1")
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any]) -> "ExpertResult":
+        if not isinstance(raw, Mapping):
+            raise ValidationError("expert result must be an object")
+        analogues = raw.get("historical_analogues", raw.get("analogues", ()))
+        return cls(
+            status=str(raw.get("status", "available")),
+            scope=dict(raw.get("scope") or {}),
+            finding=str(raw.get("finding") or ""),
+            evidence_for=tuple(raw.get("evidence_for") or ()),
+            evidence_against=tuple(raw.get("evidence_against") or ()),
+            assumptions=tuple(str(item) for item in (raw.get("assumptions") or ())),
+            unknowns=tuple(str(item) for item in (raw.get("unknowns") or ())),
+            hypothesis=str(raw.get("hypothesis") or ""),
+            confidence=float(raw.get("confidence", 0.0)),
+            historical_analogues=tuple(analogues or ()),
+            risks=tuple(raw.get("risks") or ()),
+            options=tuple(raw.get("options") or ()),
+            recommendation=dict(raw.get("recommendation") or {}),
+            expected_impact=dict(raw.get("expected_impact") or {}),
+            needs_review=bool(raw.get("needs_review", True)),
+            profile=dict(raw["profile"]) if isinstance(raw.get("profile"), Mapping) else None,
+            runbooks=tuple(raw.get("runbooks") or ()),
+            allowed_actions=tuple(raw.get("allowed_actions") or ()),
+            context_budget=dict(raw.get("context_budget") or {}),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,

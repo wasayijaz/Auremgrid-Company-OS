@@ -782,7 +782,8 @@ class IntelligenceService:
         raw = what_if if isinstance(what_if, dict) else {}
         def number(key: str, default: float) -> float:
             try:
-                return round(float(raw.get(key, default)), 3)
+                result = float(raw.get(key, default))
+                return round(result, 3) if math.isfinite(result) else round(default, 3)
             except (TypeError, ValueError):
                 return round(default, 3)
         def first_number(keys: tuple[str, ...], default: float = 0.0) -> float:
@@ -831,6 +832,25 @@ class IntelligenceService:
         projected_finance = None
         if finance.get("status") == "connected" and finance.get("recognized_revenue") is not None:
             projected_finance = round(float(finance.get("recognized_revenue") or 0.0) + retained["finance_amount_delta"], 3)
+        campaign_projection: dict[str, Any] | None = None
+        campaign_rows = (domains.get("campaign_metrics") or {}).get("items", []) if isinstance(domains.get("campaign_metrics"), dict) else []
+        measured = next((row for row in campaign_rows if row.get("metric_id")), None)
+        if measured:
+            for metric in ("roas", "ctr", "cvr", "cpl", "cac"):
+                value = measured.get(metric)
+                if value is not None:
+                    try:
+                        numeric = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if math.isfinite(numeric):
+                        campaign_projection = {
+                            "status": "observed",
+                            "metric": metric,
+                            "value": round(numeric, 3),
+                            "source_ref": {"type": "campaign_metric_snapshots", "id": str(measured["metric_id"])},
+                        }
+                        break
         return {
             "retained_inputs": retained,
             "baseline": {
@@ -840,6 +860,7 @@ class IntelligenceService:
                 "scope_included": round(included_scope, 3),
                 "client_health": health.get("overall"),
                 "recognized_revenue": finance.get("recognized_revenue"),
+                "campaign": campaign_projection,
                 "finance_status": finance.get("status"),
             },
             "projection": {
@@ -851,6 +872,7 @@ class IntelligenceService:
                 # Revenue and margin are separate measures.  Costs affect
                 # margin only; never add them to recognized revenue.
                 "recognized_revenue": round(projected_finance + client_action_sign * retained["client_revenue_delta"], 3) if projected_finance is not None else None,
+                "campaign": campaign_projection,
                 "client_margin_delta": round(client_margin_delta, 3),
                 "added_client_hours": round(added_client_hours, 3),
                 "deadline_days_delta": retained["deadline_days_delta"],
@@ -1013,6 +1035,7 @@ class IntelligenceService:
         analogues: list[dict[str, Any]] = []
         current_terms = _tokens(" ".join([str(row.get("type") or "") + " " + str(row.get("evidence") or "") for row in risks]))
         current_terms.update(_tokens(" ".join(str(row.get("title") or "") + " " + str(row.get("blocking_reason") or "") for row in work)))
+        current_terms.update(_tokens(" ".join(str(row.get("type") or "") + " " + str(row.get("evidence") or "") for row in signals)))
         if not current_terms:
             return analogues
         current_risk_ids = {str(row.get("id")) for row in risks}
@@ -1054,8 +1077,32 @@ class IntelligenceService:
                     "confidence": _confidence(min(0.9, 0.48 + overlap * 0.12)),
                     **metadata,
                 })
+        prior_signals = self._optional_rows(
+            """SELECT id,type,evidence,status,created_at,resolved_at FROM signals
+               WHERE organization_id=? AND workspace_id=? AND created_at<=?
+               ORDER BY created_at DESC,id LIMIT 100""",
+            (organization_id, workspace_id, cutoff),
+        )
+        current_signal_ids = {str(row.get("id")) for row in signals}
+        for row in prior_signals:
+            if str(row.get("id")) in current_signal_ids:
+                continue
+            candidate_terms = _tokens(f"{row.get('type')} {row.get('evidence')}")
+            overlap = len(current_terms & candidate_terms)
+            if not overlap:
+                continue
+            resolved = bool(row.get("resolved_at") or row.get("status") in {"resolved", "closed"})
+            analogues.append({
+                "kind": "signal_pattern", "source": self._ref("signals", row["id"]),
+                "summary": f"Prior signal shares {overlap} signal term(s).", "resolution": row.get("status"),
+                "resolved": resolved,
+                "outcome_stats": {"matched_events": 1, "resolved_count": int(resolved), "resolution_rate": 1.0 if resolved else 0.0, "median_days_to_resolution": self._days_between(row.get("created_at"), row.get("resolved_at"))},
+                "evidence": [self._ref("signals", row["id"])],
+                "confidence": _confidence(min(0.82, 0.42 + overlap * 0.1)),
+                **self._analogue_metadata(current_terms, candidate_terms, matching_dimensions=["signal_terms"], different_dimensions=[], intervention="No recorded intervention.", subsequent_outcome=row.get("status"), similarity=round(overlap / max(1, len(current_terms | candidate_terms)), 3)),
+            })
         prior_events = self._optional_rows(
-            """SELECT id,work_item_id,action,detail,recorded_at FROM work_events
+            """SELECT id,work_item_id,action,from_status,to_status,detail,recorded_at FROM work_events
                WHERE workspace_id=? AND recorded_at<=? ORDER BY recorded_at DESC,id LIMIT 100""",
             (workspace_id, cutoff),
         )
@@ -1304,10 +1351,14 @@ class IntelligenceService:
             matched = [row for row in actions if statement_terms & _tokens(f"{row.get('action')} {row.get('detail')}")]
             outcomes = [row for row in matched if row.get("to_status") in {"shipped", "completed", "approved", "cancelled"}]
             resolved_signals = self._optional_rows(
-                """SELECT id,type,evidence,resolved_at FROM signals
-                   WHERE organization_id=? AND workspace_id=? AND resolved_at>=? AND resolved_at<=?
-                   ORDER BY resolved_at,id""",
-                (organization_id, workspace_id, str(decision.get("effective_from") or "0001-01-01T00:00:00+00:00"), cutoff),
+                """SELECT id,type,evidence,status,created_at,resolved_at FROM signals
+                   WHERE organization_id=? AND workspace_id=?
+                     AND ((resolved_at>=? AND resolved_at<=?)
+                          OR (status IN ('resolved','closed') AND created_at>=? AND created_at<=?))
+                   ORDER BY COALESCE(resolved_at,created_at),id""",
+                (organization_id, workspace_id,
+                 str(decision.get("effective_from") or "0001-01-01T00:00:00+00:00"), cutoff,
+                 str(decision.get("effective_from") or "0001-01-01T00:00:00+00:00"), cutoff),
             )
             feedback = self._optional_rows(
                 """SELECT id,category,raw_feedback,source_type,source_id,created_at FROM feedback_events
@@ -1726,6 +1777,7 @@ class IntelligenceService:
                     "scope": "scope pressure remains" if projected_scope_pressure else "scope pressure may ease or remain unknown",
                     "finance": f"recognized revenue projects to {projected_finance}" if projected_finance is not None else "finance impact unknown",
                     "client_health": f"projected health {projected_health}" if projected_health is not None else "client health impact unknown",
+                    "campaign": projection.get("campaign") or "campaign impact unknown",
                 },
                 "constraints": ["No capacity or outcome data is fabricated", *scenario_inputs["constraints"]],
                 "mitigations": ["Assign an owner", "recheck after the next canonical event"],
@@ -1743,6 +1795,7 @@ class IntelligenceService:
                     "scope": "usage may exceed allowance" if scope_pressure or projected_scope_pressure else "unknown",
                     "finance": "impact unknown" if projected_finance is None else f"visible revenue remains bounded at {projected_finance}",
                     "client_health": "risk of decline" if projected_health is None or float(projected_health) < 0.65 else "current score may cushion impact",
+                    "campaign": projection.get("campaign") or "campaign impact unknown",
                 },
                 "constraints": ["Finance is not connected" if domains["finance"]["status"] != "connected" else "Finance values are limited to recorded rows", *scenario_inputs["constraints"]],
                 "mitigations": ["Set an explicit review date", "Record an outcome when action is taken"],
@@ -1760,6 +1813,7 @@ class IntelligenceService:
                     "scope": f"scope ratio changes to {projection.get('scope_ratio')}",
                     "finance": f"recognized revenue changes to {projected_finance}" if projected_finance is not None else "finance projection unavailable",
                     "client_health": f"health changes to {projected_health}" if projected_health is not None else "health projection unavailable",
+                    "campaign": projection.get("campaign") or "campaign impact unknown",
                 },
                 "constraints": scenario_inputs["constraints"],
                 "mitigations": ["Convert the chosen scenario into canonical work before acting", "Compare the next outcome with this retained input set"],
@@ -1851,7 +1905,7 @@ class IntelligenceService:
             "delivery": projection.get("work_demand_hours"),
             "finance": projection.get("recognized_revenue"),
             "client_health": projected_health,
-            "campaign": None,
+            "campaign": projection.get("campaign"),
         }
         missing = [key for key, value in baseline_projection.items() if value is None]
         v2 = [

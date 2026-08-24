@@ -58,6 +58,9 @@ def _score(value: Any, default: float = 0.0) -> float:
         result = float(value)
     except (TypeError, ValueError):
         return default
+    # JSON permits neither NaN nor Infinity in the persisted contract.
+    if result != result or result in (float("inf"), float("-inf")):
+        return default
     return max(0.0, min(1.0, result))
 
 
@@ -92,6 +95,8 @@ def validate_expert_result(value: Mapping[str, Any], *, allowed_refs: set[str] |
     if missing:
         raise ValidationError("expert result missing required fields: " + ",".join(missing))
     result: dict[str, Any] = {
+        "status": _text(value.get("status"), "available"),
+        "scope": _json(value.get("scope") or {}),
         "finding": _text(value.get("finding"), "No finding returned."),
         "evidence_for": _bounded_list(value.get("evidence_for")),
         "evidence_against": _bounded_list(value.get("evidence_against")),
@@ -324,7 +329,10 @@ class IntelligenceOrchestrator:
         profile_context = self._restrict_profile_context(profile, profile_context)
         max_context = self._field(profile, "max_context")
         try:
-            max_context = max(128, min(256 * 1024, int(max_context)))
+            # Honour the persisted profile budget.  A lower bound here used
+            # to silently clamp native profiles and could discard every
+            # citation before the no-provider specialist ran.
+            max_context = min(256 * 1024, max(1, int(max_context)))
         except (TypeError, ValueError):
             max_context = 64 * 1024
         encoded = json.dumps(_json(profile_context), separators=(",", ":"), sort_keys=True)
@@ -340,7 +348,12 @@ class IntelligenceOrchestrator:
                 if len(encoded) <= max_context:
                     break
         if len(encoded) > max_context:
-            profile_context = {"profile": {"id": key}}
+            # Keep a bounded cited anchor even for very small custom budgets;
+            # never degrade to an uncited profile-only result.
+            first = next((item for item in profile_context.get("findings", []) if isinstance(item, Mapping)), None)
+            profile_context = {"profile": {"id": key}, "findings": []}
+            if first and first.get("evidence"):
+                profile_context["findings"] = [{"summary": _text(first.get("summary"), "Visible evidence"), "evidence": list(first.get("evidence", []))[:1]}]
             context_budget.update({"used_bytes": len(json.dumps(profile_context)), "status": "overflow", "overflow": True})
         else:
             context_budget["used_bytes"] = len(encoded)
@@ -372,7 +385,7 @@ class IntelligenceOrchestrator:
         profile_domains = self._field(profile, "domains") or self._field(profile, "allowed_domains") or ()
         profile_domains = [str(item) for item in profile_domains]
         all_evidence = first.get("evidence", []) if isinstance(first, Mapping) else []
-        evidence = [item for index, item in enumerate(all_evidence) if not profile_domains or index % max(1, len(profile_domains)) == 0][:4]
+        evidence = list(all_evidence[:4])
         specialty = _text(self._field(profile, "specialty") or self._field(profile, "mission") or key)
         method = _text(self._field(profile, "reasoning_method") or "bounded evidence review")
         base_hypothesis = (first.get("hypotheses") or [{"text": "No hypothesis established."}])[0].get("text", "No hypothesis established.") if isinstance(first, Mapping) else "No hypothesis established."
@@ -408,6 +421,9 @@ class IntelligenceOrchestrator:
             "needs_review": not bool(findings),
             "dissent": first.get("opposing_evidence", [])[:2] if isinstance(first, Mapping) else [],
             "context_budget": context_budget,
+            "status": "available" if findings else "insufficient_evidence",
+            "scope": profile_context.get("scope", {}),
+            "domain_coverage": profile_context.get("domain_coverage", {}),
         }
 
     def _run_specialists(
@@ -759,6 +775,7 @@ class IntelligenceOrchestrator:
     def _bounded_context(self, situation: Mapping[str, Any]) -> dict[str, Any]:
         context = {
             "scope": situation.get("scope"), "status": situation.get("status"),
+            "domains": situation.get("domains", {}),
             "findings": situation.get("findings", [])[: self.limits.max_items],
             "historical_analogues": situation.get("historical_analogues", [])[: self.limits.max_items],
             "decision_action_outcome_learning": situation.get("decision_action_outcome_learning", [])[: self.limits.max_items],
@@ -849,6 +866,20 @@ class IntelligenceOrchestrator:
                     "impact": first.get("impact", {}),
                 }]
         result["findings"] = findings
+        if isinstance(context.get("domains"), Mapping):
+            result["domains"] = {
+                key: value for key, value in context["domains"].items()
+                if str(key).lower() in domains
+            }
+        coverage = {domain: {"finding_count": 0, "evidence_count": 0} for domain in sorted(domains)}
+        for item in findings:
+            marker = " ".join(str(item.get(key) or "").lower() for key in ("id", "type", "title", "domain", "summary"))
+            matched = [domain for domain in domains if domain in marker] or list(domains)
+            evidence_count = len(item.get("evidence", []) or [])
+            for domain in matched:
+                coverage[domain]["finding_count"] += 1
+                coverage[domain]["evidence_count"] += evidence_count
+        result["domain_coverage"] = coverage
         # These aggregates lack reliable domain labels; do not leak broad
         # company history into a domain-scoped specialist.
         result["historical_analogues"] = [

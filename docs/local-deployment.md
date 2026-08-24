@@ -48,8 +48,11 @@ single-host packaging templates. They exercise image/static boundaries and a
 loopback proxy default; they do not prove browser automation, live provider
 connectivity, managed hosting, or public-production hardening.
 
-Copy `.env.example` to `.env` for private-host defaults, then edit the
-organization id and paths. The example contains no secrets. Run
+Copy `.env.example` to `deploy/.env` for private-host compose defaults, then
+edit the organization id and paths. The compose file lives under `deploy/`, so
+its `env_file: .env` entry resolves to `deploy/.env`. The example contains no
+secrets. Run `docker compose --env-file deploy/.env -f deploy/docker-compose.yml config --quiet`
+to validate the private compose configuration, and run
 `python scripts/private_host_smoke.py` to rehearse health, one worker job,
 backup/verify, and restore recovery mode with outbound dispatch disabled; this
 Python rehearsal does not require Docker.

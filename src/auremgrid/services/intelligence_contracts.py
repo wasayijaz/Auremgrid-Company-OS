@@ -383,11 +383,13 @@ EXPERT_OUTPUT_SCHEMA: dict[str, Any] = {
     # This is the specialist runtime contract (not a generic narrative
     # shape). ``analogues`` remains an accepted wire alias for older callers.
     "required": [
-        "finding", "evidence_for", "evidence_against", "assumptions",
+        "status", "finding", "evidence_for", "evidence_against", "assumptions",
         "unknowns", "hypothesis", "confidence", "analogues", "risks",
         "options", "recommendation", "expected_impact", "needs_review",
     ],
     "properties": {
+        "status": {"type": "string"},
+        "scope": {"type": "object"},
         "historical_analogues": {"type": "array"},
         "analogues": {"type": "array"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
@@ -413,7 +415,11 @@ def _profile(raw: dict[str, Any]) -> dict[str, Any]:
         "evaluation_criteria": raw.get("evaluation_criteria") or raw["quality_gates"],
         "escalation_policy": raw.get("escalation_policy") or "Escalate when evidence is missing, contradictory, or action is one-way",
         "fallback_policy": raw.get("fallback_policy") or "Return insufficient_evidence with unknowns and no action descriptors",
-        "max_context": int(raw.get("max_context") or 24),
+        # Context is measured in encoded bytes by the orchestrator.  Native
+        # profiles need room for a bounded cited anchor and their domain
+        # coverage metadata; tiny defaults previously degraded to profile-only
+        # output before a no-provider specialist could cite anything.
+        "max_context": int(raw.get("max_context") or 65536),
         "max_iterations": int(raw.get("max_iterations") or 3),
     }
 
@@ -479,7 +485,11 @@ def _step(step_id: str, sequence: int, title: str, owner: str, method: str, gate
 
 RUNBOOK_OUTPUT_CONTRACT: dict[str, Any] = {
     "type": "object",
-    "required": ["status", "finding", "evidence_for", "evidence_against", "recommendation", "needs_review"],
+    "required": [
+        "status", "finding", "evidence_for", "evidence_against", "assumptions",
+        "unknowns", "hypothesis", "confidence", "analogues", "historical_analogues",
+        "risks", "options", "recommendation", "expected_impact", "needs_review",
+    ],
 }
 
 
