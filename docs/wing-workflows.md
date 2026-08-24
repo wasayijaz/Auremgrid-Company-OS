@@ -112,8 +112,8 @@ assignment, dependencies, evidence, approval gates, handoff contracts and
 acknowledgements, SLAs, escalation, cancellation, and rework history. REST, MCP,
 and dashboard surfaces use the same canonical workflow engine.
 
-Owner-role values in the catalog are presently operating labels. The next slice
-is to resolve them against explicit person and agent role assignments, enforce
-task-level eligibility, attach primary and backup client-success ownership, and
-feed accepted stage estimates into capacity rollups. These additions must reuse
-the existing workflow and permission authorities.
+Owner-role values resolve against explicit person and agent role assignments.
+The engine enforces task-level eligibility, rejects inactive or viewer owners,
+preserves the owner snapshot on existing runs, and uses the same workflow and
+permission authorities for primary and backup client-success ownership and
+capacity rollups.

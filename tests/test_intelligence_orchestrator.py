@@ -174,6 +174,31 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
         self.assertNotIn("finance_amount_delta", seen.get("scenario_inputs", {}))
         self.assertTrue(all(event.get("trace_id") == result["trace_id"] for event in result["trace"]))
 
+    def test_deterministic_specialists_choose_domain_relevant_evidence(self):
+        contracts = _Contracts(2)
+        contracts.profiles = [
+            {"id": "performance_analyst", "version": "1", "name": "Performance", "domains": ["performance"]},
+            {"id": "capacity_planner", "version": "1", "name": "Capacity", "domains": ["capacity"]},
+        ]
+        orchestrator = IntelligenceOrchestrator(self.os, contracts)
+        context = {
+            "findings": [{
+                "title": "Cross-domain signal",
+                "evidence": [
+                    {"object_ref": {"type": "campaign_metric_snapshot", "id": "campaign-1"}, "summary": "ROAS fell"},
+                    {"object_ref": {"type": "capacity_snapshot", "id": "capacity-1"}, "summary": "Capacity is negative"},
+                ],
+            }],
+            "historical_analogues": [], "decision_action_outcome_learning": [], "scenario_inputs": {},
+        }
+        specialists, errors = orchestrator._run_specialists(
+            contracts.profiles, context, {"campaign-1", "capacity-1"}
+        )
+        self.assertEqual(errors, [])
+        by_profile = {item["specialist_id"]: item for item in specialists}
+        self.assertEqual(by_profile["performance_analyst"]["evidence_for"][0]["object_ref"]["id"], "campaign-1")
+        self.assertEqual(by_profile["capacity_planner"]["evidence_for"][0]["object_ref"]["id"], "capacity-1")
+
     def test_runbook_gates_are_evaluated_read_only(self):
         contracts = _Contracts(1)
         contracts.runbooks[0].update({

@@ -380,12 +380,13 @@ class IntelligenceOrchestrator:
             result.setdefault("provider_metadata", {"status": "injected_handler", "profile_id": key})
             result.setdefault("context_budget", context_budget)
             return result
-        findings = profile_context.get("findings") or []
-        first = findings[0] if findings else {}
         profile_domains = self._field(profile, "domains") or self._field(profile, "allowed_domains") or ()
         profile_domains = [str(item) for item in profile_domains]
+        findings = profile_context.get("findings") or []
+        first = self._select_deterministic_finding(findings, profile_domains, key)
         all_evidence = first.get("evidence", []) if isinstance(first, Mapping) else []
-        evidence = list(all_evidence[:4])
+        domain_evidence = self._domain_matched_evidence(all_evidence, profile_domains)
+        evidence = list((domain_evidence or list(all_evidence))[:4])
         specialty = _text(self._field(profile, "specialty") or self._field(profile, "mission") or key)
         method = _text(self._field(profile, "reasoning_method") or "bounded evidence review")
         base_hypothesis = (first.get("hypotheses") or [{"text": "No hypothesis established."}])[0].get("text", "No hypothesis established.") if isinstance(first, Mapping) else "No hypothesis established."
@@ -848,23 +849,49 @@ class IntelligenceOrchestrator:
             if not isinstance(item, Mapping):
                 continue
             marker = " ".join(str(item.get(key) or "").lower() for key in ("id", "type", "title", "domain"))
-            if any(domain in marker for domain in domains):
-                findings.append(item)
+            domain_evidence = self._domain_matched_evidence(item.get("evidence", []), domains)
+            if any(domain in marker for domain in domains) or domain_evidence:
+                scoped = dict(item)
+                if domain_evidence:
+                    matched = next((domain for domain in domains if self._evidence_matches_domain(domain_evidence[0], domain)), None)
+                    scoped["evidence"] = domain_evidence[:4]
+                    if matched:
+                        scoped.setdefault("domain", matched)
+                findings.append(scoped)
         # A workspace can legitimately have no finding whose title carries a
         # specialist's domain label. Preserve one ACL-visible anchor in that
         # case so offline specialists still return cited, useful uncertainty
         # instead of an uncited generic fallback.
         if not findings:
-            first = next((item for item in context.get("findings", []) or [] if isinstance(item, Mapping)), None)
-            if first is not None and first.get("evidence"):
+            # A finding title is not guaranteed to carry its source domain.
+            # Recover a domain-specific anchor from canonical evidence refs so
+            # deterministic specialists do not all inherit findings[0].
+            domain_evidence: list[tuple[str, Mapping[str, Any]]] = []
+            for item in context.get("findings", []) or []:
+                if not isinstance(item, Mapping):
+                    continue
+                for evidence in item.get("evidence", []) or []:
+                    matched = next((domain for domain in domains if self._evidence_matches_domain(evidence, domain)), None)
+                    if matched:
+                        domain_evidence.append((matched, evidence))
+            if domain_evidence:
+                chosen_domain = domain_evidence[0][0]
                 findings = [{
-                    "summary": "Visible evidence requiring a domain-specific review.",
-                    "evidence": list(first.get("evidence", []))[:4],
-                    "confidence": first.get("confidence"),
-                    "opposing_evidence": first.get("opposing_evidence", []),
-                    "recommendation": first.get("recommendation", {}),
-                    "impact": first.get("impact", {}),
+                    "summary": f"Visible {chosen_domain} evidence requiring a domain-specific review.",
+                    "domain": chosen_domain,
+                    "evidence": [evidence for domain, evidence in domain_evidence if domain == chosen_domain][:4],
                 }]
+            else:
+                first = next((item for item in context.get("findings", []) or [] if isinstance(item, Mapping)), None)
+                if first is not None and first.get("evidence"):
+                    findings = [{
+                        "summary": "Visible evidence requiring a domain-specific review.",
+                        "evidence": list(first.get("evidence", []))[:4],
+                        "confidence": first.get("confidence"),
+                        "opposing_evidence": first.get("opposing_evidence", []),
+                        "recommendation": first.get("recommendation", {}),
+                        "impact": first.get("impact", {}),
+                    }]
         result["findings"] = findings
         if isinstance(context.get("domains"), Mapping):
             result["domains"] = {
@@ -901,3 +928,54 @@ class IntelligenceOrchestrator:
         keys = set().union(*(allowed_scenario.get(domain, set()) for domain in domains))
         result["scenario_inputs"] = {key: value for key, value in scenario.items() if key in keys}
         return result
+
+    @staticmethod
+    def _evidence_matches_domain(evidence: Any, domain: str) -> bool:
+        """Match canonical evidence kinds to a declared specialist domain."""
+        if not isinstance(evidence, Mapping):
+            return False
+        ref = evidence.get("object_ref") or evidence.get("ref") or {}
+        kind = str(ref.get("type") if isinstance(ref, Mapping) else ref).lower()
+        aliases = {
+            "performance": {"campaign_metric_snapshot", "campaign_metrics", "performance_insight"},
+            "analytics": {"campaign_metric_snapshot", "campaign_metrics", "performance_insight"},
+            "campaigns": {"campaign_metric_snapshot", "campaign_metrics"},
+            "delivery": {"work_item", "work_event", "review"},
+            "workflow": {"work_item", "work_event", "review"},
+            "capacity": {"capacity_snapshot"},
+            "finance": {"finance", "revenue", "invoice", "cost"},
+            "scope": {"scope_usage", "contract", "scope_allowance"},
+            "client_success": {"client_health_snapshot", "decision", "signal"},
+            "relationships": {"client_health_snapshot", "touchpoint", "feedback_event"},
+            "risk": {"risk", "signal"},
+            "research": {"fact", "document", "source"},
+            "brain": {"fact", "document", "source"},
+        }
+        return kind in aliases.get(domain, {domain}) or domain in kind
+
+    def _select_deterministic_finding(self, findings: Any, profile_domains: Sequence[str], key: str) -> Mapping[str, Any]:
+        candidates = [item for item in (findings or []) if isinstance(item, Mapping)]
+        if not candidates:
+            return {}
+        domains = [str(item).strip().lower() for item in profile_domains if str(item).strip()]
+        if domains:
+            scored: list[tuple[int, int, Mapping[str, Any]]] = []
+            for index, item in enumerate(candidates):
+                marker = " ".join(str(item.get(field) or "").lower() for field in ("id", "type", "title", "domain", "summary"))
+                evidence = self._domain_matched_evidence(item.get("evidence", []), domains)
+                score = len(evidence) * 2 + sum(1 for domain in domains if domain in marker)
+                if score:
+                    scored.append((score, -index, item))
+            if scored:
+                return max(scored, key=lambda item: (item[0], item[1]))[2]
+        return candidates[sum(ord(char) for char in key) % len(candidates)]
+
+    @staticmethod
+    def _domain_matched_evidence(evidence: Any, domains: Sequence[str]) -> list[Any]:
+        domain_set = [str(item).strip().lower() for item in domains if str(item).strip()]
+        if not domain_set:
+            return []
+        return [
+            item for item in (evidence or [])
+            if any(IntelligenceOrchestrator._evidence_matches_domain(item, domain) for domain in domain_set)
+        ]
