@@ -181,8 +181,14 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
             "quality_gates": ["evidence cited"],
             "scenario_policy": "bounded",
         })
+
+        def compliant_result(_ctx):
+            result = _result()
+            result["unknowns"] = ["fixture evidence unavailable"]
+            return result
+
         result = IntelligenceOrchestrator(
-            self.os, contracts, specialist_handlers={"expert-0": lambda _ctx: _result()}
+            self.os, contracts, specialist_handlers={"expert-0": compliant_result}
         ).run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin")
         gate = next(item for item in result["trace"] if item["stage"] == "runbook_gates")
         self.assertEqual(gate["handoff"]["status"], "completed")
