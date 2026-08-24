@@ -18,7 +18,25 @@ class WorkflowApiTests(unittest.TestCase):
         self.os.create_organization_workspace("org_workflow", "Delivery", "client", "ws_workflow")
         self.os.create_organization_workspace("org_workflow", "Restricted", "client", "ws_restricted")
         self.os.create_person("org_workflow", "Workflow Owner", role="owner", person_id="person_workflow")
+        self.os.create_person("org_workflow", "Workflow Backup", role="member", person_id="person_workflow_backup")
         self.os.add_person_to_workspace("org_workflow", "ws_workflow", "person_workflow", "admin")
+        self.os.add_person_to_workspace("org_workflow", "ws_workflow", "person_workflow_backup", "operator")
+        self.os.client_ops.create_client_roster(
+            "org_workflow",
+            "ws_workflow",
+            "person_workflow",
+            [
+                {"role_key": "client_success_dri", "person_id": "person_workflow"},
+                {"role_key": "client_success_backup", "person_id": "person_workflow_backup"},
+                {"role_key": "account_lead", "person_id": "person_workflow"},
+                {"role_key": "account_executive", "person_id": "person_workflow"},
+                *[
+                    {"role_key": role, "wing": wing, "person_id": "person_workflow"}
+                    for wing in ("Client Strategy/Marketing", "Paid Media", "Design", "Operations", "Product & Engineering")
+                    for role in ("wing_lead", "wing_executive")
+                ],
+            ],
+        )
         self.token, self.identity = issue_identity(
             self.os, "org_workflow", "person_workflow", "ws_workflow"
         )
