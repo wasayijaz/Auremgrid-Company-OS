@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from auremgrid.connectors.financial import GoogleAdsReadOnlyAdapter, MetaAdsReadOnlyAdapter, StripeReadOnlyAdapter
+from auremgrid.connectors.financial import CRMReadOnlyAdapter, GoogleAdsReadOnlyAdapter, MetaAdsReadOnlyAdapter, StripeReadOnlyAdapter
 from auremgrid.domain.errors import ValidationError
 
 
@@ -11,6 +11,7 @@ class FinancialProviderAdapterTests(unittest.TestCase):
         self.assertEqual(StripeReadOnlyAdapter().status, "not_connected")
         self.assertEqual(MetaAdsReadOnlyAdapter().pull("campaigns", None, "acct", {"acct": "ws"}).records, ())
         self.assertEqual(GoogleAdsReadOnlyAdapter().pull("metrics", None, "acct", {"acct": "ws"}).records, ())
+        self.assertEqual(CRMReadOnlyAdapter().pull("contacts", None, "acct", {"acct": "ws"}).records, ())
 
     def test_stripe_page_normalizes_and_dedupes(self) -> None:
         adapter = StripeReadOnlyAdapter(lambda **_: {"data": [
@@ -49,6 +50,35 @@ class FinancialProviderAdapterTests(unittest.TestCase):
         self.assertEqual(page.records[0].amount, 2.5)
         self.assertEqual(page.records[0].currency, "USD")
         self.assertEqual(page.next_cursor, "gads-next")
+
+    def test_crm_contacts_and_opportunities_normalize_without_provider_writes(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def transport(**kwargs: object) -> dict[str, object]:
+            calls.append(kwargs)
+            return {"data": [{
+                "contact": {"id": "person_1", "name": "Avery Chen", "title": "COO"},
+                "account": {"name": "Northwind"},
+                "updated_at": "2026-08-20T10:00:00Z",
+                "currency": "usd",
+            }], "next_cursor": "crm-next"}
+
+        page = CRMReadOnlyAdapter(transport).pull("contacts", None, "acct", {"acct": "ws"})
+        self.assertEqual(calls, [{"resource": "contacts", "cursor": None, "account_id": "acct"}])
+        self.assertEqual(page.records[0].provider, "crm")
+        self.assertEqual(page.records[0].object_type, "contacts")
+        self.assertEqual(page.records[0].external_id, "person_1")
+        self.assertEqual(page.records[0].currency, "USD")
+        self.assertEqual(page.next_cursor, "crm-next")
+
+        opportunity = CRMReadOnlyAdapter(lambda **_: {"data": [{
+            "deal": {"id": "deal_1", "amount": "4200", "currency": "usd", "stage": "qualified"},
+            "type": "scope_expansion",
+        }]})
+        record = opportunity.pull("opportunities", None, "acct", {"acct": "ws"}).records[0]
+        self.assertEqual(record.external_id, "deal_1")
+        self.assertEqual(record.amount, 4200.0)
+        self.assertEqual(record.status, "qualified")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from auremgrid.connectors.financial import (
+    CRMReadOnlyAdapter,
     GoogleAdsReadOnlyAdapter,
     ImportPage,
     MetaAdsReadOnlyAdapter,
@@ -27,6 +28,7 @@ class ProviderImportService:
         if identity.workspace_id is not None and any(ws != identity.workspace_id for ws in workspace_mappings.values()):
             raise AuthorizationError("provider import mapping is outside workspace scope")
         adapter = adapter or {
+            "crm": CRMReadOnlyAdapter(),
             "stripe_accounting": StripeReadOnlyAdapter(),
             "meta_ads": MetaAdsReadOnlyAdapter(),
             "google_ads": GoogleAdsReadOnlyAdapter(),
@@ -82,6 +84,7 @@ class ProviderImportService:
         if identity.workspace_id is not None and any(ws != identity.workspace_id for ws in workspace_mappings.values()):
             raise AuthorizationError("provider import mapping is outside workspace scope")
         adapter = adapter or {
+            "crm": CRMReadOnlyAdapter(),
             "stripe_accounting": StripeReadOnlyAdapter(),
             "meta_ads": MetaAdsReadOnlyAdapter(),
             "google_ads": GoogleAdsReadOnlyAdapter(),
@@ -177,6 +180,8 @@ class ProviderImportService:
                 return self._apply_meta(identity, record)
             if record.provider == "google_ads":
                 return self._apply_google_ads(identity, record)
+            if record.provider == "crm":
+                return self._apply_crm(identity, record)
         except (AuthorizationError, NotFoundError, ValidationError, TypeError, ValueError) as exc:
             self._quarantine(identity.organization_id, record.provider, record.object_type, record.external_id,
                              "canonical_write_rejected", {"error": str(exc), "payload": dict(record.payload)})
@@ -214,6 +219,22 @@ class ProviderImportService:
                 if not campaign_id:
                     return {"action": "unsupported", "reason": "unsupported_without_campaign_mapping", "external_id": record.external_id}
                 return {"action": "canonical_would_write"}
+            return {"action": "unsupported", "reason": "unsupported_resource", "external_id": record.external_id}
+        if record.provider == "crm":
+            try:
+                if record.object_type == "contacts":
+                    _crm_contact_fields(record)
+                    return {"action": "canonical_would_write"}
+                if record.object_type == "opportunities":
+                    _crm_opportunity_fields(record)
+                    return {"action": "canonical_would_write"}
+            except ValidationError as exc:
+                return {
+                    "action": "quarantined",
+                    "reason": "canonical_write_rejected",
+                    "error": str(exc),
+                    "external_id": record.external_id,
+                }
             return {"action": "unsupported", "reason": "unsupported_resource", "external_id": record.external_id}
         return {"action": "unsupported", "reason": "unsupported_provider", "external_id": record.external_id}
 
@@ -302,6 +323,38 @@ class ProviderImportService:
         return "unsupported"
 
 
+    def _apply_crm(self, identity: Any, record: ProviderRecord) -> str:
+        if record.object_type == "contacts":
+            fields = _crm_contact_fields(record)
+            self.os.client_ops.create_contact(
+                identity.organization_id,
+                record.workspace_id,
+                identity.person_id,
+                fields["name"],
+                fields["company"],
+                fields["role"],
+                fields["influence"],
+                fields["decision_power"],
+                fields["communication_frequency"],
+                fields["preferences"],
+            )
+            return "canonical_written"
+        if record.object_type == "opportunities":
+            fields = _crm_opportunity_fields(record)
+            self.os.client_ops.create_opportunity(
+                identity.organization_id,
+                record.workspace_id,
+                identity.person_id,
+                fields["type"],
+                fields["reason"],
+                fields["evidence"],
+                fields["recommendation"],
+                record.amount,
+            )
+            return "canonical_written"
+        return "unsupported"
+
+
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -322,3 +375,89 @@ def _nested(item: Any, *keys: str) -> Any:
         if current is not None:
             return current
     return None
+
+
+_CRM_INFLUENCE_VALUES = {"low", "medium", "high"}
+_CRM_DECISION_POWER_VALUES = {"low", "medium", "high", "final"}
+_CRM_OPPORTUNITY_TYPES = {
+    "upsell",
+    "cross_sell",
+    "campaign_optimization",
+    "workflow_improvement",
+    "cost_saving",
+    "retention",
+    "automation",
+    "scope_expansion",
+}
+
+
+def _crm_contact_fields(record: ProviderRecord) -> dict[str, Any]:
+    name = _text(record.payload, "name", "full_name", "fullName", "contact.name", "person.name")
+    company = _text(record.payload, "company", "company_name", "companyName", "account.name", "organization", "organization_name")
+    role = _text(record.payload, "role", "title", "job_title", "jobTitle", "contact.title", "person.title")
+    if not name:
+        raise ValidationError("crm contact requires name")
+    if not company:
+        raise ValidationError("crm contact requires company")
+    if not role:
+        raise ValidationError("crm contact requires role or title")
+    influence = _choice(record.payload, _CRM_INFLUENCE_VALUES, "medium", "influence")
+    decision_power = _choice(record.payload, _CRM_DECISION_POWER_VALUES, "medium", "decision_power", "decisionPower")
+    return {
+        "name": name,
+        "company": company,
+        "role": role,
+        "influence": influence,
+        "decision_power": decision_power,
+        "communication_frequency": _text(record.payload, "communication_frequency", "communicationFrequency"),
+        "preferences": _preferences(record.payload.get("preferences")),
+    }
+
+
+def _crm_opportunity_fields(record: ProviderRecord) -> dict[str, Any]:
+    opportunity_type = _text(record.payload, "type", "opportunity_type", "opportunityType", "opportunity.type", "deal.type")
+    opportunity_type = opportunity_type.replace("-", "_").replace(" ", "_").lower() if opportunity_type else ""
+    if opportunity_type not in _CRM_OPPORTUNITY_TYPES:
+        raise ValidationError("crm opportunity requires a supported local opportunity type")
+    reason = _text(record.payload, "reason", "name", "title", "opportunity.name", "deal.name")
+    recommendation = _text(record.payload, "recommendation", "next_step", "nextStep", "suggested_action", "suggestedAction")
+    if not reason:
+        raise ValidationError("crm opportunity requires reason, name, or title")
+    if not recommendation:
+        raise ValidationError("crm opportunity requires recommendation or next step")
+    evidence = _text(record.payload, "evidence", "description", "notes", "source_evidence", "sourceEvidence")
+    if not evidence:
+        status = f" status={record.status}" if record.status else ""
+        evidence = f"CRM provider record {record.dedupe_key}{status}"
+    return {
+        "type": opportunity_type,
+        "reason": reason,
+        "evidence": evidence,
+        "recommendation": recommendation,
+    }
+
+
+def _text(item: Any, *keys: str) -> str:
+    value = _nested(item, *keys)
+    return str(value).strip() if value is not None else ""
+
+
+def _choice(item: Any, allowed: set[str], default: str, *keys: str) -> str:
+    value = _text(item, *keys)
+    if not value:
+        return default
+    normalized = value.strip().lower()
+    if normalized not in allowed:
+        raise ValidationError(f"crm value must be one of {', '.join(sorted(allowed))}")
+    return normalized
+
+
+def _preferences(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return [item.strip() for item in value if item.strip()]
+    raise ValidationError("crm contact preferences must be a string list")

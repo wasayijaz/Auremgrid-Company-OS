@@ -9,11 +9,11 @@ from http.client import HTTPConnection
 from pathlib import Path
 
 from auremgrid.api.http import serve
-from auremgrid.connectors.financial import GoogleAdsReadOnlyAdapter, MetaAdsReadOnlyAdapter, StripeReadOnlyAdapter
+from auremgrid.connectors.financial import CRMReadOnlyAdapter, GoogleAdsReadOnlyAdapter, MetaAdsReadOnlyAdapter, StripeReadOnlyAdapter
 from auremgrid.domain.errors import AuthorizationError
 from auremgrid.domain.security import AuthenticatedIdentity
 from auremgrid.services.brain import CompanyOS
-from tests.auth_support import issue_identity
+from tests.auth_support import LATEST_SCHEMA_VERSION, issue_identity
 
 
 class ProviderImportsTests(unittest.TestCase):
@@ -43,6 +43,8 @@ class ProviderImportsTests(unittest.TestCase):
                 "provider_import_quarantines",
                 "invoices",
                 "campaign_metric_snapshots",
+                "contacts",
+                "opportunities",
                 "ledger_audit",
             )
         }
@@ -221,7 +223,97 @@ class ProviderImportsTests(unittest.TestCase):
         row = self.os.store.conn.execute("SELECT reason FROM provider_import_quarantines WHERE provider='google_ads'").fetchone()
         self.assertEqual(row["reason"], "unsupported_without_campaign_mapping")
 
-    def test_provider_import_migration_replay_preserves_rows_and_allows_google_ads(self) -> None:
+    def test_crm_preview_maps_contacts_without_persisting(self) -> None:
+        before = self.state_counts()
+        adapter = CRMReadOnlyAdapter(lambda **_: {"data": [{
+            "id": "contact_1",
+            "name": "Avery Chen",
+            "company": "Northwind",
+            "role": "COO",
+            "influence": "high",
+            "decision_power": "final",
+            "preferences": ["email"],
+        }], "next_cursor": "crm-preview"})
+        result = self.os.provider_imports.preview(
+            self.identity, "crm", "acct", {"acct": self.ws.id}, "contacts", adapter=adapter
+        )
+        self.assertEqual(result["status"], "preview_valid")
+        self.assertEqual(result["would_import"], 1)
+        self.assertEqual(result["canonical_would_write"], 1)
+        self.assertFalse(result["persisted"])
+        self.assertEqual(result["records"][0]["provider"], "crm")
+        self.assertEqual(result["cursor_after"], "crm-preview")
+        self.assertEqual(self.state_counts(), before)
+
+    def test_crm_sync_contact_replay_does_not_duplicate_canonical_contact(self) -> None:
+        adapter = CRMReadOnlyAdapter(lambda **_: {"data": [{
+            "id": "contact_1",
+            "name": "Avery Chen",
+            "company": "Northwind",
+            "role": "COO",
+        }]})
+        first = self.os.provider_imports.pull(
+            self.identity, "crm", "acct", {"acct": self.ws.id}, "contacts", adapter=adapter
+        )
+        replay = self.os.provider_imports.pull(
+            self.identity, "crm", "acct", {"acct": self.ws.id}, "contacts", adapter=adapter
+        )
+        self.assertEqual(first["imported"], 1)
+        self.assertEqual(first["canonical_written"], 1)
+        self.assertEqual(replay["duplicates"], 1)
+        self.assertEqual(replay["canonical_written"], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM provider_import_records WHERE provider='crm'").fetchone()[0], 1)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0], 1)
+
+    def test_crm_sync_opportunity_writes_existing_sales_record(self) -> None:
+        adapter = CRMReadOnlyAdapter(lambda **_: {"data": [{
+            "id": "deal_1",
+            "type": "scope_expansion",
+            "name": "Expand analytics retainer",
+            "recommendation": "Prepare expansion proposal",
+            "amount": 4500,
+            "stage": "qualified",
+        }]})
+        result = self.os.provider_imports.pull(
+            self.identity, "crm", "acct", {"acct": self.ws.id}, "opportunities", adapter=adapter
+        )
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["canonical_written"], 1)
+        row = self.os.store.conn.execute("SELECT type,estimated_value,reason,evidence,recommendation FROM opportunities").fetchone()
+        self.assertEqual(row["type"], "scope_expansion")
+        self.assertEqual(row["estimated_value"], 4500)
+        self.assertEqual(row["reason"], "Expand analytics retainer")
+        self.assertIn("crm:opportunities:deal_1", row["evidence"])
+        self.assertEqual(row["recommendation"], "Prepare expansion proposal")
+
+    def test_crm_invalid_canonical_contact_is_quarantined_without_contact_write(self) -> None:
+        adapter = CRMReadOnlyAdapter(lambda **_: {"data": [{
+            "id": "contact_missing_company",
+            "name": "Avery Chen",
+            "role": "COO",
+        }]})
+        result = self.os.provider_imports.pull(
+            self.identity, "crm", "acct", {"acct": self.ws.id}, "contacts", adapter=adapter
+        )
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["quarantined"], 1)
+        self.assertEqual(result["canonical_written"], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0], 0)
+        row = self.os.store.conn.execute("SELECT reason,quarantine_details FROM provider_import_quarantines WHERE provider='crm'").fetchone()
+        self.assertEqual(row["reason"], "canonical_write_rejected")
+        self.assertIn("crm contact requires company", row["quarantine_details"])
+
+    def test_crm_unconfigured_sync_records_not_connected_cursor_only(self) -> None:
+        result = self.os.provider_imports.pull(
+            self.identity, "crm", "acct", {"acct": self.ws.id}, "contacts"
+        )
+        self.assertEqual(result["status"], "not_connected")
+        row = self.os.store.conn.execute("SELECT status FROM provider_import_cursors WHERE provider='crm'").fetchone()
+        self.assertEqual(row["status"], "not_connected")
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM provider_import_records WHERE provider='crm'").fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0], 0)
+
+    def test_provider_import_migration_replay_preserves_rows_and_allows_google_ads_and_crm(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "imports.sqlite"
             first = CompanyOS(path)
@@ -239,12 +331,12 @@ class ProviderImportsTests(unittest.TestCase):
             first.close()
 
             conn = sqlite3.connect(path)
-            conn.execute("DELETE FROM schema_migrations WHERE version=52")
+            conn.execute("DELETE FROM schema_migrations WHERE version IN (52,53)")
             conn.commit()
             conn.close()
 
             second = CompanyOS(path)
-            self.assertEqual(second.store.schema_version, 52)
+            self.assertEqual(second.store.schema_version, LATEST_SCHEMA_VERSION)
             self.assertEqual(
                 second.store.conn.execute("SELECT COUNT(*) FROM provider_import_records WHERE provider='stripe_accounting'").fetchone()[0],
                 1,
@@ -260,6 +352,18 @@ class ProviderImportsTests(unittest.TestCase):
             self.assertEqual(result["imported"], 1)
             self.assertEqual(
                 second.store.conn.execute("SELECT COUNT(*) FROM provider_import_records WHERE provider='google_ads'").fetchone()[0],
+                1,
+            )
+            crm = CRMReadOnlyAdapter(lambda **_: {"data": [{
+                "id": "contact_replay",
+                "name": "Avery Chen",
+                "company": "Northwind",
+                "role": "COO",
+            }]})
+            crm_result = second.provider_imports.pull(identity, "crm", "acct", {"acct": ws.id}, "contacts", adapter=crm)
+            self.assertEqual(crm_result["imported"], 1)
+            self.assertEqual(
+                second.store.conn.execute("SELECT COUNT(*) FROM provider_import_records WHERE provider='crm'").fetchone()[0],
                 1,
             )
             second.close()

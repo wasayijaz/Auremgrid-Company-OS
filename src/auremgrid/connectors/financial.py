@@ -1,4 +1,4 @@
-"""Read-only Stripe, Meta Ads, and Google Ads import adapters.
+"""Read-only Stripe, Meta Ads, Google Ads, and CRM import adapters.
 
 Adapters normalize provider responses into immutable records; they do not send,
 mutate, or invent provider data.  Network access is always injected by callers.
@@ -172,6 +172,45 @@ class GoogleAdsReadOnlyAdapter(ReadOnlyProviderAdapter):
             workspace_id,
             occurred_at,
             amount_value,
+            str(currency).upper() if currency else None,
+            str(status) if status is not None else None,
+            dict(item),
+            self.provider,
+        )
+
+
+class CRMReadOnlyAdapter(ReadOnlyProviderAdapter):
+    provider = "crm"
+    resources = ("contacts", "opportunities")
+
+    def _normalize(self, resource: str, item: Mapping[str, Any], account_id: str, workspace_id: str) -> ProviderRecord:
+        external_id = str(
+            _first(
+                item,
+                "id",
+                "external_id",
+                "contact.id",
+                "person.id",
+                "opportunity.id",
+                "deal.id",
+            )
+            or ""
+        ).strip()
+        if not external_id:
+            raise ValidationError("provider record id is required")
+        occurred = _first(item, "created", "created_at", "updated", "updated_at", "last_modified", "close_date")
+        occurred_at = self._timestamp(occurred)
+        amount = _first(item, "amount", "value", "estimated_value", "opportunity.amount", "deal.amount")
+        currency = _first(item, "currency", "currency_code", "currencyCode", "opportunity.currency", "deal.currency")
+        status = _first(item, "status", "stage", "opportunity.status", "opportunity.stage", "deal.status", "deal.stage")
+        return ProviderRecord(
+            self.provider,
+            resource,
+            external_id,
+            account_id,
+            workspace_id,
+            occurred_at,
+            float(amount) if amount is not None else None,
             str(currency).upper() if currency else None,
             str(status) if status is not None else None,
             dict(item),

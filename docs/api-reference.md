@@ -142,8 +142,8 @@ workspace-scoped recovery-audit history. These routes do not fetch external
 objects, upload data, or change registry/recovery state.
 
 `POST /provider-imports/preview` and `/provider-imports/sync` are read-only
-normalization paths for injected Stripe Billing/accounting, Meta Ads, and
-Google Ads pages.
+normalization paths for injected Stripe Billing/accounting, Meta Ads, Google
+Ads, and CRM pages.
 They require `integration_sync`, an account-to-workspace mapping, and a
 supported resource. Preview uses fixture/injected pages only and is a true
 non-persisting dry run: it normalizes records, reports validation/quarantine
@@ -152,7 +152,9 @@ finance/campaign rows, or audit state. Sync is the persistent path; it writes
 append-only `provider_import_records`, cursor state, and quarantine records.
 Google Ads sync supports `campaigns` and `metrics`; metric canonical writes
 require an explicit `canonical_campaign_id`, and ad groups/ads are imported
-only into the provider ledger.
+only into the provider ledger. CRM sync supports only `contacts` and
+`opportunities`, mapping valid records into existing local CRM/sales records
+without creating a provider-side connection.
 These routes are not live registered connectors and never send or mutate
 provider data.
 
