@@ -11,6 +11,9 @@
     video_range: 'video_ranges'
   };
   const REGION_TYPES = new Set(['image_region', 'document_region']);
+  const IMAGE_TYPES = new Set(['image_point', 'image_region']);
+  const DOCUMENT_TYPES = new Set(['document_page', 'document_region']);
+  const VIDEO_TYPES = new Set(['video_timestamp', 'video_range']);
   const REVIEW_GROUPS = [
     'waiting_for_me',
     'waiting_for_team',
@@ -65,12 +68,27 @@
   }
 
   function optionReason(review, type){
-    if(REGION_TYPES.has(type)){
-      const cap = capabilityFor(review, type);
-      return cap.reason || 'Region annotations are not enabled in this dashboard yet.';
-    }
     const cap = capabilityFor(review, type);
     return cap.status === 'ready' ? '' : (cap.reason || 'The attached source does not support this annotation type.');
+  }
+
+  function sourceKind(review){
+    const locator = String(review && review.source_locator || '').split('?')[0].toLowerCase();
+    const type = String(review && review.deliverable_type || '').toLowerCase();
+    if(type === 'video' || /\.(mp4|webm|mov|m4v|ogv)$/.test(locator)) return 'video';
+    if(['document', 'report', 'presentation', 'copy', 'landing_page', 'website'].includes(type) || /\.(pdf|doc|docx|ppt|pptx|txt|md|html?)$/.test(locator)) return 'document';
+    if(['design_asset', 'ad_creative'].includes(type) || /\.(png|jpe?g|webp|gif|avif|svg)$/.test(locator)) return 'image';
+    return locator ? 'source' : 'none';
+  }
+
+  function requiredFields(type){
+    if(type === 'image_point') return ['coordinates'];
+    if(type === 'image_region') return ['coordinates'];
+    if(type === 'document_page') return ['page_number'];
+    if(type === 'document_region') return ['page_number', 'coordinates'];
+    if(type === 'video_timestamp') return ['start_seconds'];
+    if(type === 'video_range') return ['start_seconds', 'end_seconds'];
+    return [];
   }
 
   function parsedNumber(values, key){
@@ -132,6 +150,7 @@
       '<span class="state" data-annotation-context>No review selected</span>',
       '</div>',
       '<div class="annotation-status" data-annotation-status role="status"></div>',
+      '<div class="annotation-capabilities" data-annotation-capabilities></div>',
       '<div class="annotation-source" data-annotation-source><span class="sub">No review selected.</span></div>',
       '<div class="annotation-history" data-annotation-history></div>',
       '<form class="annotation-entry" data-annotation-form>',
@@ -152,7 +171,13 @@
       '<label data-start-field>Start seconds<input name="start_seconds" type="number" min="0" step="0.01"></label>',
       '<label data-end-field>End seconds<input name="end_seconds" type="number" min="0" step="0.01"></label>',
       '</div>',
-      '<p class="sub" data-coordinate-note>Click an attached image to set a normalized point.</p>',
+      '<div class="annotation-region-grid" data-region-fields>',
+      '<label>X<input name="coord_x" type="number" min="0" max="1" step="0.0001"></label>',
+      '<label>Y<input name="coord_y" type="number" min="0" max="1" step="0.0001"></label>',
+      '<label>Width<input name="coord_width" type="number" min="0" max="1" step="0.0001"></label>',
+      '<label>Height<input name="coord_height" type="number" min="0" max="1" step="0.0001"></label>',
+      '</div>',
+      '<p class="sub" data-coordinate-note>Choose a review source to capture coordinates.</p>',
       '<button type="submit">Add annotation</button>',
       '</form>'
     ].join('');
@@ -171,7 +196,45 @@
     const form = box.querySelector('[data-annotation-form]');
     const type = form.querySelector('[name="annotation_type"]');
     type.addEventListener('change', () => syncTypeControls(box));
+    ['coord_x', 'coord_y', 'coord_width', 'coord_height'].forEach(name => {
+      form.querySelector(`[name="${name}"]`).addEventListener('input', () => syncManualCoordinates(box));
+    });
     form.addEventListener('submit', submitAnnotation);
+  }
+
+  function setFormCoordinates(box, coordinates){
+    const form = box.querySelector('[data-annotation-form]');
+    const normalized = Object.fromEntries(Object.entries(coordinates || {}).map(([key, value]) => [key, Number(Number(value).toFixed(4))]));
+    form.querySelector('[name="coordinates"]').value = JSON.stringify(normalized);
+    form.querySelector('[name="coord_x"]').value = normalized.x ?? '';
+    form.querySelector('[name="coord_y"]').value = normalized.y ?? '';
+    form.querySelector('[name="coord_width"]').value = normalized.width ?? '';
+    form.querySelector('[name="coord_height"]').value = normalized.height ?? '';
+    const label = normalized.width != null
+      ? `Region captured at x ${normalized.x}, y ${normalized.y}, width ${normalized.width}, height ${normalized.height}.`
+      : `Point captured at x ${normalized.x}, y ${normalized.y}.`;
+    setStatus(box, label, 'ok');
+  }
+
+  function clearCoordinates(box){
+    const form = box.querySelector('[data-annotation-form]');
+    form.querySelector('[name="coordinates"]').value = '';
+    ['coord_x', 'coord_y', 'coord_width', 'coord_height'].forEach(name => { form.querySelector(`[name="${name}"]`).value = ''; });
+  }
+
+  function syncManualCoordinates(box){
+    const form = box.querySelector('[data-annotation-form]');
+    const type = form.querySelector('[name="annotation_type"]').value;
+    if(type !== 'document_region') return;
+    const values = {
+      x: form.querySelector('[name="coord_x"]').value,
+      y: form.querySelector('[name="coord_y"]').value,
+      width: form.querySelector('[name="coord_width"]').value,
+      height: form.querySelector('[name="coord_height"]').value
+    };
+    if(Object.values(values).every(value => value !== '')){
+      setFormCoordinates(box, Object.fromEntries(Object.entries(values).map(([key, value]) => [key, Number(value)])));
+    }
   }
 
   function syncTypeControls(box){
@@ -181,15 +244,31 @@
     const start = form.querySelector('[name="start_seconds"]');
     const end = form.querySelector('[name="end_seconds"]');
     const note = box.querySelector('[data-coordinate-note]');
-    page.disabled = type !== 'document_page';
-    start.disabled = !['video_timestamp', 'video_range'].includes(type);
+    const regionFields = box.querySelector('[data-region-fields]');
+    const submit = form.querySelector('[type="submit"]');
+    page.disabled = !DOCUMENT_TYPES.has(type);
+    start.disabled = !VIDEO_TYPES.has(type);
     end.disabled = type !== 'video_range';
+    regionFields.hidden = !REGION_TYPES.has(type);
+    regionFields.querySelectorAll('input').forEach(input => {
+      input.disabled = !REGION_TYPES.has(type) || type === 'image_region';
+    });
     if(page.disabled) page.value = '';
     if(start.disabled) start.value = '';
     if(end.disabled) end.value = '';
+    if(!REGION_TYPES.has(type) && !IMAGE_TYPES.has(type)) clearCoordinates(box);
     note.textContent = type === 'image_point'
       ? 'Click the preview image to set a normalized point before submitting.'
-      : 'Image coordinates are captured only for image point annotations.';
+      : type === 'image_region'
+        ? 'Drag across the preview image to capture a normalized region before submitting.'
+        : type === 'document_region'
+          ? 'Enter a page number, then capture a normalized region with the page pad or numeric fields.'
+          : type === 'video_timestamp'
+            ? 'Use the video controls, then capture the current time as the timestamp.'
+            : type === 'video_range'
+              ? 'Use the video controls, then capture start and end seconds for the range.'
+              : 'General comments need only a body.';
+    submit.disabled = !activeReview || !Array.from(form.querySelector('[name="annotation_type"]').options).some(option => !option.disabled);
   }
 
   function renderOptions(box, review){
@@ -197,7 +276,7 @@
     select.querySelectorAll('option').forEach(option => {
       const type = option.value;
       const reason = optionReason(review, type);
-      const enabled = Boolean(review) && !REGION_TYPES.has(type) && capabilityFor(review, type).status === 'ready';
+      const enabled = Boolean(review) && capabilityFor(review, type).status === 'ready';
       option.disabled = !enabled;
       option.title = enabled ? '' : reason;
       option.textContent = option.textContent.replace(/\s+\(.+\)$/, '') + (enabled ? '' : ` (${reason})`);
@@ -207,37 +286,139 @@
       if(first) select.value = first.value;
     }
     syncTypeControls(box);
+    renderCapabilitySummary(box, review);
+  }
+
+  function renderCapabilitySummary(box, review){
+    const target = box.querySelector('[data-annotation-capabilities]');
+    if(!target) return;
+    const labels = [
+      ['general_comment', 'Comment'],
+      ['image_point', 'Image point'],
+      ['image_region', 'Image region'],
+      ['document_page', 'Document page'],
+      ['document_region', 'Document region'],
+      ['video_timestamp', 'Video timestamp'],
+      ['video_range', 'Video range']
+    ];
+    target.innerHTML = labels.map(([type, label]) => {
+      const cap = capabilityFor(review, type);
+      const ready = Boolean(review) && cap.status === 'ready';
+      return `<span class="annotation-capability ${ready ? 'ready' : 'off'}" title="${esc(ready ? 'Backend route is available.' : optionReason(review, type))}">${esc(label)} - ${ready ? 'ready' : 'off'}</span>`;
+    }).join('');
+  }
+
+  function normalizedRegion(startEvent, endEvent, element){
+    const rect = element.getBoundingClientRect();
+    const startX = Math.max(0, Math.min(1, (startEvent.clientX - rect.left) / rect.width));
+    const startY = Math.max(0, Math.min(1, (startEvent.clientY - rect.top) / rect.height));
+    const endX = Math.max(0, Math.min(1, (endEvent.clientX - rect.left) / rect.width));
+    const endY = Math.max(0, Math.min(1, (endEvent.clientY - rect.top) / rect.height));
+    return {
+      x: Math.min(startX, endX),
+      y: Math.min(startY, endY),
+      width: Math.abs(endX - startX),
+      height: Math.abs(endY - startY)
+    };
+  }
+
+  function installRegionCapture(box, element, type){
+    let start = null;
+    element.addEventListener('pointerdown', event => {
+      if(box.querySelector('[name="annotation_type"]').value !== type) return;
+      start = event;
+      element.setPointerCapture && element.setPointerCapture(event.pointerId);
+    });
+    element.addEventListener('pointerup', event => {
+      if(!start || box.querySelector('[name="annotation_type"]').value !== type) return;
+      const region = normalizedRegion(start, event, element);
+      start = null;
+      if(region.width <= 0.001 || region.height <= 0.001){
+        setStatus(box, 'Drag a larger region before submitting.', 'error');
+        return;
+      }
+      setFormCoordinates(box, region);
+    });
   }
 
   function renderSource(box, review){
     const source = box.querySelector('[data-annotation-source]');
     const form = box.querySelector('[data-annotation-form]');
-    form.querySelector('[name="coordinates"]').value = '';
+    clearCoordinates(box);
     const locator = review && review.source_locator;
     if(!locator){
       source.innerHTML = '<span class="sub">No attached source is available for this review.</span>';
       return;
     }
-    source.innerHTML = `<a href="${esc(locator)}" target="_blank" rel="noreferrer">Open attached source</a><span class="sub">${esc(locator)}</span>`;
-    if(capabilityFor(review, 'image_point').status !== 'ready') return;
-    const preview = document.createElement('img');
-    preview.src = locator;
-    preview.alt = 'Attached review source';
-    preview.loading = 'lazy';
-    preview.className = 'annotation-preview';
-    preview.onerror = () => {
-      preview.remove();
-      source.insertAdjacentHTML('beforeend', '<span class="sub">Image preview is unavailable; the source link remains available.</span>');
-    };
-    preview.onclick = event => {
-      const rect = preview.getBoundingClientRect();
-      const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-      const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
-      const point = {x: Number(x.toFixed(4)), y: Number(y.toFixed(4))};
-      form.querySelector('[name="coordinates"]').value = JSON.stringify(point);
-      setStatus(box, `Image point captured at x ${point.x}, y ${point.y}.`, 'ok');
-    };
-    source.appendChild(preview);
+    const kind = sourceKind(review);
+    source.innerHTML = `<div class="annotation-source-head"><a href="${esc(locator)}" target="_blank" rel="noreferrer">Open attached source</a><span class="state">${esc(kind)}</span></div><span class="sub">${esc(locator)}</span>`;
+    if(kind === 'image'){
+      const frame = document.createElement('div');
+      frame.className = 'annotation-preview-frame';
+      const preview = document.createElement('img');
+      preview.src = locator;
+      preview.alt = 'Attached review source';
+      preview.loading = 'lazy';
+      preview.className = 'annotation-preview';
+      preview.onerror = () => {
+        frame.remove();
+        source.insertAdjacentHTML('beforeend', '<span class="sub">Image preview is unavailable; the source link remains available.</span>');
+      };
+      preview.onclick = event => {
+        if(form.querySelector('[name="annotation_type"]').value !== 'image_point') return;
+        const rect = preview.getBoundingClientRect();
+        setFormCoordinates(box, {
+          x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+          y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))
+        });
+      };
+      installRegionCapture(box, preview, 'image_region');
+      frame.appendChild(preview);
+      source.appendChild(frame);
+      return;
+    }
+    if(kind === 'document'){
+      const viewer = document.createElement('iframe');
+      viewer.src = locator;
+      viewer.title = 'Attached document source';
+      viewer.className = 'annotation-document-preview';
+      viewer.loading = 'lazy';
+      source.appendChild(viewer);
+      if(capabilityFor(review, 'document_region').status === 'ready'){
+        const pad = document.createElement('button');
+        pad.type = 'button';
+        pad.className = 'annotation-page-pad';
+        pad.innerHTML = '<span>Drag here to capture a normalized page region</span>';
+        installRegionCapture(box, pad, 'document_region');
+        source.appendChild(pad);
+      }
+      return;
+    }
+    if(kind === 'video'){
+      const video = document.createElement('video');
+      video.src = locator;
+      video.controls = true;
+      video.preload = 'metadata';
+      video.className = 'annotation-video-preview';
+      video.onerror = () => source.insertAdjacentHTML('beforeend', '<span class="sub">Video preview is unavailable; the source link remains available.</span>');
+      const controls = document.createElement('div');
+      controls.className = 'annotation-video-tools';
+      controls.innerHTML = '<button type="button" data-video-start>Use current time as start</button><button type="button" data-video-end>Use current time as end</button><span class="sub" data-video-clock>0.00s</span>';
+      video.ontimeupdate = () => {
+        const clock = controls.querySelector('[data-video-clock]');
+        if(clock) clock.textContent = `${video.currentTime.toFixed(2)}s`;
+      };
+      controls.querySelector('[data-video-start]').onclick = () => {
+        form.querySelector('[name="start_seconds"]').value = video.currentTime.toFixed(2);
+        setStatus(box, `Start set to ${video.currentTime.toFixed(2)}s.`, 'ok');
+      };
+      controls.querySelector('[data-video-end]').onclick = () => {
+        form.querySelector('[name="end_seconds"]').value = video.currentTime.toFixed(2);
+        setStatus(box, `End set to ${video.currentTime.toFixed(2)}s.`, 'ok');
+      };
+      source.appendChild(video);
+      source.appendChild(controls);
+    }
   }
 
   async function renderHistory(box){
@@ -260,6 +441,7 @@
       `<b>${esc(row.annotation_type)}</b>`,
       `<span class="state">${esc(row.status)}</span>`,
       `<p>${esc(row.body)}</p>`,
+      row.coordinates && Object.keys(row.coordinates).length ? `<small>Coordinates ${esc(JSON.stringify(row.coordinates))}</small>` : '',
       row.page_number ? `<small>Page ${esc(row.page_number)}</small>` : '',
       row.start_seconds != null ? `<small>Start ${esc(row.start_seconds)}s</small>` : '',
       row.end_seconds != null ? `<small>End ${esc(row.end_seconds)}s</small>` : '',
@@ -286,7 +468,7 @@
       activeReview = review;
       const form = box.querySelector('[data-annotation-form]');
       form.querySelector('[name="review_id"]').value = review.id;
-      box.querySelector('[data-annotation-context]').textContent = `${review.client || review.workspace_id} · ${review.deliverable_title || review.id}`;
+      box.querySelector('[data-annotation-context]').textContent = `${review.client || review.workspace_id} - ${review.deliverable_title || review.id}`;
       renderOptions(box, review);
       renderSource(box, review);
       await renderHistory(box);
@@ -306,11 +488,9 @@
       if(!activeReview) throw new Error('Choose a review before annotating.');
       const values = new FormData(form);
       const type = String(values.get('annotation_type'));
-      if(capabilityFor(activeReview, type).status !== 'ready' || REGION_TYPES.has(type)){
-        throw new Error(optionReason(activeReview, type));
-      }
-      if(type === 'image_point' && !values.get('coordinates')) throw new Error('Click the image preview to capture a point first.');
-      if(type === 'document_page' && !values.get('page_number')) throw new Error('Enter the page number for this document annotation.');
+      if(capabilityFor(activeReview, type).status !== 'ready') throw new Error(optionReason(activeReview, type));
+      if(requiredFields(type).includes('coordinates') && !values.get('coordinates')) throw new Error(REGION_TYPES.has(type) ? 'Capture a normalized region before submitting.' : 'Click the image preview to capture a point first.');
+      if(DOCUMENT_TYPES.has(type) && !values.get('page_number')) throw new Error('Enter the page number for this document annotation.');
       if(['video_timestamp', 'video_range'].includes(type) && !values.get('start_seconds')) throw new Error('Enter the start time for this video annotation.');
       if(type === 'video_range' && !values.get('end_seconds')) throw new Error('Enter the end time for this video range.');
       const auth = await identity();
@@ -363,7 +543,7 @@
   window.AuremgridAnnotationReview = {
     install,
     openReviewAnnotation,
-    _test: {buildAnnotationPayload, findReview, reviewRows}
+    _test: {buildAnnotationPayload, findReview, reviewRows, requiredFields, sourceKind}
   };
   window.openReviewAnnotation = openReviewAnnotation;
 
