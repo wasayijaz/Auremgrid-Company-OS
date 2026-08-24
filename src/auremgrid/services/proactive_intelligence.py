@@ -440,13 +440,14 @@ class ProactiveIntelligenceService:
         normalized = self._without_volatile_metadata(payload)
         return hashlib.sha256(_json_dump(normalized).encode("utf-8")).hexdigest()
 
-    def _without_volatile_metadata(self, value: Any) -> Any:
+    def _without_volatile_metadata(self, value: Any, parent_key: str | None = None) -> Any:
         volatile_keys = {
             "generated_at",
             "created_at",
             "updated_at",
             "as_of",
             "recorded_at",
+            "recommended_at",
             "detected_at",
             "provider_metadata",
             "context_hash",
@@ -455,12 +456,13 @@ class ProactiveIntelligenceService:
         }
         if isinstance(value, dict):
             return {
-                key: self._without_volatile_metadata(child)
+                key: self._without_volatile_metadata(child, key)
                 for key, child in value.items()
                 if key not in volatile_keys
+                and not (parent_key == "evaluation_window" and key in {"start", "end"})
             }
         if isinstance(value, list):
-            return [self._without_volatile_metadata(child) for child in value]
+            return [self._without_volatile_metadata(child, parent_key) for child in value]
         return value
 
     def _proactive_detectors(

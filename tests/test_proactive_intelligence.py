@@ -74,6 +74,36 @@ class ProactiveIntelligenceTests(unittest.TestCase):
                 (first["id"],),
             )
 
+    def test_recommendation_quality_window_is_not_part_of_snapshot_fingerprint(self) -> None:
+        payload = {
+            "recommendation_quality": [{
+                "status": "pending_outcome",
+                "score": 0.62,
+                "outcome_count": 1,
+                "recommended_at": "2026-08-24T08:01:00+00:00",
+                "evaluation_window": {
+                    "start": "2026-08-24T08:00:00+00:00",
+                    "end": "2026-08-24T08:01:00+00:00",
+                },
+            }]
+        }
+        shifted = json.loads(json.dumps(payload))
+        shifted["recommendation_quality"][0]["evaluation_window"] = {
+            "start": "2026-08-24T08:02:00+00:00",
+            "end": "2026-08-24T08:03:00+00:00",
+        }
+        shifted["recommendation_quality"][0]["recommended_at"] = "2026-08-24T08:03:00+00:00"
+        scored = json.loads(json.dumps(shifted))
+        scored["recommendation_quality"][0]["score"] = 0.7
+        self.assertEqual(
+            self.os.proactive_intelligence._projection_fingerprint(payload),
+            self.os.proactive_intelligence._projection_fingerprint(shifted),
+        )
+        self.assertNotEqual(
+            self.os.proactive_intelligence._projection_fingerprint(shifted),
+            self.os.proactive_intelligence._projection_fingerprint(scored),
+        )
+
     def test_workspace_snapshot_preserves_insufficient_evidence_state(self) -> None:
         org = self.os.create_organization("Empty org", "org_empty_intel")
         ws = self.os.create_organization_workspace(org.id, "Empty client", "client", "ws_empty_intel")
