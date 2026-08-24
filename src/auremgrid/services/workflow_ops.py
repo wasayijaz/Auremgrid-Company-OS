@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
+from auremgrid.domain.security import role_capabilities
 from auremgrid.storage.workflows import TERMINAL_STATUSES, WorkflowRepository
 
 
@@ -90,13 +91,14 @@ class WorkflowOperations:
         # untruncated clock for selection so a roster created moments earlier
         # is active for this run.
         roster = self._active_client_roster(organization_id, workspace_id, datetime.now(timezone.utc).isoformat())
-        if roster is not None:
-            self._resolve_roster_assignments(snapshot, roster)
-            snapshot["client_roster_id"] = roster["id"]
-            snapshot["client_roster_version"] = roster["version"]
+        if roster is None:
+            raise ValidationError("active client roster is required for workflow runs")
+        self._resolve_roster_assignments(snapshot, roster)
+        snapshot["client_roster_id"] = roster["id"]
+        snapshot["client_roster_version"] = roster["version"]
         for stage in snapshot["stages"]:
             # Internal normalization marker; do not expose it in persisted
-            # snapshots or alter the legacy no-roster shape.
+            # snapshots.
             stage.pop("handoff_structured", None)
         due_text = _iso(due_at)
         escalation_at = self._escalation_at(now, due_at, sla_minutes)
@@ -105,12 +107,11 @@ class WorkflowOperations:
             # snapshot. Use a new internal version namespace so templates
             # previously stored without estimates are never overwritten.
             definition_version_key = f"{snapshot['version']}@capacity-v1"
-            if roster is not None:
-                # A roster assignment is part of the immutable definition
-                # snapshot. Scope the stored definition version by roster so
-                # a later roster can produce a new run without mutating or
-                # conflicting with the prior version.
-                definition_version_key += f"@client-roster-{roster['id']}"
+            # A roster assignment is part of the immutable definition
+            # snapshot. Scope the stored definition version by roster so a
+            # later roster can produce a new run without mutating or
+            # conflicting with the prior version.
+            definition_version_key += f"@client-roster-{roster['id']}"
             definition, definition_version = self.repo.save_definition_version(
                 organization_id,
                 snapshot["key"],
@@ -500,6 +501,7 @@ class WorkflowOperations:
             if run["status"] in TERMINAL_STATUSES:
                 raise ValidationError("terminal workflow run cannot start stages")
             self._ensure_transition(stage["status"], "in_progress")
+            self._ensure_stage_has_named_owner(run, stage, organization_id, workspace_id)
             self._ensure_dependencies_clear(stage)
             updated = self.repo.update_stage_status(
                 stage["id"],
@@ -1036,13 +1038,20 @@ class WorkflowOperations:
             for item in self.conn.execute(
                 """
                 SELECT id, roster_id, organization_id, workspace_id, role_key, wing, person_id
-                FROM client_account_roster_roles WHERE roster_id=?
+                FROM client_account_roster_roles
+                WHERE roster_id=? AND organization_id=? AND workspace_id=?
                 ORDER BY role_key, wing, id
                 """,
-                (row_dict["id"],),
+                (row_dict["id"], organization_id, workspace_id),
             ).fetchall()
         ]
-        return {"id": row_dict["id"], "version": version, "roles": roles}
+        return {
+            "id": row_dict["id"],
+            "organization_id": row_dict["organization_id"],
+            "workspace_id": row_dict["workspace_id"],
+            "version": version,
+            "roles": roles,
+        }
 
     @staticmethod
     def _roster_role_key(label: Any) -> str:
@@ -1068,6 +1077,39 @@ class WorkflowOperations:
             rows = [row for row in rows if self._wing_key(row.get("wing")) == wing_key]
         return rows
 
+    def _require_eligible_owner(self, organization_id: str, workspace_id: str | None, person_id: Any, label: str) -> str:
+        resolved_person_id = _required_text(person_id, label)
+        if workspace_id is None:
+            raise ValidationError(f"{label} requires a workspace-scoped active roster owner")
+        row = self.conn.execute(
+            """SELECT om.role AS organization_role, wm.role AS workspace_role
+               FROM people p
+               JOIN organization_memberships om
+                 ON om.person_id=p.id AND om.organization_id=p.organization_id
+               JOIN workspace_memberships wm ON wm.person_id=p.id
+              WHERE p.organization_id=? AND p.id=? AND p.status='active' AND wm.workspace_id=?""",
+            (organization_id, resolved_person_id, workspace_id),
+        ).fetchone()
+        if row is None:
+            raise ValidationError(f"{label} must be an active workspace member")
+        capabilities = role_capabilities(str(row["organization_role"]), str(row["workspace_role"]))
+        if "workflow_run" not in capabilities:
+            raise ValidationError(f"{label} must have workflow_run capability")
+        return resolved_person_id
+
+    def _ensure_stage_has_named_owner(
+        self, run: dict[str, Any], stage: dict[str, Any], organization_id: str, workspace_id: str | None
+    ) -> None:
+        snapshot = run.get("template_snapshot") or {}
+        if not snapshot.get("client_roster_id"):
+            raise ValidationError("workflow stage cannot start without an active client roster owner")
+        self._require_eligible_owner(
+            organization_id,
+            workspace_id,
+            stage.get("assignee_person_id"),
+            f"stage {stage['stage_key']} owner",
+        )
+
     def _resolve_roster_assignments(self, snapshot: dict[str, Any], roster: dict[str, Any]) -> None:
         """Resolve missing stage/handoff people against one immutable roster.
 
@@ -1088,6 +1130,12 @@ class WorkflowOperations:
                         f"active client roster has {len(matches)} matches for stage {stage['key']}"
                     )
                 stage["assignee_person_id"] = matches[0]["person_id"]
+            stage["assignee_person_id"] = self._require_eligible_owner(
+                roster["organization_id"],
+                roster["workspace_id"],
+                stage["assignee_person_id"],
+                f"stage {stage['key']} owner",
+            )
 
             # Only structured handoffs can be roster-resolved. Opaque legacy
             # handoff_target values remain untouched and never drive guessing.
@@ -1108,6 +1156,13 @@ class WorkflowOperations:
                     raise ValidationError(
                         f"explicit handoff person from stage {stage['key']} does not match active client roster"
                     )
+            if stage.get("handoff_structured"):
+                stage["handoff_to_person_id"] = self._require_eligible_owner(
+                    roster["organization_id"],
+                    roster["workspace_id"],
+                    stage["handoff_to_person_id"],
+                    f"handoff owner from stage {stage['key']}",
+                )
 
     def _validate_dependencies(self, stages: list[dict[str, Any]]) -> None:
         stage_keys = {stage["key"] for stage in stages}

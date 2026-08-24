@@ -46,6 +46,23 @@ class WorkflowOperationTests(unittest.TestCase):
         self.worker = self.os.create_person(self.org.id, "Worker")
         self.os.add_person_to_workspace(self.org.id, self.ws.id, self.owner.id, "admin")
         self.os.add_person_to_workspace(self.org.id, self.ws.id, self.worker.id, "operator")
+        self.os.client_ops.create_client_roster(
+            self.org.id,
+            self.ws.id,
+            self.owner.id,
+            [
+                {"role_key": "client_success_dri", "person_id": self.owner.id},
+                {"role_key": "client_success_backup", "person_id": self.worker.id},
+                {"role_key": "wing_lead", "wing": "strategy", "person_id": self.owner.id},
+                {"role_key": "wing_lead", "wing": "Client Strategy/Marketing", "person_id": self.owner.id},
+                {"role_key": "wing_executive", "wing": "Client Strategy/Marketing", "person_id": self.owner.id},
+                {"role_key": "wing_executive", "wing": "creative", "person_id": self.worker.id},
+                {"role_key": "wing_executive", "wing": "Product & Engineering", "person_id": self.worker.id},
+                {"role_key": "wing_executive", "wing": "Paid Media", "person_id": self.worker.id},
+                {"role_key": "wing_executive", "wing": "Design", "person_id": self.worker.id},
+                {"role_key": "wing_executive", "wing": "Operations", "person_id": self.worker.id},
+            ],
+        )
         self.ops = WorkflowOperations(self.os.store.conn, new_id, self.os._require_person_access)
 
     def tearDown(self) -> None:

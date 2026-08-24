@@ -48,9 +48,22 @@ class DashboardServiceTests(unittest.TestCase):
         self.other_ws = self.os.create_organization_workspace(self.org.id, "Hidden", "client")
         self.owner = self.os.create_person(self.org.id, "Owner", role="owner")
         self.viewer = self.os.create_person(self.org.id, "Viewer", role="member")
+        self.operator = self.os.create_person(self.org.id, "Operator", role="member")
         self.os.add_person_to_workspace(self.org.id, self.ws.id, self.owner.id, "admin")
         self.os.add_person_to_workspace(self.org.id, self.ws.id, self.viewer.id, "viewer")
+        self.os.add_person_to_workspace(self.org.id, self.ws.id, self.operator.id, "operator")
         self.os.add_person_to_workspace(self.org.id, self.other_ws.id, self.owner.id, "admin")
+        self.os.client_ops.create_client_roster(
+            self.org.id,
+            self.ws.id,
+            self.owner.id,
+            [
+                {"role_key": "client_success_dri", "person_id": self.owner.id},
+                {"role_key": "client_success_backup", "person_id": self.operator.id},
+                {"role_key": "wing_lead", "wing": "strategy", "person_id": self.owner.id},
+                {"role_key": "wing_executive", "wing": "delivery", "person_id": self.operator.id},
+            ],
+        )
         self.visible_actor = self.os.create_actor(self.ws.id, "Visible reader", "agent", "actor-visible")
         self.viewer_actor = self.os.create_actor(self.ws.id, "Viewer reader", "agent", "actor-viewer")
         self.hidden_actor = self.os.create_actor(self.ws.id, "Other reader", "agent", "actor-hidden")
@@ -262,7 +275,7 @@ class DashboardServiceTests(unittest.TestCase):
 
     def test_workflow_board_derives_readiness_and_capability_actions(self) -> None:
         run = self.os.workflow_ops.create_run(
-            self.org.id, self.ws.id, self.owner.id, workflow_template(assignee_person_id=self.viewer.id)
+            self.org.id, self.ws.id, self.owner.id, workflow_template(assignee_person_id=self.owner.id)
         )
         owner_board = self.dashboard.workflow_board(
             self.owner_identity, self.org.id, self.ws.id, self.owner.id
@@ -270,8 +283,8 @@ class DashboardServiceTests(unittest.TestCase):
         stages = {stage["stage_key"]: stage for stage in owner_board["stages"]}
         self.assertTrue(stages["brief"]["readiness"]["ready"])
         self.assertEqual(stages["brief"]["owner"]["role"], "lead")
-        self.assertEqual(stages["brief"]["owner"]["person_id"], self.viewer.id)
-        self.assertEqual(stages["brief"]["owner"]["person"]["name"], "Viewer")
+        self.assertEqual(stages["brief"]["owner"]["person_id"], self.owner.id)
+        self.assertEqual(stages["brief"]["owner"]["person"]["name"], "Owner")
         self.assertEqual(stages["brief"]["expected_duration"]["hours"], 4.0)
         self.assertEqual(owner_board["runs"][0]["rollups"]["expected_duration_hours"], 10.0)
         self.assertEqual(owner_board["runs"][0]["rollups"]["active_expected_duration_hours"], 10.0)

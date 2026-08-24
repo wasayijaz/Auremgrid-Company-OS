@@ -53,7 +53,23 @@ class JobOperationTests(unittest.TestCase):
             org = original.create_organization("Migration Agency")
             ws = original.create_organization_workspace(org.id, "Client", "client")
             person = original.create_person(org.id, "Owner", role="owner")
+            backup = original.create_person(org.id, "Backup", role="member")
             original.add_person_to_workspace(org.id, ws.id, person.id, "admin")
+            original.add_person_to_workspace(org.id, ws.id, backup.id, "operator")
+            original.client_ops.create_client_roster(
+                org.id,
+                ws.id,
+                person.id,
+                [
+                    {"role_key": "client_success_dri", "person_id": person.id},
+                    {"role_key": "client_success_backup", "person_id": backup.id},
+                    {"role_key": "account_executive", "person_id": person.id},
+                    {"role_key": "wing_lead", "wing": "Client Strategy/Marketing", "person_id": person.id},
+                    {"role_key": "wing_executive", "wing": "Client Strategy/Marketing", "person_id": person.id},
+                    {"role_key": "wing_executive", "wing": "Operations", "person_id": person.id},
+                    {"role_key": "wing_lead", "wing": "Product & Engineering", "person_id": person.id},
+                ],
+            )
             run = original.workflow_ops.create_run(
                 org.id, ws.id, person.id, original.workflow_catalog.get("client_request")
             )

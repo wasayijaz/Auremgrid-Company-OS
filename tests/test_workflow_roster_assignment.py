@@ -17,12 +17,17 @@ class WorkflowRosterAssignmentTests(unittest.TestCase):
         self.owner = self.os.create_person(self.org.id, "Owner", role="owner")
         self.people = {
             name: self.os.create_person(self.org.id, name, role="member")
-            for name in ("Lead", "Executive", "Creative", "Other lead", "Other executive")
+            for name in ("Lead", "Executive", "Creative", "Other lead", "Other executive", "Viewer")
         }
         for workspace_id in (self.ws.id, self.ws_other.id):
             self.os.add_person_to_workspace(self.org.id, workspace_id, self.owner.id, "admin")
         for person in self.people.values():
             self.os.add_person_to_workspace(self.org.id, self.ws.id, person.id, "operator")
+        self.os.store.conn.execute(
+            "UPDATE workspace_memberships SET role='viewer' WHERE workspace_id=? AND person_id=?",
+            (self.ws.id, self.people["Viewer"].id),
+        )
+        self.os.store.conn.commit()
         for person in (self.people["Lead"], self.people["Executive"]):
             self.os.add_person_to_workspace(self.org.id, self.ws_other.id, person.id, "operator")
         self.ops = WorkflowOperations(self.os.store.conn, new_id, self.os._require_person_access)
@@ -61,14 +66,14 @@ class WorkflowRosterAssignmentTests(unittest.TestCase):
             ],
         }
 
-    def _create_roster(self, *, lead=None, executive=None, extra=None, effective_at=None) -> dict:
+    def _create_roster(self, *, lead=None, executive=None, wing="strategy", extra=None, effective_at=None) -> dict:
         lead = lead or self.people["Lead"]
         executive = executive or self.people["Executive"]
         roles = [
             {"role_key": "client_success_dri", "person_id": self.owner.id},
             {"role_key": "client_success_backup", "person_id": self.people["Creative"].id},
-            {"role_key": "wing_lead", "wing": "strategy", "person_id": lead.id},
-            {"role_key": "wing_executive", "wing": "strategy", "person_id": executive.id},
+            {"role_key": "wing_lead", "wing": wing, "person_id": lead.id},
+            {"role_key": "wing_executive", "wing": wing, "person_id": executive.id},
         ]
         if extra:
             roles.extend(extra)
@@ -76,11 +81,12 @@ class WorkflowRosterAssignmentTests(unittest.TestCase):
             self.org.id, self.ws.id, self.owner.id, roles, effective_at=effective_at
         )
 
-    def test_no_roster_preserves_existing_behavior(self) -> None:
-        run = self.ops.create_run(self.org.id, self.ws.id, self.owner.id, self._template())
-        summary = self.ops.summary(self.org.id, self.ws.id, self.owner.id, run["id"])
-        self.assertIsNone(summary["stages"][0]["assignee_person_id"])
-        self.assertNotIn("client_roster_id", run["template_snapshot"])
+    def test_no_roster_rejects_before_any_run_write(self) -> None:
+        before = self.os.store.conn.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0]
+        with self.assertRaisesRegex(ValidationError, "active client roster is required"):
+            self.ops.create_run(self.org.id, self.ws.id, self.owner.id, self._template())
+        after = self.os.store.conn.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0]
+        self.assertEqual(before, after)
 
     def test_active_roster_resolves_lead_executive_and_structured_handoff(self) -> None:
         roster = self._create_roster(
@@ -114,11 +120,78 @@ class WorkflowRosterAssignmentTests(unittest.TestCase):
         after = self.os.store.conn.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0]
         self.assertEqual(before, after)
 
-    def test_roster_is_isolated_to_workspace(self) -> None:
+    def test_roster_isolation_rejects_workspace_without_roster(self) -> None:
         self._create_roster()
-        run = self.ops.create_run(self.org.id, self.ws_other.id, self.owner.id, self._template())
-        self.assertIsNone(run["template_snapshot"]["stages"][0]["assignee_person_id"])
-        self.assertNotIn("client_roster_id", run["template_snapshot"])
+        with self.assertRaisesRegex(ValidationError, "active client roster is required"):
+            self.ops.create_run(self.org.id, self.ws_other.id, self.owner.id, self._template())
+
+    def test_wrong_wing_roster_rejects_before_any_run_write(self) -> None:
+        self._create_roster(wing="creative")
+        before = self.os.store.conn.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0]
+        with self.assertRaisesRegex(ValidationError, "active client roster has 0 matches"):
+            self.ops.create_run(self.org.id, self.ws.id, self.owner.id, self._template())
+        after = self.os.store.conn.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0]
+        self.assertEqual(before, after)
+
+    def test_inactive_roster_owner_rejects_before_any_run_write(self) -> None:
+        self._create_roster()
+        self.os.store.conn.execute("UPDATE people SET status='inactive' WHERE id=?", (self.people["Lead"].id,))
+        self.os.store.conn.commit()
+        before = self.os.store.conn.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0]
+        with self.assertRaisesRegex(ValidationError, "stage brief owner must be an active workspace member"):
+            self.ops.create_run(self.org.id, self.ws.id, self.owner.id, self._template())
+        after = self.os.store.conn.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0]
+        self.assertEqual(before, after)
+
+    def test_viewer_roster_owner_rejects_before_any_run_write(self) -> None:
+        self._create_roster(lead=self.people["Viewer"])
+        before = self.os.store.conn.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0]
+        with self.assertRaisesRegex(ValidationError, "stage brief owner must have workflow_run capability"):
+            self.ops.create_run(self.org.id, self.ws.id, self.owner.id, self._template())
+        after = self.os.store.conn.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0]
+        self.assertEqual(before, after)
+
+    def test_start_stage_rejects_if_persisted_stage_loses_named_owner(self) -> None:
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        self.os.store.conn.execute(
+            """INSERT INTO workflow_definitions(id,organization_id,key,name,created_at,updated_at)
+               VALUES (?,?,?,?,?,?)""",
+            ("wdef_legacy_owner", self.org.id, "legacy_owner", "Legacy owner", now, now),
+        )
+        self.os.store.conn.execute(
+            """INSERT INTO workflow_definition_versions(id,definition_id,version,snapshot,created_by_person_id,created_at)
+               VALUES (?,?,?,?,?,?)""",
+            ("wdefver_legacy_owner", "wdef_legacy_owner", "1", '{"stages":[]}', self.owner.id, now),
+        )
+        run_id = "wrun_legacy_owner"
+        self.os.store.conn.execute(
+            """INSERT INTO workflow_runs(
+                id,organization_id,workspace_id,definition_id,definition_version_id,definition_key,
+                definition_version,definition_name,template_snapshot,status,created_by_person_id,
+                idempotency_key,due_at,sla_minutes,escalation_at,blocked_reason,created_at,updated_at,
+                started_at,completed_at,cancelled_at,version
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                run_id, self.org.id, self.ws.id, "wdef_legacy_owner", "wdefver_legacy_owner",
+                "legacy_owner", "1", "Legacy owner", '{"stages":[]}', "pending", self.owner.id,
+                None, None, None, None, None, now, now, None, None, None, 1,
+            ),
+        )
+        self.os.store.conn.execute(
+            """INSERT INTO workflow_stage_runs(
+                id,run_id,stage_key,name,sequence,status,assignee_wing,assignee_role,assignee_person_id,
+                required_evidence,requires_approval,handoff_to_wing,handoff_to_role,handoff_to_person_id,
+                on_reject_stage_key,due_at,blocked_reason,created_at,updated_at,started_at,completed_at,
+                cancelled_at,version
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "wstage_legacy_owner", run_id, "brief", "Brief", 1, "pending", "strategy", "lead",
+                None, "[]", 0, None, None, None, None, None, None, now, now, None, None, None, 1,
+            ),
+        )
+        self.os.store.conn.commit()
+        with self.assertRaisesRegex(ValidationError, "workflow stage cannot start without an active client roster owner"):
+            self.ops.start_stage(self.org.id, self.ws.id, self.owner.id, run_id, "brief")
 
     def test_roster_update_affects_new_runs_but_not_old_run(self) -> None:
         anchor = datetime.now(timezone.utc)
