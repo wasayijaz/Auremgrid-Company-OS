@@ -167,6 +167,13 @@ class IntelligenceLearningSurfaceTests(unittest.TestCase):
         self.assertEqual(len(learning["recommendations"]), 1)
         self.assertEqual({event["event_type"] for event in learning["recommendation_lifecycle"]}, {"accepted", "evaluated"})
 
+        status, quality = self.request("GET", self.scoped_path("/dashboard/intelligence/recommendation-quality"))
+        self.assertEqual(status, 200)
+        self.assertEqual(quality["status"], "ready")
+        self.assertEqual(quality["denominator"], 1)
+        self.assertEqual(quality["correctness_rate"], 1.0)
+        self.assertEqual(quality["pending_count"], 0)
+
         status, evaluation = self.request(
             "POST",
             "/dashboard/intelligence/evaluation/start",
@@ -255,6 +262,7 @@ class IntelligenceLearningSurfaceTests(unittest.TestCase):
 
     def test_mcp_learning_and_safety_tools_match_capability_boundary(self) -> None:
         self.assertEqual(_mcp_capability("intelligence.learning.get"), "brain_read")
+        self.assertEqual(_mcp_capability("intelligence.recommendations.quality"), "brain_read")
         self.assertEqual(_mcp_capability("intelligence.hypotheses.record"), "brain_propose")
         self.assertEqual(_mcp_capability("intelligence.recommendations.record"), "brain_propose")
         self.assertEqual(_mcp_capability("intelligence.recommendations.lifecycle"), "brain_promote")
@@ -265,6 +273,7 @@ class IntelligenceLearningSurfaceTests(unittest.TestCase):
         router = McpToolRouter(self.os, self.identity)
         tool_names = {tool["name"] for tool in router.list_tools()}
         self.assertIn("intelligence.learning.get", tool_names)
+        self.assertIn("intelligence.recommendations.quality", tool_names)
         hypothesis = router.call(
             "intelligence.hypotheses.record",
             {
@@ -292,6 +301,9 @@ class IntelligenceLearningSurfaceTests(unittest.TestCase):
         self.assertEqual(completed["evaluation"]["status"], "completed")
         learning = router.call("intelligence.learning.get", {"workspace_id": "ws_learning_allowed"})
         self.assertEqual(len(learning["hypotheses"]), 1)
+        quality = router.call("intelligence.recommendations.quality", {"workspace_id": "ws_learning_allowed"})
+        self.assertEqual(quality["status"], "pending")
+        self.assertEqual(quality["denominator"], 0)
         safety = router.call(
             "intelligence.evaluation_safety.get", {"workspace_id": "ws_learning_allowed", "task_class": "mcp_shadow"}
         )

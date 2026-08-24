@@ -357,6 +357,114 @@ class IntelligenceLearningService:
             "recommendation_lifecycle": lifecycle,
         }
 
+    def recommendation_quality(
+        self,
+        organization_id: str,
+        workspace_id: str,
+        person_id: str,
+        *,
+        as_of: str | None = None,
+    ) -> dict[str, Any]:
+        """Return an evidence-scoped, read-only recommendation correctness aggregate.
+
+        Only the latest evaluated lifecycle event for each recommendation is eligible.
+        An event must retain a score, measured outcomes, and evidence references; all
+        other recommendations remain explicitly pending or insufficient rather than
+        being inferred as successes or failures.
+        """
+        self.os._require_person_access(organization_id, workspace_id, person_id)
+        as_of_value = _parse_time(as_of, "as_of").isoformat() if as_of else None
+        recommendation_sql = """SELECT * FROM intelligence_recommendations
+            WHERE organization_id=? AND workspace_id=?"""
+        recommendation_params: list[Any] = [organization_id, workspace_id]
+        if as_of_value:
+            recommendation_sql += " AND created_at<=?"
+            recommendation_params.append(as_of_value)
+        recommendation_sql += " ORDER BY created_at,id"
+        recommendations = self.conn.execute(recommendation_sql, tuple(recommendation_params)).fetchall()
+        recommendation_ids = {row["id"] for row in recommendations}
+
+        lifecycle_sql = """SELECT * FROM intelligence_recommendation_lifecycle
+            WHERE organization_id=? AND workspace_id=?"""
+        lifecycle_params: list[Any] = [organization_id, workspace_id]
+        if as_of_value:
+            lifecycle_sql += " AND created_at<=?"
+            lifecycle_params.append(as_of_value)
+        lifecycle_sql += " ORDER BY created_at,id"
+        evaluated_by_recommendation: dict[str, dict[str, Any]] = {}
+        for row in self.conn.execute(lifecycle_sql, tuple(lifecycle_params)).fetchall():
+            if row["recommendation_id"] not in recommendation_ids or row["event_type"] != "evaluated":
+                continue
+            evaluated_by_recommendation[row["recommendation_id"]] = _row_dict(row)
+
+        correct = 0
+        incorrect = 0
+        insufficient = 0
+        pending = 0
+        measured_outcome_count = 0
+        evidence_ref_count = 0
+        window_starts: list[str] = []
+        window_ends: list[str] = []
+        for recommendation in recommendations:
+            evaluated = evaluated_by_recommendation.get(recommendation["id"])
+            if evaluated is None:
+                pending += 1
+                continue
+            outcomes = evaluated.get("measured_outcomes") or []
+            evidence_refs = evaluated.get("evidence_refs") or []
+            score = evaluated.get("score")
+            if score is None or not outcomes or not evidence_refs:
+                insufficient += 1
+                continue
+            measured_outcome_count += len(outcomes)
+            evidence_ref_count += len(evidence_refs)
+            window_start = evaluated.get("evaluation_window_start")
+            window_end = evaluated.get("evaluation_window_end")
+            if window_start:
+                window_starts.append(str(window_start))
+            if window_end:
+                window_ends.append(str(window_end))
+            if float(score) >= 0.5:
+                correct += 1
+            else:
+                incorrect += 1
+
+        denominator = correct + incorrect
+        status = "ready" if denominator else ("pending" if pending else "insufficient_evidence")
+        mean_score = ((sum(
+            float(item.get("score"))
+            for item in evaluated_by_recommendation.values()
+            if item.get("score") is not None
+            and item.get("measured_outcomes")
+            and item.get("evidence_refs")
+        ) / denominator) if denominator else None)
+        return {
+            "scope": {"organization_id": organization_id, "workspace_id": workspace_id},
+            "status": status,
+            "correctness_rate": (correct / denominator) if denominator else None,
+            "mean_score": mean_score,
+            "correct_count": correct,
+            "incorrect_count": incorrect,
+            "denominator": denominator,
+            "evaluated_count": len(evaluated_by_recommendation),
+            "recommendation_count": len(recommendations),
+            "pending_count": pending,
+            "insufficient_count": insufficient,
+            "evaluation_window": {
+                "start": min(window_starts) if window_starts else None,
+                "end": max(window_ends) if window_ends else None,
+            },
+            "evidence_scope": {
+                "measured_outcome_count": measured_outcome_count,
+                "evidence_ref_count": evidence_ref_count,
+            },
+            "method": {
+                "score_threshold": 0.5,
+                "unit": "latest evaluated recommendation",
+                "eligible_when": "score, measured outcomes, and evidence references are all present",
+            },
+        }
+
     def _generated_by(self, generated_by: dict[str, str] | None, person_id: str) -> dict[str, str]:
         generated = generated_by or {"type": "person", "id": person_id}
         generator_type = _text(generated.get("type"), "generated_by.type")

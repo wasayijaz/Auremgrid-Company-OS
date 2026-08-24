@@ -28,7 +28,7 @@ lookup. It exposes:
 - intelligence.profiles.list, intelligence.profiles.get
 - intelligence.runbooks.list, intelligence.runbooks.get
 - intelligence.orchestrator.run, intelligence.orchestrator.result
-- intelligence.learning.get, intelligence.hypotheses.record
+- intelligence.learning.get, intelligence.recommendations.quality, intelligence.hypotheses.record
 - intelligence.recommendations.record, intelligence.recommendations.lifecycle
 - intelligence.evaluation_safety.get, intelligence.evaluation.start, intelligence.evaluation.complete
 
@@ -46,6 +46,11 @@ append-only hypotheses, recommendations, and lifecycle events behind
 `brain_propose`/`brain_promote`; evaluation tools record shadow-only telemetry
 and circuit state without changing agent routing. These tools do not execute
 recommendations, enqueue proactive jobs, or mutate contract definitions.
+`intelligence.recommendations.quality` is a `brain_read` aggregate over the
+latest evaluated lifecycle event per recommendation. It reports correctness
+rate and denominator only where score, measured outcomes, and evidence refs
+are present, and exposes pending/insufficient counts without fabricating
+outcomes.
 
 The graph provider is local by default. An explicitly configured Graphiti/Neo4j
 projection is queried only for full-workspace source access; partial ACLs skip

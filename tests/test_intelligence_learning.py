@@ -259,6 +259,35 @@ class IntelligenceLearningTests(unittest.TestCase):
                 score=0.4,
             )
 
+    def test_recommendation_quality_is_bounded_and_does_not_infer_pending_outcomes(self) -> None:
+        first = self._recommendation()
+        second = self._recommendation()
+        pending = self.os.intelligence_learning.recommendation_quality(self.org, self.ws, self.person)
+        self.assertEqual(pending["status"], "pending")
+        self.assertIsNone(pending["correctness_rate"])
+        self.assertEqual(pending["denominator"], 0)
+        self.assertEqual(pending["pending_count"], 2)
+
+        work = self.os.work_ops.create(
+            self.org, self.ws, self.person, "Quality outcome", "Confirm recommendation result.", self.person
+        )
+        outcome = {
+            "type": "work_item", "id": work.id,
+            "occurred_at": (self.now + timedelta(days=1)).isoformat(),
+            "metric": "completed_review", "value": 1,
+        }
+        self.os.intelligence_learning.append_recommendation_event(
+            self.org, self.ws, self.person, first["id"], "evaluated",
+            measured_outcomes=[outcome], evidence_refs=[{"type": "work_item", "id": work.id}], score=0.8,
+        )
+        quality = self.os.intelligence_learning.recommendation_quality(self.org, self.ws, self.person)
+        self.assertEqual(quality["status"], "ready")
+        self.assertEqual(quality["correctness_rate"], 1.0)
+        self.assertEqual(quality["denominator"], 1)
+        self.assertEqual(quality["pending_count"], 1)
+        self.assertEqual(quality["evidence_scope"]["measured_outcome_count"], 1)
+        self.assertEqual(quality["method"]["score_threshold"], 0.5)
+
     def test_learning_persists_across_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "learning.sqlite"

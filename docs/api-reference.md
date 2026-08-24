@@ -2,7 +2,7 @@
 
 All responses are JSON except the dashboard. Errors use error and message fields with 400 validation, 403 authorization, 404 not found, or 500 internal status.
 
-Read routes include /health, /search, /entity, /entity/candidates, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /reviews/annotations, /decisions, /people, /capacity, /clients/roster, /meetings/responsibilities, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /onboarding/templates, /onboarding/imports, /memory-proposals, /knowledge-health, /dashboard/data, /dashboard/client, /dashboard/brain, /dashboard/intelligence, /dashboard/intelligence/portfolio, /dashboard/intelligence/executive, /dashboard/intelligence/profiles, /dashboard/intelligence/profiles/get, /dashboard/intelligence/runbooks, /dashboard/intelligence/runbooks/get, /dashboard/intelligence/orchestrator/result, /dashboard/intelligence/learning, /dashboard/intelligence/evaluation-safety, /dashboard/intelligence/snapshots, /dashboard/intelligence/attention, and /dashboard/workflows.
+Read routes include /health, /search, /entity, /entity/candidates, /history, /neighbors, /sources, /recent, /brief, /work, /projects, /reviews, /reviews/annotations, /decisions, /people, /capacity, /clients/roster, /meetings/responsibilities, /signals, /risks, /opportunities, /meetings, /campaigns, /creative, /content, /finance, /notifications, /agents, /integrations, /onboarding/templates, /onboarding/imports, /memory-proposals, /knowledge-health, /dashboard/data, /dashboard/client, /dashboard/brain, /dashboard/intelligence, /dashboard/intelligence/portfolio, /dashboard/intelligence/executive, /dashboard/intelligence/profiles, /dashboard/intelligence/profiles/get, /dashboard/intelligence/runbooks, /dashboard/intelligence/runbooks/get, /dashboard/intelligence/orchestrator/result, /dashboard/intelligence/learning, /dashboard/intelligence/recommendation-quality, /dashboard/intelligence/recommendations/quality, /dashboard/intelligence/evaluation-safety, /dashboard/intelligence/snapshots, /dashboard/intelligence/attention, and /dashboard/workflows.
 
 `GET /dashboard/intelligence` requires `organization_id`, `workspace_id`, and `person_id`, accepts optional `query` and timezone-aware `as_of`, and enforces the bearer identity's organization, workspace, person, capability, and source ACL. It returns a derived read model rather than new canonical truth. The response exposes status, degraded reason, evidence-backed findings, confidence, changes, hypotheses, scenarios, impact, recommendation, and proposed action descriptors. If `CompanyOS` is constructed with an injected strategic-reasoning provider, `deliberation` may additionally contain validated `hypotheses`, `options`, `scenarios`, `recommendation`, `confidence`, and `dissent`; `provider_metadata` contains only provider identity, evidence references/counts, hashes, and fallback status. Provider failures or malformed output retain deterministic deliberation. Unknown queries return `insufficient_evidence`; historical reads and read-only memberships return no mutation actions.
 
@@ -36,6 +36,15 @@ write only append-only learning records through the existing service gates.
 `POST /dashboard/intelligence/recommendations/lifecycle` requires
 `brain_promote` and appends accepted, rejected, chosen, or evaluated events;
 it does not execute the recommendation.
+
+`GET /dashboard/intelligence/recommendation-quality` (also available as
+`/dashboard/intelligence/recommendations/quality`) returns a read-only,
+workspace-scoped correctness aggregate. Its denominator includes only the
+latest evaluated event per recommendation with a score, measured outcomes,
+and evidence references; scores of at least `0.5` count as correct. The
+response includes correctness rate, denominator, evaluation window, pending
+count, and insufficient-evidence count. Unevaluated or uncited rows are never
+inferred to be correct or incorrect.
 
 `GET /dashboard/intelligence/evaluation-safety` returns the shadow-only
 evaluation decision, policy/circuit state, recent scoped evaluation runs, and

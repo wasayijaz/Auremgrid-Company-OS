@@ -80,6 +80,7 @@ class McpToolRouter:
             {"name": "intelligence.orchestrator.run", "description": "Run a bounded, read-only expert orchestration over visible intelligence."},
             {"name": "intelligence.orchestrator.result", "description": "Get a previously returned read-only orchestration result by scoped trace id."},
             {"name": "intelligence.learning.get", "description": "Read workspace-scoped hypotheses, recommendations, and recommendation lifecycle events."},
+            {"name": "intelligence.recommendations.quality", "description": "Read an evidence-scoped recommendation correctness aggregate with denominator and pending states."},
             {"name": "intelligence.hypotheses.record", "description": "Record a workspace-scoped interpretation hypothesis without promoting facts."},
             {"name": "intelligence.recommendations.record", "description": "Record a workspace-scoped recommendation for human lifecycle review."},
             {"name": "intelligence.recommendations.lifecycle", "description": "Append an accepted/rejected/chosen/evaluated lifecycle event to a recommendation."},
@@ -117,7 +118,7 @@ class McpToolRouter:
                 "integrations.configure","integrations.credentials.bind","integrations.verify","integrations.sync",
                 "intelligence.profiles.list","intelligence.profiles.get","intelligence.runbooks.list",
                 "intelligence.runbooks.get","intelligence.orchestrator.run","intelligence.orchestrator.result",
-                "intelligence.learning.get","intelligence.hypotheses.record","intelligence.recommendations.record",
+                "intelligence.learning.get","intelligence.recommendations.quality","intelligence.hypotheses.record","intelligence.recommendations.record",
                 "intelligence.recommendations.lifecycle","intelligence.evaluation_safety.get",
                 "intelligence.evaluation.start","intelligence.evaluation.complete"}
             if name in company_tools:
@@ -538,6 +539,12 @@ class McpToolRouter:
         if name == "intelligence.learning.get":
             workspace = _required(arguments, "workspace_id")
             return self.os.intelligence_learning.workspace_learning(organization_id, workspace, person_id)
+        if name == "intelligence.recommendations.quality":
+            workspace = _required(arguments, "workspace_id")
+            return self.os.intelligence_learning.recommendation_quality(
+                organization_id, workspace, person_id,
+                as_of=_optional_str(arguments.get("as_of")),
+            )
         if name == "intelligence.hypotheses.record":
             workspace = _required(arguments, "workspace_id")
             return {"hypothesis": self.os.intelligence_learning.record_hypothesis(

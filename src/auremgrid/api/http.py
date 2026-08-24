@@ -448,6 +448,14 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200, self.os.intelligence_learning.workspace_learning(
                     scoped.organization_id, workspace_id, scoped.person_id,
                 )); return
+            if parsed.path in {"/dashboard/intelligence/recommendation-quality", "/dashboard/intelligence/recommendations/quality"}:
+                assert identity is not None
+                workspace_id = _need(params, "workspace_id")
+                scoped = self.os.auth.scope_identity(identity, workspace_id)
+                self._json(200, self.os.intelligence_learning.recommendation_quality(
+                    scoped.organization_id, workspace_id, scoped.person_id,
+                    as_of=_optional_str(params.get("as_of")),
+                )); return
             if parsed.path == "/dashboard/intelligence/evaluation-safety":
                 assert identity is not None
                 workspace_id = _need(params, "workspace_id")

@@ -63,6 +63,12 @@ the same workspace and inside the original evaluation window. These tables are
 append-only or immutable and audited; they do not promote hypotheses into
 facts or recommendations into decisions.
 
+The recommendation-quality read model answers how often recommendations were
+correct without inventing outcomes. It uses the latest evaluated event per
+recommendation, counts a scored event with measured outcomes and evidence refs
+as eligible, treats scores `>= 0.5` as correct, and reports the denominator,
+evaluation window, pending recommendations, and insufficient-evidence rows.
+
 Schema 44 adds shadow-only evaluation safety. Evaluation runs can record
 provider/model/profile/runbook metadata, task class, trace linkage, latency,
 tokens, cost, evidence completeness, evaluator score, human acceptance,
