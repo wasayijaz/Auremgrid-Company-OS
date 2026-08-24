@@ -136,7 +136,7 @@ class IntelligenceService:
             organization_id, workspace_id, cutoff, decisions,
         )
         analogues = self._historical_analogues(
-            organization_id, workspace_id, cutoff, risks, work, signals,
+            organization_id, workspace_id, cutoff, risks, work, signals, domains,
         )
 
         query = query.strip() if isinstance(query, str) else None
@@ -932,6 +932,7 @@ class IntelligenceService:
         risks: list[dict[str, Any]],
         work: list[dict[str, Any]],
         signals: list[dict[str, Any]],
+        domains: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Find prior same-workspace patterns; no cross-workspace similarity."""
         analogues: list[dict[str, Any]] = []
@@ -1014,7 +1015,82 @@ class IntelligenceService:
                     "confidence": _confidence(min(0.82, 0.42 + overlap * 0.1)),
                     **metadata,
                 })
+        # Add bounded, same-workspace snapshots for dimensions that are not
+        # represented by a risk/event row.  Every comparison is sourced from
+        # canonical historical rows; absent fields remain unknown.
+        domains = domains or {}
+        current = self._analogue_dimensions(domains, work, risks, signals)
+        current_health = (domains.get("client_health") or {}).get("id") if isinstance(domains.get("client_health"), dict) else None
+        snapshots = self._optional_rows(
+            """SELECT id,overall,relationship,delivery,performance,finance,scope,sentiment,calculated_at
+               FROM client_health_snapshots WHERE organization_id=? AND workspace_id=? AND calculated_at<=?
+               ORDER BY calculated_at DESC,id LIMIT 24""",
+            (organization_id, workspace_id, cutoff),
+        )
+        for row in snapshots:
+            if str(row.get("id")) == str(current_health):
+                continue
+            candidate = {"relationship_health": row.get("relationship"), "work_pressure": row.get("delivery"), "scope": row.get("scope")}
+            matching, different = self._dimension_comparison(current, candidate)
+            if not matching:
+                continue
+            analogues.append({
+                "kind": "health_snapshot",
+                "source": self._ref("client_health_snapshots", row["id"]),
+                "summary": "Prior client-health snapshot matches visible operating dimensions.",
+                "resolved": False,
+                "outcome_stats": {"matched_events": 1, "resolved_count": 0, "resolution_rate": None, "median_days_to_resolution": None},
+                "evidence": [self._ref("client_health_snapshots", row["id"])],
+                "confidence": _confidence(0.55 + 0.08 * len(matching)),
+                **self._analogue_metadata(set(), set(), matching_dimensions=matching, different_dimensions=different, intervention="No recorded intervention.", subsequent_outcome=row.get("calculated_at"), similarity=min(0.95, 0.45 + 0.1 * len(matching))),
+            })
+        current_stage = {str(row.get("status")) for row in (domains.get("campaign_metrics", {}).get("items", []) if isinstance(domains.get("campaign_metrics"), dict) else []) if row.get("status")}
+        if current_stage:
+            campaign_rows = self._optional_rows(
+                """SELECT m.id,c.status,m.captured_at FROM campaign_metric_snapshots m
+                   JOIN campaigns c ON c.id=m.campaign_id
+                  WHERE m.organization_id=? AND m.workspace_id=? AND m.captured_at<=?
+                  ORDER BY m.captured_at DESC,m.id LIMIT 24""",
+                (organization_id, workspace_id, cutoff),
+            )
+            for row in campaign_rows:
+                if str(row.get("status")) not in current_stage:
+                    continue
+                analogue = self._analogue_metadata(set(), set(), matching_dimensions=["campaign_stage"], different_dimensions=[], intervention="No recorded intervention.", subsequent_outcome=row.get("captured_at"), similarity=0.6)
+                analogues.append({"kind": "campaign_stage", "source": self._ref("campaign_metric_snapshots", row["id"]), "summary": "Prior campaign snapshot shares the current campaign stage.", "resolved": False, "outcome_stats": {"matched_events": 1, "resolved_count": 0, "resolution_rate": None, "median_days_to_resolution": None}, "evidence": [self._ref("campaign_metric_snapshots", row["id"])], "confidence": _confidence(0.6), **analogue})
         return analogues[:8]
+
+    @staticmethod
+    def _analogue_dimensions(domains: dict[str, Any], work: list[dict[str, Any]], risks: list[dict[str, Any]], signals: list[dict[str, Any]]) -> dict[str, Any]:
+        work_items = domains.get("work", {}).get("items", work) if isinstance(domains.get("work"), dict) else work
+        scope_rows = domains.get("scope", {}).get("usage", []) if isinstance(domains.get("scope"), dict) else []
+        finance = domains.get("finance") if isinstance(domains.get("finance"), dict) else {}
+        capacity = domains.get("capacity", {}).get("snapshots", []) if isinstance(domains.get("capacity"), dict) else []
+        included = sum(float(row.get("included_quantity") or row.get("included_hours") or 0) for row in scope_rows)
+        used = sum(float(row.get("delivered_quantity") or row.get("used_hours") or 0) for row in scope_rows)
+        revenue, costs = finance.get("recognized_revenue"), finance.get("costs")
+        return {
+            "work_pressure": len(work_items),
+            "scope": round(used / included, 3) if included else None,
+            "relationship_health": (domains.get("client_health") or {}).get("relationship") if isinstance(domains.get("client_health"), dict) else None,
+            "revenue_margin": round((float(revenue) - float(costs)) / float(revenue), 3) if revenue not in (None, 0) and costs is not None else None,
+            "team_load": round(sum(float(row.get("remaining_hours") or 0) for row in capacity), 3) if capacity else None,
+            "signal_patterns": _tokens(" ".join(str(row.get("type") or "") + " " + str(row.get("evidence") or "") for row in risks + signals)),
+        }
+
+    @staticmethod
+    def _dimension_comparison(current: dict[str, Any], candidate: dict[str, Any]) -> tuple[list[str], list[str]]:
+        matching: list[str] = []
+        different: list[str] = []
+        for key, label in (("relationship_health", "relationship_health"), ("work_pressure", "work_pressure"), ("scope", "scope")):
+            left, right = current.get(key), candidate.get(key)
+            if left is None or right is None:
+                continue
+            if abs(float(left) - float(right)) <= 0.2 * max(1.0, abs(float(left)), abs(float(right))):
+                matching.append(label)
+            else:
+                different.append(label)
+        return matching, different
 
     @staticmethod
     def _analogue_metadata(
