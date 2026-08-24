@@ -7,6 +7,7 @@ __pycache__/
 *.sqlite-wal
 .auremgrid-backups/
 .codex-runtime/
+.tmp/
 # Local test and coverage artifacts.
 .pytest_cache/
 .mypy_cache/
