@@ -116,6 +116,8 @@ def normalize_text(value: str) -> str:
 # Extraction can establish a strong but still non-human claim.  Promotion and
 # conflict resolution remain the only paths to ``verified``.
 HIGH_CONFIDENCE_THRESHOLD = 0.95
+MAX_SEARCH_LIMIT = 64
+MAX_SEARCH_QUERY_CHARS = 2000
 
 
 class CompanyOS:
@@ -1086,6 +1088,13 @@ class CompanyOS:
         limit: int = 8,
     ) -> EvidenceBundle:
         actor = self._require_actor(workspace_id, actor_id)
+        if not isinstance(limit, int) or limit < 1:
+            raise ValidationError("limit must be a positive integer")
+        limit = min(limit, MAX_SEARCH_LIMIT)
+        if not isinstance(query, str) or not query.strip():
+            raise ValidationError("query is required")
+        if len(query) > MAX_SEARCH_QUERY_CHARS:
+            raise ValidationError(f"query must be at most {MAX_SEARCH_QUERY_CHARS} characters")
         requested_as_of = _temporal_read_moment(as_of)
         # Knowledge-state events retain sub-second ordering.  Do not round the
         # live read watermark or a just-recorded transition can disappear until
@@ -1094,8 +1103,6 @@ class CompanyOS:
         sources = self.store.allowed_sources(workspace_id, actor, as_of=requested_as_of)
         source_ids = [source.id for source in sources]
         sources_by_id = {source.id: source for source in sources}
-        if not query.strip():
-            raise ValidationError("query is required")
         query_norm = normalize_text(query)
         fused_hits: list[RankedHit] = []
         documents_by_id: dict[str, tuple[Document, SourceArtifact]] = {}
@@ -1247,7 +1254,8 @@ class CompanyOS:
                         payload={
                             "document_id": document.id,
                             "source_key": source.source_key,
-                            "channels": list(hit.channels),
+                         "channels": list(hit.channels),
+                            "citation_ref": f"document:{document.id}",
                             "score_components": score_components,
                         },
                         citation=Citation(
@@ -1266,6 +1274,7 @@ class CompanyOS:
                 state = self.brain_ops._knowledge_state_row(workspace_id, "fact", fact.id, as_of)
                 payload["effective_state"] = str(state["state"]) if state is not None else "inferred"
                 payload["channels"] = list(hit.channels)
+                payload["citation_ref"] = f"fact:{fact.id}"
                 payload["score_components"] = score_components
                 items.append(
                     EvidenceItem(
@@ -1288,6 +1297,11 @@ class CompanyOS:
             "provider": self.embedding_provider.name,
             "model": self.embedding_provider.model,
             "version": self.embedding_provider.version,
+            "authorized_source_count": len(source_ids),
+            "authorized_document_count": len(allowed_document_ids),
+            "requested_limit": limit,
+            "effective_limit": limit,
+            "citation_contract": "source_id+content_hash+evidence_span+observed_at",
             "ranking": {
                 "contract": "hybrid-authority-recency-v1",
                 "weights": {

@@ -5,6 +5,8 @@ Auremgrid runs as a local-first Python process with SQLite. This checklist cover
 ## Before starting
 
 - [ ] Run `scripts/prepare-deploy.ps1` to validate Python, .env, and DB path
+- [ ] Copy `.env.example` to `.env`, edit local ids/paths, and keep provider secrets in environment or a vault
+- [ ] Run `python scripts/private_host_smoke.py` on the host or release artifact; it must pass without Docker
 - [ ] Run `scripts/release.py validate` to confirm the codebase passes all checks
 - [ ] Run `auremgrid backup` and `auremgrid verify-backup` against the current database
 - [ ] Rehearse restore on a copy: `auremgrid restore --backup ... --db ... --overwrite`

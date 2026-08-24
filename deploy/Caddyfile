@@ -1,4 +1,4 @@
-{$AUREMGRID_DOMAIN} {
-    reverse_proxy 127.0.0.1:8791
+{$AUREMGRID_DOMAIN:localhost} {
+    reverse_proxy {$AUREMGRID_UPSTREAM:127.0.0.1:8791}
     encode gzip
 }

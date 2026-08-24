@@ -3501,6 +3501,44 @@ MIGRATIONS = (
         CREATE INDEX IF NOT EXISTS idx_agent_tasks_orchestrator_trace ON agent_tasks(orchestrator_trace_id);
         """,
     ),
+    Migration(
+        48,
+        "approved_reversible_action_executions",
+        """
+        CREATE TABLE IF NOT EXISTS agent_action_executions (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            agent_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            approval_request_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            action_kind TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            descriptor_hash TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed')),
+            result_json TEXT,
+            error_json TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(agent_id) REFERENCES agents(id),
+            FOREIGN KEY(run_id) REFERENCES agent_runs(id),
+            FOREIGN KEY(task_id) REFERENCES agent_tasks(id),
+            FOREIGN KEY(approval_request_id) REFERENCES approval_requests(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_action_executions_idempotency
+            ON agent_action_executions(organization_id,idempotency_key);
+        CREATE INDEX IF NOT EXISTS idx_agent_action_executions_run
+            ON agent_action_executions(run_id,created_at DESC);
+        CREATE TRIGGER IF NOT EXISTS agent_action_executions_no_delete BEFORE DELETE ON agent_action_executions BEGIN
+            SELECT RAISE(ABORT, 'agent action executions are append-only');
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
@@ -3558,6 +3596,21 @@ def _supervised_reversible_agent_actions_sql(conn: sqlite3.Connection) -> str:
         "CREATE INDEX IF NOT EXISTS idx_agent_tasks_orchestrator_trace ON agent_tasks(orchestrator_trace_id);"
     )
     return "\n".join(statements)
+
+
+def _approved_reversible_action_executions_sql(conn: sqlite3.Connection) -> str:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_action_executions)").fetchall()}
+    if columns:
+        return """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_action_executions_idempotency
+            ON agent_action_executions(organization_id,idempotency_key);
+        CREATE INDEX IF NOT EXISTS idx_agent_action_executions_run
+            ON agent_action_executions(run_id,created_at DESC);
+        CREATE TRIGGER IF NOT EXISTS agent_action_executions_no_delete BEFORE DELETE ON agent_action_executions BEGIN
+            SELECT RAISE(ABORT, 'agent action executions are append-only');
+        END;
+        """
+    return MIGRATIONS[-1].sql
 
 
 def migrate(conn: sqlite3.Connection) -> int:
@@ -3638,6 +3691,8 @@ def migrate(conn: sqlite3.Connection) -> int:
                 sql = sql.replace("ALTER TABLE provider_import_quarantines ADD COLUMN quarantine_details TEXT;", "")
         if migration.version == 47:
             sql = _supervised_reversible_agent_actions_sql(conn)
+        if migration.version == 48:
+            sql = _approved_reversible_action_executions_sql(conn)
         with conn:
             conn.executescript(sql)
             if migration.version == 19:

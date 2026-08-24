@@ -141,6 +141,26 @@ class AgentRunObservabilityTests(unittest.TestCase):
         self.assertEqual(detail["run"]["status"], "completed")
         self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM jobs WHERE idempotency_key=?", (f"agent-action:{task['id']}",)).fetchone()[0], 1)
 
+    def test_notification_action_requires_exact_approved_payload(self) -> None:
+        self.os.auth.create_principal(self.org.id, self.owner.id, "owner@notification.test")
+        approval = self.os.agency_ops.request_approval(
+            self.org.id, "person", self.owner.id, "Notify owner", "notification.create",
+            {"recipient_person_id": self.owner.id, "reason": "review", "source_type": "agent", "workspace_id": self.primary.id},
+            "approved notification", policy="auto", workspace_id=self.primary.id,
+        )
+        descriptor = {
+            "action": "create_notification", "kind": "notification.create", "safe": True, "one_way": False,
+            "payload": {"recipient_person_id": self.owner.id, "reason": "review", "source_type": "agent", "workspace_id": self.primary.id},
+        }
+        task = self.os.agent_ops.enqueue_task(
+            self.org.id, self.owner.id, self.agent["id"], "Notify owner", "Create notification",
+            self.primary.id, action_descriptor=descriptor, approval_request_id=approval["id"],
+        )
+        run = self.os.agent_ops.start_run(self.org.id, self.owner.id, self.agent["id"], task["id"])
+        result = run_one_job(self.os, self.org.id, self.primary.id, "worker-notification")
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM notifications WHERE source_type='agent'").fetchone()[0], 1)
+
     def test_dashboard_agent_surfaces_are_workspace_isolated(self) -> None:
         primary_task = self.os.agent_ops.enqueue_task(
             self.org.id, self.owner.id, self.agent["id"], "Primary task", "Read primary work", self.primary.id

@@ -27,9 +27,11 @@ services:
   proxy:
     image: caddy:2-alpine
     depends_on: [web]
-    command: ["caddy", "reverse-proxy", "--from", "${AUREMGRID_DOMAIN:-localhost}", "--to", "web:8791"]
+    environment:
+      AUREMGRID_DOMAIN: ${AUREMGRID_DOMAIN:-localhost}
+      AUREMGRID_UPSTREAM: web:8791
     ports: ["127.0.0.1:443:443"]
-    volumes: ["caddy-data:/data", "caddy-config:/config"]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy-data:/data", "caddy-config:/config"]
     restart: unless-stopped
 volumes:
   auremgrid-data:

@@ -13,6 +13,7 @@ from auremgrid.domain.models import (
     effective_capability_tags,
     normalize_agent_level,
 )
+from auremgrid.services.reversible_actions import validate_approved_action_descriptor
 
 
 def _now() -> datetime:
@@ -198,28 +199,15 @@ class AgentOperations:
         if priority < 0 or priority > 100:
             raise ValidationError("agent task priority must be between 0 and 100")
         if action_descriptor is not None:
-            if not isinstance(action_descriptor, dict) or action_descriptor.get("safe") is not True or action_descriptor.get("one_way") is not False:
-                raise ValidationError("agent action descriptor must be safe and reversible")
-            if action_descriptor.get("action") not in {"generate_report"}:
-                raise ValidationError("unsupported agent action descriptor")
-            if not approval_request_id:
-                raise ValidationError("approved action descriptor required")
-            approval = self.conn.execute(
-                "SELECT status,workspace_id,action_type,payload FROM approval_requests WHERE id=? AND organization_id=?",
-                (approval_request_id, organization_id),
-            ).fetchone()
-            if approval is None or approval["status"] != "approved" or approval["workspace_id"] != workspace_id or approval["action_type"] != "report.generate":
-                raise AuthorizationError("same-scope approved action required")
-            try:
-                approved_payload = json.loads(approval["payload"] or "{}")
-            except (TypeError, ValueError):
-                approved_payload = {}
-            if approved_payload.get("report_type") != action_descriptor.get("payload", {}).get("type"):
-                raise AuthorizationError("approved report type does not match action descriptor")
-            if orchestrator_trace_id:
-                trace = self.conn.execute("SELECT 1 FROM intelligence_orchestrator_runs WHERE trace_id=? AND organization_id=? AND workspace_id=?", (orchestrator_trace_id, organization_id, workspace_id)).fetchone()
-                if trace is None:
-                    raise ValidationError("orchestrator trace is not durable in scope")
+            validate_approved_action_descriptor(
+                self.conn,
+                organization_id,
+                workspace_id,
+                requested_by_person_id,
+                action_descriptor,
+                approval_request_id,
+                orchestrator_trace_id,
+            )
 
         tags = self.validate_capability_tags(intent_tags or ("execute",))
         recommended = self.resolve_level(tags)
@@ -292,14 +280,15 @@ class AgentOperations:
         if task is None or task["status"] != "queued":
             raise ValidationError("queued agent task required")
         if task["action_descriptor_json"]:
-            if not task["approval_request_id"]:
-                raise AuthorizationError("approved action descriptor required")
-            approval = self.conn.execute(
-                "SELECT status,workspace_id,action_type,payload FROM approval_requests WHERE id=? AND organization_id=?",
-                (task["approval_request_id"], organization_id),
-            ).fetchone()
-            if approval is None or approval["status"] != "approved" or approval["workspace_id"] != task["workspace_id"] or approval["action_type"] != "report.generate":
-                raise AuthorizationError("same-scope approved action required")
+            validate_approved_action_descriptor(
+                self.conn,
+                organization_id,
+                task["workspace_id"],
+                person_id,
+                json.loads(task["action_descriptor_json"]),
+                task["approval_request_id"],
+                task["orchestrator_trace_id"],
+            )
         if task["workspace_id"] is not None and task["workspace_id"] not in self.visible_workspace_ids(organization_id, person_id):
             raise AuthorizationError("agent task workspace is not visible to caller")
         now = _now().isoformat()

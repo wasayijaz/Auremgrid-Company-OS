@@ -128,6 +128,29 @@ class SemanticRetrievalTests(unittest.TestCase):
             self.assertIn(result.document_id, {item.payload.get("document_id") for item in bundle.items})
             second.close()
 
+    def test_retrieval_reports_bounded_limits_authorized_counts_and_citation_refs(self):
+        os = CompanyOS()
+        ws, actor = self._workspace(os)
+        result = os.ingest_text(ws.id, actor.id, "brief", "launch readiness", "memory://brief")
+        bundle = os.search(ws.id, actor.id, "launch", limit=999)
+        self.assertEqual(bundle.retrieval["requested_limit"], 64)
+        self.assertEqual(bundle.retrieval["effective_limit"], 64)
+        self.assertEqual(bundle.retrieval["authorized_document_count"], 1)
+        self.assertTrue(all(item.payload.get("citation_ref") for item in bundle.items))
+        self.assertTrue(any(item.payload["citation_ref"] == f"document:{result.document_id}" for item in bundle.items))
+        os.close()
+
+    def test_retrieval_rejects_empty_or_oversized_queries(self):
+        os = CompanyOS()
+        ws, actor = self._workspace(os)
+        with self.assertRaisesRegex(Exception, "query is required"):
+            os.search(ws.id, actor.id, " ")
+        with self.assertRaisesRegex(Exception, "at most"):
+            os.search(ws.id, actor.id, "x" * 2001)
+        with self.assertRaisesRegex(Exception, "positive integer"):
+            os.search(ws.id, actor.id, "launch", limit=0)
+        os.close()
+
     def test_historical_semantic_hit_survives_restart_after_source_retirement(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "historical.sqlite"

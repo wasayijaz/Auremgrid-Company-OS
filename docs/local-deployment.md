@@ -39,6 +39,12 @@ single-host packaging templates. They exercise image/static boundaries and a
 loopback proxy default; they do not prove browser automation, live provider
 connectivity, managed hosting, or public-production hardening.
 
+Copy `.env.example` to `.env` for private-host defaults, then edit the
+organization id and paths. The example contains no secrets. Run
+`python scripts/private_host_smoke.py` to rehearse health, one worker job,
+backup/verify, and restore recovery mode with outbound dispatch disabled; this
+Python rehearsal does not require Docker.
+
 Keep the SQLite database on durable storage. Use the online `backup` and
 `verify-backup` commands before upgrades; do not copy a live WAL file. Run
 durable jobs with a separate `worker-once` process. Secrets belong in an
