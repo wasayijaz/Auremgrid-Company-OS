@@ -274,6 +274,24 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
         self.assertEqual(no_match["runbook_route"]["status"], "no_match")
         self.assertEqual(no_match["status"], "degraded")
 
+    def test_disagreement_historical_and_scenario_summaries_are_explicit(self):
+        contracts = _Contracts(2)
+        def handler(key):
+            def run(ctx):
+                value = _result(f"hypothesis-{key}")
+                value["confidence"] = .7
+                value["analogues"] = ctx.get("historical_analogues", [])[:1]
+                return value
+            return run
+        result = IntelligenceOrchestrator(
+            self.os, contracts,
+            specialist_handlers={"expert-0": handler("expert-0"), "expert-1": handler("expert-1")},
+        ).run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin", profile_ids=["expert-0", "expert-1"])
+        self.assertEqual(result["disagreement"]["status"], "contested")
+        self.assertEqual(result["disagreement"]["resolution"], "human_review")
+        self.assertIn("status", result["historical_learning"])
+        self.assertIn("status", result["scenario_analysis"])
+
 
 if __name__ == "__main__":
     unittest.main()

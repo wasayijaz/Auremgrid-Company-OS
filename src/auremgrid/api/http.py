@@ -916,6 +916,7 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 _require_evaluation_scope(self.os, scoped.organization_id, workspace_id, _need(payload, "evaluation_id"))
                 self._json(200, {"evaluation": self.os.intelligence_evaluation_safety.complete(
                     scoped.organization_id, scoped.person_id, _need(payload, "evaluation_id"),
+                    workspace_id=workspace_id,
                     input_tokens=_optional_int(payload.get("input_tokens")),
                     output_tokens=_optional_int(payload.get("output_tokens")),
                     cost_amount=None if payload.get("cost_amount") is None else float(payload.get("cost_amount")),

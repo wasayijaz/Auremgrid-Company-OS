@@ -59,6 +59,21 @@ class IntelligenceEvaluationSafetyTests(unittest.TestCase):
             self.assertFalse(decision["allowed"])
             second.close()
 
+    def test_complete_rejects_wrong_workspace_and_duplicate_completion(self):
+        run = self.safety.start("org_demo", "person_demo_owner", "scope", workspace_id="ws_alpha")
+        with self.assertRaises(Exception):
+            self.safety.complete("org_demo", "person_demo_owner", run["id"], workspace_id="ws_beta")
+        self.safety.complete("org_demo", "person_demo_owner", run["id"], workspace_id="ws_alpha")
+        with self.assertRaises(Exception):
+            self.safety.complete("org_demo", "person_demo_owner", run["id"], workspace_id="ws_alpha")
+
+    def test_breaker_counts_only_recent_events(self):
+        self.safety.configure_policy("org_demo", "person_demo_owner", "rolling", breaker_threshold=2, breaker_window_seconds=1)
+        run = self.safety.start("org_demo", "person_demo_owner", "rolling", workspace_id="ws_alpha")
+        self.safety.complete("org_demo", "person_demo_owner", run["id"], workspace_id="ws_alpha", cost_amount=99)
+        row = self.os.store.conn.execute("SELECT * FROM intelligence_evaluation_policies WHERE organization_id=? AND task_class=?", ("org_demo", "rolling")).fetchone()
+        self.assertEqual(row["failure_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

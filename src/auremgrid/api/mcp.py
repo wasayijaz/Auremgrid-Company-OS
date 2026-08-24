@@ -632,6 +632,7 @@ class McpToolRouter:
             _require_evaluation_scope(self.os, organization_id, workspace, evaluation_id)
             return {"evaluation": self.os.intelligence_evaluation_safety.complete(
                 organization_id, person_id, evaluation_id,
+                workspace_id=workspace,
                 input_tokens=_optional_int(arguments.get("input_tokens")),
                 output_tokens=_optional_int(arguments.get("output_tokens")),
                 cost_amount=None if arguments.get("cost_amount") is None else float(arguments.get("cost_amount")),

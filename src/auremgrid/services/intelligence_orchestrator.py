@@ -233,6 +233,15 @@ class IntelligenceOrchestrator:
         trace.append({"stage": "contradiction_detector", "status": "completed", "count": len(contradictions)})
         final = self._synthesize(situation, specialists, contradictions, errors, allowed_refs)
         final = self._reality_check(final, situation, allowed_refs)
+        # Keep disagreement and historical/scenario learning explicit at the
+        # orchestration boundary.  These are derived read models: they make
+        # the specialist debate inspectable without promoting a weighted view
+        # into canonical truth or executing a recommendation.
+        disagreement = self._disagreement_summary(specialists, contradictions)
+        historical_learning = self._historical_learning(context.get("historical_analogues", []))
+        scenario_analysis = self._scenario_analysis(context.get("scenario_inputs", {}))
+        if disagreement["status"] == "contested":
+            final["needs_review"] = True
         gate_events, gate_review = self._runbook_gates(runbook, situation, specialists, contradictions, errors)
         trace.extend(gate_events)
         if gate_review:
@@ -246,6 +255,9 @@ class IntelligenceOrchestrator:
             "trace_id": trace_id,
             "status": "degraded" if errors or not specialists else "ready",
             "contradictions": contradictions,
+            "disagreement": disagreement,
+            "historical_learning": historical_learning,
+            "scenario_analysis": scenario_analysis,
             "specialists": specialists,
             "dissent": [item for specialist in specialists for item in specialist.get("dissent", [])][: self.limits.max_items],
             "runbook_route": {"status": "matched" if runbook else "no_match", "reason": route_reason},
@@ -467,6 +479,120 @@ class IntelligenceOrchestrator:
                         "reason": "Independent hypotheses differ.",
                     })
         return contradictions[:MAX_ITEMS]
+
+    @staticmethod
+    def _disagreement_summary(
+        specialists: Sequence[Mapping[str, Any]],
+        contradictions: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Return an inspectable, confidence-weighted specialist debate.
+
+        A weighted majority is only a tie-breaker for the read model.  A close
+        margin remains explicitly contested so callers cannot mistake a slim
+        vote for consensus.  Profile identifiers are retained for human
+        review and no specialist is silently discarded.
+        """
+        entries = [
+            {
+                "specialist_id": str(item.get("specialist_id") or ""),
+                "profile": item.get("profile"),
+                "hypothesis": str(item.get("hypothesis") or "").strip(),
+                "confidence": round(max(0.0, min(1.0, float(item.get("confidence") or 0.0))), 3),
+            }
+            for item in specialists
+            if str(item.get("hypothesis") or "").strip()
+        ]
+        if not entries:
+            return {
+                "status": "insufficient",
+                "specialist_count": len(specialists),
+                "hypothesis_count": 0,
+                "weighted_confidence": 0.0,
+                "confidence_margin": 0.0,
+                "majority_hypothesis": None,
+                "minority": [],
+                "resolution": "human_review",
+            }
+        buckets: dict[str, dict[str, Any]] = {}
+        for entry in entries:
+            key = entry["hypothesis"].casefold()
+            bucket = buckets.setdefault(key, {"hypothesis": entry["hypothesis"], "weight": 0.0, "members": []})
+            bucket["weight"] += entry["confidence"]
+            bucket["members"].append(entry)
+        ranked = sorted(buckets.values(), key=lambda item: (-item["weight"], item["hypothesis"].casefold()))
+        total_weight = sum(float(item["weight"]) for item in ranked)
+        top = ranked[0]
+        second_weight = float(ranked[1]["weight"]) if len(ranked) > 1 else 0.0
+        margin = round((float(top["weight"]) - second_weight) / max(total_weight, 1e-9), 3)
+        status = "contested" if contradictions else "consensus"
+        if len(ranked) > 1 and margin < 0.15:
+            status = "contested"
+        minority = [
+            {"hypothesis": bucket["hypothesis"], "weight": round(float(bucket["weight"]), 3),
+             "specialists": [member["specialist_id"] for member in bucket["members"]]}
+            for bucket in ranked[1:]
+        ]
+        return {
+            "status": status,
+            "specialist_count": len(specialists),
+            "hypothesis_count": len(ranked),
+            "weighted_confidence": round(float(top["weight"]) / max(len(top["members"]), 1), 3),
+            "confidence_margin": margin,
+            "majority_hypothesis": top["hypothesis"],
+            "majority_specialists": [member["specialist_id"] for member in top["members"]],
+            "minority": minority[:MAX_ITEMS],
+            "resolution": "human_review" if status == "contested" else "weighted_consensus",
+        }
+
+    @staticmethod
+    def _historical_learning(analogues: Any) -> dict[str, Any]:
+        """Summarize prior analogue outcomes without inferring absent data."""
+        rows = [item for item in (analogues or []) if isinstance(item, Mapping)]
+        resolved = 0.0
+        weighted = 0.0
+        known_outcomes = 0
+        for item in rows[:MAX_ITEMS]:
+            stats = item.get("outcome_stats") if isinstance(item.get("outcome_stats"), Mapping) else {}
+            similarity = _score(item.get("similarity"), _score(item.get("confidence"), 0.0))
+            rate = stats.get("resolution_rate")
+            if rate is None:
+                continue
+            try:
+                rate = max(0.0, min(1.0, float(rate)))
+            except (TypeError, ValueError):
+                continue
+            weighted += similarity
+            resolved += similarity * rate
+            known_outcomes += 1
+        rate = round(resolved / weighted, 3) if weighted else None
+        return {
+            "status": "available" if rows else "insufficient_evidence",
+            "analogue_count": len(rows),
+            "outcome_observation_count": known_outcomes,
+            "weighted_resolution_rate": rate,
+            "recommendation_signal": (
+                "Prior comparable interventions resolved the signal; reuse cautiously."
+                if rate is not None and rate >= 0.6 else
+                "Prior analogues are mixed or unresolved; require a reversible review."
+                if rate is not None else
+                "No measured analogue outcome is available; do not generalize."
+            ),
+        }
+
+    @staticmethod
+    def _scenario_analysis(inputs: Any) -> dict[str, Any]:
+        values = dict(inputs) if isinstance(inputs, Mapping) else {}
+        retained = values.get("retained_inputs") if isinstance(values.get("retained_inputs"), Mapping) else values
+        projection = values.get("projection") if isinstance(values.get("projection"), Mapping) else {}
+        unknowns = [str(item) for item in (values.get("constraints") or []) if item]
+        return {
+            "status": "available" if retained or projection else "insufficient_evidence",
+            "retained_inputs": _json(retained),
+            "projection": _json(projection),
+            "constraint_count": len(unknowns),
+            "constraints": unknowns[:MAX_ITEMS],
+            "sensitivity": "bounded_inputs_only" if retained or projection else "none",
+        }
 
     def _select_profiles(self, org: str, ws: str, person: str, profile_ids: Sequence[str] | None, runbook: Any) -> list[Any]:
         contracts = self.contracts or getattr(self.os, "intelligence_contracts", None)

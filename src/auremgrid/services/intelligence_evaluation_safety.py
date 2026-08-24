@@ -52,7 +52,12 @@ class IntelligenceEvaluationSafety:
     def can_start(self, organization_id: str, person_id: str, task_class: str) -> dict[str, Any]:
         policy = self.policy(organization_id, person_id, task_class)
         until = policy.get("breaker_open_until")
-        open_now = bool(until and datetime.fromisoformat(str(until).replace("Z", "+00:00")) > _now())
+        try:
+            open_now = bool(until and datetime.fromisoformat(str(until).replace("Z", "+00:00")) > _now())
+        except (TypeError, ValueError):
+            # A malformed persisted timestamp must fail safe by allowing a
+            # fresh shadow run; it must not crash a read/status endpoint.
+            open_now = False
         return {"allowed": not open_now, "shadow_only": True, "reason": "circuit_open" if open_now else "shadow_evaluation_only", "policy": policy}
 
     def configure_policy(self, organization_id: str, person_id: str, task_class: str, **limits: Any) -> dict[str, Any]:
@@ -119,6 +124,7 @@ class IntelligenceEvaluationSafety:
         person_id: str,
         evaluation_id: str,
         *,
+        workspace_id: str | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         cost_amount: float | None = None,
@@ -135,6 +141,15 @@ class IntelligenceEvaluationSafety:
         if row is None:
             raise ValidationError("evaluation not found")
         item = dict(row)
+        if workspace_id is not None and item.get("workspace_id") != workspace_id:
+            raise AuthorizationError("evaluation workspace mismatch")
+        if item.get("status") not in {"shadow_only", "running"}:
+            raise ValidationError("evaluation is already completed")
+        for name, value in (("input_tokens", input_tokens), ("output_tokens", output_tokens), ("revision_count", revision_count)):
+            if value is not None and int(value) < 0:
+                raise ValidationError(f"{name} must be non-negative")
+        if cost_amount is not None and float(cost_amount) < 0:
+            raise ValidationError("cost_amount must be non-negative")
         started = datetime.fromisoformat(str(item["started_at"]).replace("Z", "+00:00"))
         latency = max(0, int((_now() - started.astimezone(timezone.utc)).total_seconds() * 1000))
         policy = self.policy(organization_id, person_id, item["task_class"])
@@ -162,7 +177,17 @@ class IntelligenceEvaluationSafety:
 
     def _record_failure(self, org: str, person: str, task_class: str, evaluation_id: str, reason: str, policy: Mapping[str, Any]) -> None:
         now = _now()
-        count = int(policy.get("failure_count") or 0) + 1
+        # Breakers are a rolling-window control, not a lifetime failure
+        # counter.  Count only recent cap events so a recovered provider does
+        # not remain effectively circuit-open forever after the open period.
+        window_start = (now - timedelta(seconds=int(policy["breaker_window_seconds"]))).isoformat()
+        recent = self.conn.execute(
+            """SELECT COUNT(*) FROM intelligence_evaluation_circuit_events
+               WHERE organization_id=? AND task_class=?
+                 AND created_at>=? AND event_type IN ('cap_exceeded','opened')""",
+            (org, task_class, window_start),
+        ).fetchone()[0]
+        count = int(recent or 0) + 1
         opened = now + timedelta(seconds=int(policy["breaker_open_seconds"])) if count >= int(policy["breaker_threshold"]) else None
         self.conn.execute(
             "INSERT INTO intelligence_evaluation_circuit_events VALUES (?,?,?,?,?,?,?)",
@@ -170,7 +195,7 @@ class IntelligenceEvaluationSafety:
         )
         self.conn.execute(
             "INSERT INTO intelligence_evaluation_policies VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,task_class) DO UPDATE SET failure_count=excluded.failure_count,breaker_open_until=excluded.breaker_open_until,updated_at=excluded.updated_at",
-            (org, task_class, policy["max_runtime_ms"], policy["max_cost_amount"], policy["max_tokens"], policy["breaker_threshold"], policy["breaker_window_seconds"], policy["breaker_open_seconds"], count, opened.isoformat() if opened else policy.get("breaker_open_until"), now.isoformat()),
+            (org, task_class, policy["max_runtime_ms"], policy["max_cost_amount"], policy["max_tokens"], policy["breaker_threshold"], policy["breaker_window_seconds"], policy["breaker_open_seconds"], count, opened.isoformat() if opened else None, now.isoformat()),
         )
 
     @staticmethod

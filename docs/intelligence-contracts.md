@@ -83,6 +83,16 @@ runtime, token, cost, and breaker caps per organization/task class. Circuit
 events are append-only. This layer can block further shadow evaluations when a
 breaker is open, but it never changes live agent routing.
 
+The orchestrator also emits explicit `disagreement`, `historical_learning`,
+and `scenario_analysis` read-model sections. Disagreement retains every
+hypothesis and profile, reports a confidence-weighted margin, and marks close
+or contradictory views `contested` with a `human_review` resolution. Historical
+learning computes a similarity-weighted resolution rate only from analogue rows
+that contain measured outcome statistics; missing outcomes remain unknown.
+Scenario analysis echoes only retained inputs, projections, and constraints,
+and labels the result `bounded_inputs_only`; neither section mutates canonical
+records or silently converts a weighted consensus into a decision.
+
 Schema 45 adds proactive attention lifecycle state for persisted Intelligence
 snapshots. Lifecycle rows dedupe by organization/workspace/person/fingerprint
 and keep status, originating snapshot, attention item, orchestration trace,
