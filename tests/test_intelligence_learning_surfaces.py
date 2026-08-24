@@ -76,16 +76,16 @@ class IntelligenceLearningSurfaceTests(unittest.TestCase):
             "workspace_id": "ws_learning_allowed",
             "person_id": "person_learning_owner",
             "summary": "Review the visible learning source before changing the plan.",
-            "runbook_id": "client_growth_diagnosis",
+            "runbook_id": "client_health_drop",
             "runbook_version": 1,
-            "profile_contributors": [{"profile_id": "cosmo_strategy_architect", "version": 1, "role": "lead"}],
+            "profile_contributors": [{"profile_id": "account_strategist", "version": 1, "role": "lead"}],
             "confidence": 0.74,
             "options": [{"id": "accept", "label": "Accept"}, {"id": "reject", "label": "Reject"}],
             "recommended_option_id": "accept",
             "evidence_refs": [{"type": "source", "id": self.source_id}],
             "evaluation_window_start": self.now.isoformat(),
             "evaluation_window_end": (self.now + timedelta(days=7)).isoformat(),
-            "generated_by": {"type": "runbook", "id": "client_growth_diagnosis"},
+            "generated_by": {"type": "runbook", "id": "client_health_drop"},
         }
 
     def test_rest_learning_lifecycle_and_evaluation_safety_are_scoped(self) -> None:
@@ -100,7 +100,7 @@ class IntelligenceLearningSurfaceTests(unittest.TestCase):
                 "evidence_for_refs": [{"type": "source", "id": self.source_id}],
                 "confidence": 0.62,
                 "assumptions": ["Only visible evidence was considered."],
-                "generated_by": {"type": "expert_profile", "id": "cosmo_delivery_lead"},
+            "generated_by": {"type": "expert_profile", "id": "delivery_analyst"},
             },
         )
         self.assertEqual(status, 201)

@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from auremgrid.domain.errors import AuthorizationError
+from auremgrid.domain.intelligence_contracts import ExpertResult
 from auremgrid.services.brain import CompanyOS
 from auremgrid.services.intelligence_contracts import DEFAULT_EXPERT_PROFILES, DEFAULT_INTELLIGENCE_RUNBOOKS
 from tests.auth_support import LATEST_SCHEMA_VERSION, issue_identity
@@ -73,17 +74,52 @@ class IntelligenceContractTests(unittest.TestCase):
             finally:
                 second.close()
 
+    def test_native_pack_names_and_definition_audit_ledger(self) -> None:
+        os = CompanyOS(":memory:")
+        try:
+            profile_names = {
+                row["name"] for row in os.store.conn.execute("SELECT name FROM expert_profiles WHERE status='active'")
+            }
+            self.assertEqual(profile_names, {
+                "Account Strategist", "Relationship Analyst", "Delivery Analyst", "Performance Analyst",
+                "Finance & Scope Analyst", "Capacity Planner", "Brand / Creative Analyst", "Research Analyst",
+                "Risk Analyst", "Scenario Analyst", "Historical Analogue Analyst", "Reality Checker",
+                "Executive Synthesizer",
+            })
+            runbook_ids = {
+                row["id"] for row in os.store.conn.execute("SELECT id FROM intelligence_runbooks WHERE status='active'")
+            }
+            self.assertEqual(runbook_ids, {
+                "client_health_drop", "client_churn_risk", "renewal_review", "scope_overrun", "margin_pressure",
+                "project_delay", "campaign_performance_drop", "creative_fatigue", "client_relationship_problem",
+                "team_overload", "account_expansion_opportunity", "quarterly_account_review",
+            })
+            audit = {
+                row["entity_type"]: row["count"]
+                for row in os.store.conn.execute(
+                    """SELECT entity_type, COUNT(*) AS count
+                       FROM ledger_audit
+                       WHERE principal_type='system' AND principal_id='intelligence_contracts'
+                         AND action='create'
+                       GROUP BY entity_type"""
+                )
+            }
+            self.assertEqual(audit, {"expert_profile": 13, "intelligence_runbook": 12})
+            self.assertNotIn("cosmo_", json.dumps({"profiles": sorted(profile_names), "runbooks": sorted(runbook_ids)}).lower())
+        finally:
+            os.close()
+
     def test_definitions_are_immutable_versioned_contracts(self) -> None:
         os = CompanyOS(":memory:")
         try:
             with self.assertRaises(sqlite3.IntegrityError):
                 os.store.conn.execute(
-                    "UPDATE expert_profiles SET summary='changed' WHERE id='cosmo_strategy_architect'"
+                    "UPDATE expert_profiles SET summary='changed' WHERE id='account_strategist'"
                 )
             os.store.conn.rollback()
             with self.assertRaises(sqlite3.IntegrityError):
                 os.store.conn.execute(
-                    "DELETE FROM intelligence_runbooks WHERE id='client_growth_diagnosis'"
+                    "DELETE FROM intelligence_runbooks WHERE id='client_health_drop'"
                 )
             os.store.conn.rollback()
         finally:
@@ -99,7 +135,7 @@ class IntelligenceContractTests(unittest.TestCase):
             self.assertTrue(owner_token)
             owner_profiles = os.intelligence_contracts.list_profiles_for_identity(owner_identity, "ws_alpha")
             self.assertEqual(len(owner_profiles), 13)
-            finance = next(item for item in owner_profiles if item["id"] == "cosmo_finance_operator")
+            finance = next(item for item in owner_profiles if item["id"] == "finance_scope_analyst")
             for field in (
                 "specialty", "mission", "required_inputs", "allowed_domains",
                 "allowed_tools", "required_evidence", "reasoning_method",
@@ -115,7 +151,7 @@ class IntelligenceContractTests(unittest.TestCase):
             os.add_person_to_workspace("org_demo", "ws_alpha", viewer.id, "viewer")
             _viewer_token, viewer_identity = issue_identity(os, "org_demo", viewer.id, "ws_alpha")
             viewer_profiles = os.intelligence_contracts.list_profiles_for_identity(viewer_identity, "ws_alpha")
-            viewer_finance = next(item for item in viewer_profiles if item["id"] == "cosmo_finance_operator")
+            viewer_finance = next(item for item in viewer_profiles if item["id"] == "finance_scope_analyst")
             self.assertNotIn("finance.read", viewer_finance["allowed_tool_refs"])
             self.assertNotIn("finance.read", viewer_finance["allowed_tools"])
             self.assertNotIn("reports.generate", viewer_finance["allowed_tool_refs"])
@@ -162,6 +198,7 @@ class IntelligenceContractTests(unittest.TestCase):
             self.assertTrue(stored_stages)
             self.assertIn("required", output_contract)
             self.assertIn("gate", stored_steps[0])
+            self.assertIn("historical_analogues", ExpertResult(status="available", scope={}).to_dict())
         finally:
             os.close()
 

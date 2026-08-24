@@ -17,7 +17,15 @@ Each `IntelligenceRunbook` explicitly persists `trigger`,
 `quality_gates`, `contradiction_policy`, `scenario_policy`,
 `escalation_policy`, `max_iterations`, and `output_contract`.
 
-The default pack contains 13 expert profiles and 12 runbooks. The pack bridges
+The default pack contains these 13 native expert profiles: Account Strategist,
+Relationship Analyst, Delivery Analyst, Performance Analyst, Finance & Scope
+Analyst, Capacity Planner, Brand / Creative Analyst, Research Analyst, Risk
+Analyst, Scenario Analyst, Historical Analogue Analyst, Reality Checker, and
+Executive Synthesizer. Its 12 runbooks are client_health_drop,
+client_churn_risk, renewal_review, scope_overrun, margin_pressure,
+project_delay, campaign_performance_drop, creative_fatigue,
+client_relationship_problem, team_overload, account_expansion_opportunity,
+and quarterly_account_review. The pack bridges
 to existing Auremgrid authorities through explicit `allowed_tool_refs`,
 `domains`, and `capability_level` fields rather than by duplicating generic
 agent roles, workflow templates, or permission rules. Definitions do not store

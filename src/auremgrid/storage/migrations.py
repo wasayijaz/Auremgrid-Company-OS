@@ -3539,6 +3539,24 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        49,
+        "intelligence_contract_definition_audit",
+        """
+        CREATE TRIGGER IF NOT EXISTS audit_expert_profiles_insert AFTER INSERT ON expert_profiles BEGIN
+            INSERT INTO ledger_audit VALUES (
+                'audit_'||lower(hex(randomblob(8))), NULL, NULL, 'system', 'intelligence_contracts',
+                'create', 'expert_profile', NEW.id, 'version='||NEW.version||';hash='||NEW.content_hash, CURRENT_TIMESTAMP
+            );
+        END;
+        CREATE TRIGGER IF NOT EXISTS audit_intelligence_runbooks_insert AFTER INSERT ON intelligence_runbooks BEGIN
+            INSERT INTO ledger_audit VALUES (
+                'audit_'||lower(hex(randomblob(8))), NULL, NULL, 'system', 'intelligence_contracts',
+                'create', 'intelligence_runbook', NEW.id, 'version='||NEW.version||';hash='||NEW.content_hash, CURRENT_TIMESTAMP
+            );
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

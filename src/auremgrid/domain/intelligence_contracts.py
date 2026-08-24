@@ -375,6 +375,19 @@ class IntelligenceRunbook:
 class ExpertResult:
     status: str
     scope: dict[str, Any]
+    finding: str = ""
+    evidence_for: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    evidence_against: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    assumptions: tuple[str, ...] = field(default_factory=tuple)
+    unknowns: tuple[str, ...] = field(default_factory=tuple)
+    hypothesis: str = ""
+    confidence: float = 0.0
+    historical_analogues: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    risks: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    options: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    recommendation: dict[str, Any] = field(default_factory=dict)
+    expected_impact: dict[str, Any] = field(default_factory=dict)
+    needs_review: bool = True
     profile: dict[str, Any] | None = None
     runbooks: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     allowed_actions: tuple[dict[str, Any], ...] = field(default_factory=tuple)
@@ -383,6 +396,19 @@ class ExpertResult:
         return {
             "status": self.status,
             "scope": self.scope,
+            "finding": self.finding,
+            "evidence_for": list(self.evidence_for),
+            "evidence_against": list(self.evidence_against),
+            "assumptions": list(self.assumptions),
+            "unknowns": list(self.unknowns),
+            "hypothesis": self.hypothesis,
+            "confidence": self.confidence,
+            "historical_analogues": list(self.historical_analogues),
+            "risks": list(self.risks),
+            "options": list(self.options),
+            "recommendation": self.recommendation,
+            "expected_impact": self.expected_impact,
+            "needs_review": self.needs_review,
             "profile": self.profile,
             "runbooks": list(self.runbooks),
             "allowed_actions": list(self.allowed_actions),

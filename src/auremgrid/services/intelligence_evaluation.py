@@ -177,13 +177,13 @@ def run_intelligence_evaluations() -> dict[str, Any]:
             owner_os,
             owner_os.intelligence_contracts,
             specialist_handlers={
-                "cosmo_strategy_architect": specialist_result,
-                "cosmo_delivery_lead": specialist_result,
+                "account_strategist": specialist_result,
+                "delivery_analyst": specialist_result,
             },
         )
         dissent_run = dissent_orchestrator.run(
             "org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin",
-            profile_ids=["cosmo_strategy_architect", "cosmo_delivery_lead"],
+                profile_ids=["account_strategist", "delivery_analyst"],
         )
         dissent_ok = "dissent" in dissent_run and isinstance(dissent_run["dissent"], list)
         checks.append(_case("orchestrator_dissent_retention", dissent_ok, "bounded dissent remains in the offline result"))
