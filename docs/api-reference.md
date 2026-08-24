@@ -158,7 +158,13 @@ All JSON routes except `/health` require a bearer session or API token. Caller
 identity is derived from the credential; organization, person, and legacy actor
 arguments cannot override it. `/auth/me`, `/auth/api-tokens`,
 `/auth/sessions/rotate`, `/auth/revoke`, and `/auth/actor-bindings` expose the
-authenticated lifecycle without returning stored token hashes.
+authenticated lifecycle without returning stored token hashes. `/auth/invites`,
+`/auth/invites/revoke`, `/auth/invites/consume`, `/auth/sessions`, and
+`/auth/sessions/revoke` are local-admin `auth_manage` operations for existing
+people only. Invite creation uses `target_person_id` for the person being
+recovered/provisioned; `person_id` remains caller-derived and cannot be forged.
+They do not send email and must not be exposed as public signup, password
+reset, public invite acceptance, or unauthenticated token-minting routes.
 
 `GET /jobs` and `/jobs/get` inspect scoped durable work. `POST /jobs` accepts an
 allowlisted job type and idempotency key; `/jobs/cancel` cancels only queued or

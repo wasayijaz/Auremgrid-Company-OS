@@ -32,9 +32,18 @@ creates the organization, first workspace, owner membership, Brain actor
 binding, principal, and first session as one operation. `bootstrap-auth` remains
 the lower-level command for an existing person whose organization, workspace
 membership, and actor already exist.
-Session rotation, revocation, API-token creation, and `/auth/me` are authenticated
-operations. The plaintext token is returned once and must be stored outside the
+Session rotation, revocation, API-token creation, local-admin invite creation,
+invite consumption, invite revocation, session inventory, session revoke-by-id,
+and `/auth/me` are authenticated operations. Invite and session-management
+routes require `auth_manage`; stored session, API, and invite tokens are hash
+only. The plaintext token is returned once and must be stored outside the
 database.
+
+Local-admin invites are for controlled provisioning and recovery only. They
+are expiry-bound, one-time records created by an authenticated administrator
+for an existing person in the same organization. Consuming an invite still
+requires an authenticated local administrator; it is not a public account
+creation, signup, password reset, email, or magic-link flow.
 
 ## What the dashboard access token means
 
@@ -59,3 +68,6 @@ internet exposure, put Auremgrid behind HTTPS and a trusted reverse proxy and
 define operator provisioning, device, revocation, backup, and incident-response
 policies. A public multi-tenant product should use a dedicated identity provider
 (for example OIDC/SSO or magic links) rather than expose a bootstrap endpoint.
+Do not add unauthenticated token-minting routes such as public signup, invite
+acceptance, password reset, or email-link recovery without that external
+identity and delivery authority.

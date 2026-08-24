@@ -110,6 +110,49 @@ class HttpAuthenticationTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/auth/me", self.token)[0], 401)
         self.assertEqual(self.request("GET", "/auth/me", rotated["token"])[0], 200)
 
+    def test_local_admin_invites_and_session_revoke_are_auth_manage_only(self) -> None:
+        invited = self.os.create_person(
+            "org_auth_http", "Invited", "invited@auth.test", role="member", person_id="person_invited"
+        )
+        self.os.add_person_to_workspace("org_auth_http", "ws_allowed", invited.id, "viewer")
+        self.os.create_actor("ws_allowed", "Invited actor", "operator", "actor_invited")
+        viewer_token = self.os.auth.create_api_token(self.identity.principal_id, "read", ["workspace_read"])["token"]
+        status, _ = self.request(
+            "POST", "/auth/invites", viewer_token,
+            {"target_person_id": invited.id, "email": "invited@auth.test"},
+        )
+        self.assertEqual(status, 403)
+        status, created = self.request(
+            "POST", "/auth/invites", self.token,
+            {"target_person_id": invited.id, "email": "invited@auth.test", "workspace_id": "ws_allowed", "actor_id": "actor_invited"},
+        )
+        self.assertEqual(status, 201)
+        self.assertIn("token", created)
+        stored = self.os.store.conn.execute("SELECT token_hash FROM auth_invites WHERE id=?", (created["id"],)).fetchone()[0]
+        self.assertNotEqual(stored, created["token"])
+        status, listed = self.request("GET", "/auth/invites", self.token)
+        self.assertEqual(status, 200)
+        self.assertNotIn("token", listed["invites"][0])
+        status, consumed = self.request("POST", "/auth/invites/consume", self.token, {"token": created["token"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(consumed["principal"]["person_id"], invited.id)
+        status, _ = self.request("POST", "/auth/invites/consume", self.token, {"token": created["token"]})
+        self.assertEqual(status, 403)
+        status, sessions = self.request("GET", "/auth/sessions?include_revoked=true", self.token)
+        self.assertEqual(status, 200)
+        issued_session = consumed["session"]["id"]
+        self.assertTrue(any(item["id"] == issued_session and "token_hash" not in item for item in sessions["sessions"]))
+        status, revoked = self.request("POST", "/auth/sessions/revoke", self.token, {"session_id": issued_session})
+        self.assertEqual(status, 200)
+        self.assertTrue(revoked["revoked"])
+        self.assertEqual(self.request("GET", "/auth/me", consumed["session"]["token"])[0], 401)
+
+    def test_public_signup_reset_and_invite_accept_do_not_mint_tokens(self) -> None:
+        for path in ("/signup", "/auth/signup", "/password-reset", "/auth/password-reset", "/invite/accept"):
+            status, body = self.request("POST", path, payload={"email": "anyone@example.test"})
+            self.assertIn(status, {401, 403, 404})
+            self.assertNotIn("token", body)
+
     def test_mcp_rejects_forged_actor_and_person_arguments(self) -> None:
         router = McpToolRouter(self.os, self.identity)
         forged = router.call(

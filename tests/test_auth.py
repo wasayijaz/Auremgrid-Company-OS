@@ -24,14 +24,18 @@ class AuthTests(unittest.TestCase):
             CREATE TABLE workspace_organization(workspace_id TEXT PRIMARY KEY, organization_id TEXT);
             CREATE TABLE workspace_memberships(id TEXT PRIMARY KEY, workspace_id TEXT, person_id TEXT, role TEXT);
             CREATE TABLE auth_principals(id TEXT PRIMARY KEY, organization_id TEXT, person_id TEXT, email TEXT, status TEXT, created_at TEXT, updated_at TEXT);
+            CREATE TABLE actors(id TEXT PRIMARY KEY, workspace_id TEXT);
+            CREATE TABLE principal_actor_bindings(principal_id TEXT, workspace_id TEXT, actor_id TEXT, created_at TEXT, PRIMARY KEY(principal_id, workspace_id), UNIQUE(actor_id));
             CREATE TABLE auth_sessions(id TEXT PRIMARY KEY, principal_id TEXT, token_hash TEXT UNIQUE, created_at TEXT, expires_at TEXT, revoked_at TEXT, last_seen_at TEXT);
             CREATE TABLE api_tokens(id TEXT PRIMARY KEY, principal_id TEXT, name TEXT, token_hash TEXT UNIQUE, scopes TEXT, created_at TEXT, expires_at TEXT, revoked_at TEXT, last_used_at TEXT);
+            CREATE TABLE auth_invites(id TEXT PRIMARY KEY, organization_id TEXT, person_id TEXT, email TEXT, workspace_id TEXT, actor_id TEXT, token_hash TEXT UNIQUE, created_by_principal_id TEXT, created_at TEXT, expires_at TEXT, revoked_at TEXT, consumed_at TEXT, consumed_by_principal_id TEXT);
             """
         )
-        self.conn.executemany("INSERT INTO people VALUES (?,?,?,?)", [("p1", "o1", "one@example.test", "active"), ("p2", "o2", "two@example.test", "active")])
-        self.conn.executemany("INSERT INTO organization_memberships VALUES (?,?,?,?)", [("m1", "o1", "p1", "member"), ("m2", "o2", "p2", "owner")])
+        self.conn.executemany("INSERT INTO people VALUES (?,?,?,?)", [("p1", "o1", "one@example.test", "active"), ("p3", "o1", "three@example.test", "active"), ("p2", "o2", "two@example.test", "active")])
+        self.conn.executemany("INSERT INTO organization_memberships VALUES (?,?,?,?)", [("m1", "o1", "p1", "owner"), ("m3", "o1", "p3", "member"), ("m2", "o2", "p2", "owner")])
         self.conn.execute("INSERT INTO workspace_organization VALUES (?,?)", ("w1", "o1"))
-        self.conn.execute("INSERT INTO workspace_memberships VALUES (?,?,?,?)", ("wm1", "w1", "p1", "viewer"))
+        self.conn.executemany("INSERT INTO workspace_memberships VALUES (?,?,?,?)", [("wm1", "w1", "p1", "admin"), ("wm3", "w1", "p3", "viewer")])
+        self.conn.execute("INSERT INTO actors VALUES (?,?)", ("a3", "w1"))
         self.conn.commit()
         counter = {"n": 0}
         def new_id(prefix: str) -> str:
@@ -74,7 +78,8 @@ class AuthTests(unittest.TestCase):
             self.auth.authenticate_session(session["token"], organization_id="o2")
 
     def test_api_scopes_intersect_role_and_viewer_cannot_write(self) -> None:
-        token = self.auth.create_api_token(self.principal["id"], "limited", ["workspace_read", "workspace_write"])
+        viewer_principal = self.auth.create_principal("o1", "p3", "three@example.test")
+        token = self.auth.create_api_token(viewer_principal["id"], "limited", ["workspace_read", "workspace_write"])
         identity = self.auth.authenticate_api_token(token["token"], workspace_id="w1")
         self.assertTrue(identity.can("workspace_read"))
         self.assertFalse(identity.can("workspace_write"))
@@ -90,6 +95,39 @@ class AuthTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError):
             self.auth.authenticate_session(old["token"])
         self.assertEqual(self.auth.authenticate_session(new["token"]).person_id, "p1")
+
+    def test_local_admin_invite_is_hash_only_expiring_and_one_time(self) -> None:
+        admin = self.auth.authenticate_session(self.auth.create_session(self.principal["id"])["token"], workspace_id="w1")
+        invite = self.auth.create_invite(admin, "p3", "three@example.test", "w1", "a3", timedelta(days=1))
+        stored = self.conn.execute("SELECT token_hash FROM auth_invites WHERE id=?", (invite["id"],)).fetchone()[0]
+        self.assertNotEqual(stored, invite["token"])
+        self.assertEqual(stored, hash_token(invite["token"]))
+        listed = self.auth.list_invites(admin)
+        self.assertEqual(listed[0]["id"], invite["id"])
+        self.assertNotIn("token", listed[0])
+        consumed = self.auth.consume_invite(admin, invite["token"])
+        self.assertEqual(consumed["principal"]["person_id"], "p3")
+        self.assertEqual(self.auth.actor_for_identity(self.auth.authenticate_session(consumed["session"]["token"], workspace_id="w1"), "w1"), "a3")
+        with self.assertRaises(AuthorizationError):
+            self.auth.consume_invite(admin, invite["token"])
+
+    def test_invite_revoke_expiry_and_session_inventory_are_admin_scoped(self) -> None:
+        admin = self.auth.authenticate_session(self.auth.create_session(self.principal["id"])["token"])
+        invite = self.auth.create_invite(admin, "p3", "three@example.test", expires_in=timedelta(days=1))
+        self.auth.revoke_invite(admin, invite["id"])
+        with self.assertRaises(AuthorizationError):
+            self.auth.consume_invite(admin, invite["token"])
+        expired = self.auth.create_invite(admin, "p3", "three@example.test", expires_in=timedelta(seconds=1))
+        self.conn.execute("UPDATE auth_invites SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?", (expired["id"],))
+        self.conn.commit()
+        with self.assertRaises(AuthorizationError):
+            self.auth.consume_invite(admin, expired["token"])
+        live = self.auth.create_session(self.principal["id"])
+        sessions = self.auth.list_sessions(admin)
+        self.assertTrue(any(item["id"] == live["id"] and "token_hash" not in item for item in sessions))
+        self.auth.revoke_session_by_id(admin, live["id"])
+        with self.assertRaises(AuthorizationError):
+            self.auth.authenticate_session(live["token"])
 
 
 class AuthFileStorageTests(unittest.TestCase):

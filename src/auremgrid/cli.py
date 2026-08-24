@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import timedelta
 from os import environ
 
 from auremgrid.adapters.semantic import embedding_provider_from_config
@@ -146,6 +147,27 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_auth.add_argument("--workspace")
     bootstrap_auth.add_argument("--actor")
 
+    auth_invite_create = sub.add_parser("auth-invite-create", help="create a local-admin one-time invite token")
+    auth_invite_create.add_argument("--db", required=True)
+    auth_invite_create.add_argument("--admin-token", required=True)
+    auth_invite_create.add_argument("--person", required=True)
+    auth_invite_create.add_argument("--email", required=True)
+    auth_invite_create.add_argument("--workspace")
+    auth_invite_create.add_argument("--actor")
+    auth_invite_create.add_argument("--expires-in-seconds", type=int, default=604800)
+    auth_invite_consume = sub.add_parser("auth-invite-consume", help="consume a local-admin invite token and issue a session")
+    auth_invite_consume.add_argument("--db", required=True)
+    auth_invite_consume.add_argument("--admin-token", required=True)
+    auth_invite_consume.add_argument("--invite-token", required=True)
+    auth_sessions = sub.add_parser("auth-sessions", help="list local sessions for an organization")
+    auth_sessions.add_argument("--db", required=True)
+    auth_sessions.add_argument("--admin-token", required=True)
+    auth_sessions.add_argument("--include-revoked", action="store_true")
+    auth_session_revoke = sub.add_parser("auth-session-revoke", help="revoke a local session by id")
+    auth_session_revoke.add_argument("--db", required=True)
+    auth_session_revoke.add_argument("--admin-token", required=True)
+    auth_session_revoke.add_argument("--session-id", required=True)
+
     backup_rotate = sub.add_parser("backup-rotate", help="delete old backups beyond retention policy")
     backup_rotate.add_argument("--keep-weekly", type=int, default=4)
     backup_rotate.add_argument("--keep-daily", type=int, default=7)
@@ -168,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         help="run the offline Intelligence contract evaluation scenarios",
     )
 
-    for command in (demo, agency_demo, brief, serve_cmd, sync, onboard, import_templates, import_preview, import_commit, setup_agency, backup, bootstrap_auth, worker, worker_loop):
+    for command in (demo, agency_demo, brief, serve_cmd, sync, onboard, import_templates, import_preview, import_commit, setup_agency, backup, bootstrap_auth, auth_invite_create, auth_invite_consume, auth_sessions, auth_session_revoke, worker, worker_loop):
         _add_semantic_options(command)
 
     args = parser.parse_args(argv)
@@ -332,6 +354,34 @@ def main(argv: list[str] | None = None) -> int:
             identity.require("auth_manage")
             binding = os.auth.bind_actor(identity, args.workspace, args.actor) if args.workspace else None
             print(json.dumps({"principal":principal,"session":{"id":session["id"],"token":session["token"],"expires_at":session["expires_at"]},"actor_binding":binding}, indent=2))
+        finally:
+            os.close()
+        return 0
+    if args.command in {"auth-invite-create", "auth-invite-consume", "auth-sessions", "auth-session-revoke"}:
+        if getattr(args, "expires_in_seconds", 1) <= 0:
+            parser.error("--expires-in-seconds must be positive")
+        os = _company_os(args)
+        try:
+            identity = os.auth.authenticate_bearer(args.admin_token)
+            identity.require("auth_manage")
+            if args.command == "auth-invite-create":
+                if bool(args.workspace) != bool(args.actor):
+                    parser.error("--workspace and --actor must be provided together")
+                result = os.auth.create_invite(
+                    identity,
+                    args.person,
+                    args.email,
+                    args.workspace,
+                    args.actor,
+                    timedelta(seconds=args.expires_in_seconds),
+                )
+            elif args.command == "auth-invite-consume":
+                result = os.auth.consume_invite(identity, args.invite_token)
+            elif args.command == "auth-sessions":
+                result = {"sessions": os.auth.list_sessions(identity, include_revoked=args.include_revoked)}
+            else:
+                result = os.auth.revoke_session_by_id(identity, args.session_id)
+            print(json.dumps(result, indent=2))
         finally:
             os.close()
         return 0

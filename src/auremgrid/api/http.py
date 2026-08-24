@@ -32,6 +32,7 @@ def _route_capability(path: str, method: str) -> str:
         if path == "/client-portal/intake/queue": return "people_manage"
         if path in {"/client-portal/reports", "/client-portal/reports/view", "/client-portal/reports/download"}: return "client_portal"
         if path == "/auth/me": return "workspace_read"
+        if path in {"/auth/invites", "/auth/sessions"}: return "auth_manage"
         if path == "/reports": return "workspace_read"
         if path == "/finance": return "finance_read"
         if path == "/capacity": return "workspace_read"
@@ -128,6 +129,12 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/auth/me":
                 assert identity is not None
                 self._json(200, identity.to_dict()); return
+            if parsed.path == "/auth/invites":
+                assert identity is not None
+                self._json(200, {"invites": self.os.auth.list_invites(identity, params.get("include_inactive") == "true")}); return
+            if parsed.path == "/auth/sessions":
+                assert identity is not None
+                self._json(200, {"sessions": self.os.auth.list_sessions(identity, params.get("include_revoked") == "true")}); return
             if parsed.path == "/onboarding/templates":
                 self._json(200, self.os.onboarding.templates()); return
             if parsed.path in {"/", "/dashboard"}:
@@ -740,9 +747,21 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 item=self.os.auth.create_api_token(identity.principal_id,_need(payload,"name"),
                     [str(value) for value in payload.get("scopes",[])])
                 self._json(201,{"id":item["id"],"name":item["name"],"token":item["token"],"scopes":item["scopes"],"expires_at":item["expires_at"]}); return
+            if parsed.path == "/auth/invites":
+                from datetime import timedelta
+                item=self.os.auth.create_invite(identity,_need(payload,"target_person_id"),_need(payload,"email"),
+                    _optional_str(payload.get("workspace_id")),_optional_str(payload.get("actor_id")),
+                    timedelta(seconds=int(payload.get("expires_in_seconds", 604800))))
+                self._json(201,item); return
+            if parsed.path == "/auth/invites/revoke":
+                self._json(200,self.os.auth.revoke_invite(identity,_need(payload,"invite_id"))); return
+            if parsed.path == "/auth/invites/consume":
+                self._json(200,self.os.auth.consume_invite(identity,_need(payload,"token"))); return
             if parsed.path == "/auth/sessions/rotate":
                 token=self.headers.get("Authorization","")[7:].strip(); item=self.os.auth.rotate_session(token)
                 self._json(200,{"id":item["id"],"token":item["token"],"expires_at":item["expires_at"]}); return
+            if parsed.path == "/auth/sessions/revoke":
+                self._json(200,self.os.auth.revoke_session_by_id(identity,_need(payload,"session_id"))); return
             if parsed.path == "/auth/revoke":
                 token=self.headers.get("Authorization","")[7:].strip()
                 if identity.is_api_token:self.os.auth.revoke_api_token(token)

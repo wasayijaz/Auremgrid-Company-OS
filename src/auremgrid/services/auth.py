@@ -331,6 +331,215 @@ class AuthService:
             raise AuthorizationError("principal has no actor binding for this workspace")
         return str(_row_value(row, "actor_id", 0))
 
+    def _assert_manage_auth(self, identity: AuthenticatedIdentity) -> None:
+        identity.require("auth_manage")
+
+    def _assert_actor_binding_target(self, organization_id: str, person_id: str, workspace_id: str, actor_id: str) -> None:
+        self._workspace_role(organization_id, person_id, workspace_id)
+        actor = self.conn.execute(
+            "SELECT id,workspace_id FROM actors WHERE id=? AND workspace_id=?", (actor_id, workspace_id)
+        ).fetchone()
+        if actor is None:
+            raise AuthorizationError("actor does not belong to workspace")
+
+    def _bind_principal_actor(self, principal_id: str, workspace_id: str, actor_id: str) -> dict[str, Any]:
+        now = _iso(_now())
+        self.conn.execute(
+            "INSERT INTO principal_actor_bindings(principal_id,workspace_id,actor_id,created_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(principal_id,workspace_id) DO UPDATE SET actor_id=excluded.actor_id,created_at=excluded.created_at",
+            (principal_id, workspace_id, actor_id, now),
+        )
+        return {"principal_id": principal_id, "workspace_id": workspace_id, "actor_id": actor_id, "created_at": now}
+
+    def _invite_dict(self, row: Any) -> dict[str, Any]:
+        expires_at = _parse_dt(_row_value(row, "expires_at", 9))
+        revoked_at = _row_value(row, "revoked_at", 10)
+        consumed_at = _row_value(row, "consumed_at", 11)
+        status = "pending"
+        if revoked_at is not None:
+            status = "revoked"
+        elif consumed_at is not None:
+            status = "consumed"
+        elif expires_at is None or expires_at <= _now():
+            status = "expired"
+        keys = (
+            "id", "organization_id", "person_id", "email", "workspace_id", "actor_id",
+            "created_by_principal_id", "created_at", "expires_at", "revoked_at",
+            "consumed_at", "consumed_by_principal_id",
+        )
+        indexes = (0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12)
+        return {key: _row_value(row, key, index) for key, index in zip(keys, indexes)} | {"status": status}
+
+    def create_invite(
+        self,
+        identity: AuthenticatedIdentity,
+        person_id: str,
+        email: str,
+        workspace_id: str | None = None,
+        actor_id: str | None = None,
+        expires_in: timedelta = timedelta(days=7),
+    ) -> dict[str, Any]:
+        self._assert_manage_auth(identity)
+        if bool(workspace_id) != bool(actor_id):
+            raise ValidationError("workspace_id and actor_id must be provided together")
+        if not isinstance(person_id, str) or not person_id.strip():
+            raise ValidationError("person_id is required")
+        if not isinstance(email, str) or not email.strip():
+            raise ValidationError("email is required")
+        person = self._person(identity.organization_id, person_id.strip())
+        person_email = _row_value(person, "email", 2)
+        if person_email and person_email.strip().lower() != email.strip().lower():
+            raise AuthorizationError("invite email does not match person")
+        if workspace_id and actor_id:
+            self._assert_actor_binding_target(identity.organization_id, person_id.strip(), workspace_id, actor_id)
+        expires_at = self._valid_lifetime(expires_in)
+        token = self._new_token()
+        now = _iso(_now())
+        item = {
+            "id": self._id("invite"),
+            "organization_id": identity.organization_id,
+            "person_id": person_id.strip(),
+            "email": email.strip(),
+            "workspace_id": workspace_id,
+            "actor_id": actor_id,
+            "token_hash": hash_token(token),
+            "created_by_principal_id": identity.principal_id,
+            "created_at": now,
+            "expires_at": _iso(expires_at),
+            "revoked_at": None,
+            "consumed_at": None,
+            "consumed_by_principal_id": None,
+        }
+        self.conn.execute(
+            """INSERT INTO auth_invites(
+                id,organization_id,person_id,email,workspace_id,actor_id,token_hash,created_by_principal_id,
+                created_at,expires_at,revoked_at,consumed_at,consumed_by_principal_id
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tuple(item.values()),
+        )
+        self.conn.commit()
+        return self._invite_dict(item) | {"token": token, "shown_once": True}
+
+    def list_invites(self, identity: AuthenticatedIdentity, include_inactive: bool = False) -> list[dict[str, Any]]:
+        self._assert_manage_auth(identity)
+        rows = self.conn.execute(
+            "SELECT * FROM auth_invites WHERE organization_id=? ORDER BY created_at DESC, id DESC",
+            (identity.organization_id,),
+        ).fetchall()
+        items = [self._invite_dict(row) for row in rows]
+        if include_inactive:
+            return items
+        return [item for item in items if item["status"] == "pending"]
+
+    def revoke_invite(self, identity: AuthenticatedIdentity, invite_id: str) -> dict[str, Any]:
+        self._assert_manage_auth(identity)
+        row = self.conn.execute(
+            "SELECT * FROM auth_invites WHERE id=? AND organization_id=?", (invite_id, identity.organization_id)
+        ).fetchone()
+        if row is None:
+            raise AuthorizationError("invite not found")
+        if _row_value(row, "consumed_at", 11) is not None:
+            raise ValidationError("invite already consumed")
+        now = _iso(_now())
+        self.conn.execute(
+            "UPDATE auth_invites SET revoked_at=COALESCE(revoked_at, ?) WHERE id=?",
+            (now, invite_id),
+        )
+        self.conn.commit()
+        updated = self.conn.execute("SELECT * FROM auth_invites WHERE id=?", (invite_id,)).fetchone()
+        return self._invite_dict(updated)
+
+    def consume_invite(self, identity: AuthenticatedIdentity, token: str) -> dict[str, Any]:
+        self._assert_manage_auth(identity)
+        if not isinstance(token, str) or not token:
+            raise AuthorizationError("invalid invite")
+        digest = hash_token(token)
+        row = self.conn.execute("SELECT * FROM auth_invites WHERE token_hash=?", (digest,)).fetchone()
+        stored = _row_value(row, "token_hash", 6) if row is not None else ""
+        if row is None or not hmac.compare_digest(str(stored), digest):
+            raise AuthorizationError("invalid invite")
+        if _row_value(row, "organization_id", 1) != identity.organization_id:
+            raise AuthorizationError("invite organization mismatch")
+        if _row_value(row, "revoked_at", 10) is not None:
+            raise AuthorizationError("invite revoked")
+        if _row_value(row, "consumed_at", 11) is not None:
+            raise AuthorizationError("invite already consumed")
+        expires_at = _parse_dt(_row_value(row, "expires_at", 9))
+        if expires_at is None or expires_at <= _now():
+            raise AuthorizationError("invite expired")
+        person_id = str(_row_value(row, "person_id", 2))
+        email = str(_row_value(row, "email", 3))
+        principal = self.create_principal(identity.organization_id, person_id, email)
+        workspace_id = _row_value(row, "workspace_id", 4)
+        actor_id = _row_value(row, "actor_id", 5)
+        binding = None
+        if workspace_id and actor_id:
+            self._assert_actor_binding_target(identity.organization_id, person_id, str(workspace_id), str(actor_id))
+            binding = self._bind_principal_actor(principal["id"], str(workspace_id), str(actor_id))
+        session = self.create_session(principal["id"])
+        now = _iso(_now())
+        cursor = self.conn.execute(
+            "UPDATE auth_invites SET consumed_at=?, consumed_by_principal_id=? WHERE id=? AND consumed_at IS NULL AND revoked_at IS NULL",
+            (now, identity.principal_id, _row_value(row, "id", 0)),
+        )
+        if cursor.rowcount != 1:
+            raise AuthorizationError("invite already consumed")
+        self.conn.commit()
+        updated = self.conn.execute("SELECT * FROM auth_invites WHERE id=?", (_row_value(row, "id", 0),)).fetchone()
+        return {
+            "invite": self._invite_dict(updated),
+            "principal": self._principal_dict(self._principal(principal["id"], identity.organization_id)),
+            "session": {"id": session["id"], "token": session["token"], "expires_at": session["expires_at"], "shown_once": True},
+            "actor_binding": binding,
+        }
+
+    def list_sessions(self, identity: AuthenticatedIdentity, include_revoked: bool = False) -> list[dict[str, Any]]:
+        self._assert_manage_auth(identity)
+        rows = self.conn.execute(
+            """SELECT s.id,p.organization_id,p.person_id,p.email,s.created_at,s.expires_at,s.revoked_at,s.last_seen_at
+               FROM auth_sessions s JOIN auth_principals p ON p.id=s.principal_id
+              WHERE p.organization_id=?
+              ORDER BY s.created_at DESC, s.id DESC""",
+            (identity.organization_id,),
+        ).fetchall()
+        items = []
+        for row in rows:
+            expires_at = _parse_dt(_row_value(row, "expires_at", 5))
+            revoked_at = _row_value(row, "revoked_at", 6)
+            status = "active"
+            if revoked_at is not None:
+                status = "revoked"
+            elif expires_at is None or expires_at <= _now():
+                status = "expired"
+            item = {
+                "id": _row_value(row, "id", 0),
+                "organization_id": _row_value(row, "organization_id", 1),
+                "person_id": _row_value(row, "person_id", 2),
+                "email": _row_value(row, "email", 3),
+                "created_at": _row_value(row, "created_at", 4),
+                "expires_at": _row_value(row, "expires_at", 5),
+                "revoked_at": revoked_at,
+                "last_seen_at": _row_value(row, "last_seen_at", 7),
+                "status": status,
+            }
+            if include_revoked or status != "revoked":
+                items.append(item)
+        return items
+
+    def revoke_session_by_id(self, identity: AuthenticatedIdentity, session_id: str) -> dict[str, Any]:
+        self._assert_manage_auth(identity)
+        row = self.conn.execute(
+            """SELECT s.id FROM auth_sessions s JOIN auth_principals p ON p.id=s.principal_id
+               WHERE s.id=? AND p.organization_id=?""",
+            (session_id, identity.organization_id),
+        ).fetchone()
+        if row is None:
+            raise AuthorizationError("session not found")
+        now = _iso(_now())
+        self.conn.execute("UPDATE auth_sessions SET revoked_at=COALESCE(revoked_at, ?) WHERE id=?", (now, session_id))
+        self.conn.commit()
+        return {"id": session_id, "revoked": True, "revoked_at": now}
+
     def revoke_session(self, token: str) -> None:
         row = self._credential_row("auth_sessions", token)
         self.conn.execute("UPDATE auth_sessions SET revoked_at=? WHERE id=?", (_iso(_now()), _row_value(row, "id", 0)))

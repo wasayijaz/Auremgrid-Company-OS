@@ -46,9 +46,10 @@ controls/heartbeats, Intelligence contracts/orchestration/learning/evaluation
 safety/proactive lifecycle/durable orchestration/action descriptors/approved action execution ledger, and injected read-only Stripe Billing/accounting
 and Meta Ads provider import ledgers are guarded as newer authenticated
 service/route surfaces outside the P6-P15 release matrix. Provider import
-ledgers are raw/provider append-only records with cursor and quarantine state;
-they are not documented here as verified canonical finance or campaign
-ingestion.
+receipts are append-only and retain cursor and quarantine state. A successful,
+validated import may also create sourced local canonical finance or campaign
+rows; that local projection is auditable, but does not establish live-provider
+connectivity, reconciliation, or verified accounting/campaign truth.
 
 Release checks:
 

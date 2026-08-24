@@ -3592,6 +3592,35 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        51,
+        "local_admin_auth_invites",
+        """
+        CREATE TABLE IF NOT EXISTS auth_invites (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            person_id TEXT NOT NULL,
+            email TEXT NOT NULL,
+            workspace_id TEXT,
+            actor_id TEXT,
+            token_hash TEXT NOT NULL,
+            created_by_principal_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT,
+            consumed_at TEXT,
+            consumed_by_principal_id TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(person_id) REFERENCES people(id),
+            FOREIGN KEY(created_by_principal_id) REFERENCES auth_principals(id),
+            FOREIGN KEY(consumed_by_principal_id) REFERENCES auth_principals(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_invites_token_hash
+            ON auth_invites(token_hash);
+        CREATE INDEX IF NOT EXISTS idx_auth_invites_org_status
+            ON auth_invites(organization_id, revoked_at, consumed_at, expires_at, created_at);
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

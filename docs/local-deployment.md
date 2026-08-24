@@ -14,6 +14,13 @@ Copy the one-time `session.token` from the setup receipt, open
 Use `bootstrap-auth` only for an existing owner/person and actor binding. JSON
 endpoints do not trust query/body person or actor identifiers.
 
+For operator recovery, an authenticated local administrator can use
+`auth-invite-create` and `auth-invite-consume` to issue a one-time, expiry-bound
+session for an existing person, and `auth-sessions` plus
+`auth-session-revoke` to inspect or revoke sessions by ID. These commands do
+not send email and do not create public accounts; the invite token is shown
+once in the local JSON receipt.
+
 First-run business data is CSV-first. Generate templates with
 `import-templates`, export or save spreadsheet tabs as CSV, run
 `import-preview`, review quarantined rows, and then run `import-commit` with a
@@ -32,7 +39,9 @@ only after firewall review. Before any public exposure, require HTTPS, a trusted
 reverse proxy, durable backups and restore rehearsals, a secret manager,
 per-person provisioning, and documented revocation. Public multi-tenant login
 requires a dedicated identity provider; do not expose the local setup command
-or create an unauthenticated token-minting HTTP route.
+or create an unauthenticated token-minting HTTP route. Public signup, public
+invite acceptance, password reset, and email-link recovery are deliberately
+unsupported in the local-admin flow.
 
 The included `Dockerfile` and `deploy/docker-compose.yml` are private
 single-host packaging templates. They exercise image/static boundaries and a
