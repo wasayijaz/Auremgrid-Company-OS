@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    command: ["python", "-m", "auremgrid", "serve", "--db", "/data/auremgrid.sqlite", "--host", "0.0.0.0", "--port", "8791"]
+    command: ["auremgrid", "serve", "--db", "/data/auremgrid.sqlite", "--host", "0.0.0.0", "--port", "8791"]
     env_file: .env
     volumes: ["auremgrid-data:/data"]
     expose: ["8791"]
@@ -16,7 +16,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    command: ["python", "-m", "auremgrid", "worker-loop", "--db", "/data/auremgrid.sqlite", "--organization", "${AUREMGRID_ORGANIZATION_ID}", "--worker-id", "worker-1"]
+    command: ["auremgrid", "worker-loop", "--db", "/data/auremgrid.sqlite", "--organization", "${AUREMGRID_ORGANIZATION_ID}", "--worker-id", "worker-1"]
     env_file: .env
     volumes: ["auremgrid-data:/data"]
     read_only: true

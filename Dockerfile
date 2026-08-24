@@ -22,4 +22,4 @@ USER auremgrid
 VOLUME ["/data"]
 EXPOSE 8791
 
-CMD ["python", "-m", "auremgrid", "serve", "--db", "/data/auremgrid.sqlite", "--host", "0.0.0.0", "--port", "8791"]
+CMD ["auremgrid", "serve", "--db", "/data/auremgrid.sqlite", "--host", "0.0.0.0", "--port", "8791"]

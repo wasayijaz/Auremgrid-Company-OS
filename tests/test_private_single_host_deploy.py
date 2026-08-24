@@ -15,6 +15,8 @@ class PrivateSingleHostDeployTests(unittest.TestCase):
         self.assertIn("FROM python:3.12-slim", dockerfile)
         self.assertIn("USER auremgrid", dockerfile)
         self.assertIn("--host\", \"0.0.0.0\"", dockerfile)
+        self.assertIn('CMD ["auremgrid", "serve"', dockerfile)
+        self.assertNotIn('CMD ["python", "-m", "auremgrid"', dockerfile)
         for forbidden in ("AUREMGRID_ACCESS_TOKEN", "SECRET", "PASSWORD", "TOKEN="):
             self.assertNotIn(forbidden, dockerfile)
 
@@ -27,6 +29,8 @@ class PrivateSingleHostDeployTests(unittest.TestCase):
         compose = ROOT.joinpath("deploy", "docker-compose.yml").read_text(encoding="utf-8")
         self.assertGreaterEqual(compose.count("dockerfile: Dockerfile"), 2)
         self.assertIn('"0.0.0.0"', compose)
+        self.assertIn('["auremgrid", "serve"', compose)
+        self.assertIn('["auremgrid", "worker-loop"', compose)
         self.assertIn('"127.0.0.1:443:443"', compose)
         self.assertIn("AUREMGRID_UPSTREAM: web:8791", compose)
         self.assertIn("./Caddyfile:/etc/caddy/Caddyfile:ro", compose)
