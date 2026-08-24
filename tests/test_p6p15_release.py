@@ -62,6 +62,15 @@ class P6P15ReleaseEvidenceTests(unittest.TestCase):
         for phrase in unsupported_claims:
             self.assertNotIn(phrase, self.doc)
 
+    def test_release_schema_documentation_matches_current_migration(self) -> None:
+        upgrade = ROOT.joinpath("docs", "upgrade-guide.md").read_text(encoding="utf-8")
+        checklist = ROOT.joinpath("docs", "production-checklist.md").read_text(encoding="utf-8")
+        migrations = ROOT.joinpath("src", "auremgrid", "storage", "migrations.py").read_text(encoding="utf-8")
+        for document in (self.doc, upgrade, checklist):
+            self.assertIn("54", document)
+            self.assertNotIn("schema 53", document)
+        self.assertIn('"durable_automation_actions_and_delegation_depth"', migrations)
+
     def test_feedback_performance_forecast_retention_batch_is_separate_from_p6_p15_matrix(self) -> None:
         for route in (
             "/feedback/record",

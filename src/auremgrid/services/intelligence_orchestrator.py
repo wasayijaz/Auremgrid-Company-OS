@@ -243,6 +243,10 @@ class IntelligenceOrchestrator:
             if isinstance(item.get("context_budget"), Mapping)
             and item["context_budget"].get("status") == "overflow"
         ]
+        specialist_degradations = [
+            item for item in specialists
+            if item.get("status") == "degraded"
+        ]
         if context_overflows:
             trace.append({
                 "stage": "context_budget",
@@ -254,6 +258,13 @@ class IntelligenceOrchestrator:
             # Keep a stable summary marker for consumers that do not inspect
             # every per-iteration trace event.
             trace.append({"stage": "specialist_errors", "status": "degraded", "errors": errors[:8]})
+        if specialist_degradations:
+            trace.append({
+                "stage": "specialist_degradation",
+                "status": "degraded",
+                "count": len(specialist_degradations),
+                "specialists": [item.get("specialist_id") for item in specialist_degradations[:8]],
+            })
 
         contradictions = self._contradictions(specialists)
         trace.append({"stage": "contradiction_detector", "status": "completed", "count": len(contradictions)})
@@ -279,7 +290,7 @@ class IntelligenceOrchestrator:
         result = {
             **final,
             "trace_id": trace_id,
-            "status": "degraded" if errors or not specialists or context_overflows else "ready",
+            "status": "degraded" if errors or not specialists or context_overflows or specialist_degradations else "ready",
             "context_budget": {
                 "status": "overflow" if context_overflows else "within_budget",
                 "overflow_count": len(context_overflows),
@@ -327,6 +338,7 @@ class IntelligenceOrchestrator:
         profile_context = dict(context)
         profile_context["profile"] = self._profile_payload(profile)
         profile_context = self._restrict_profile_context(profile, profile_context)
+        evidence_anchor = self._first_cited_finding_anchor(profile_context.get("findings", []))
         max_context = self._field(profile, "max_context")
         try:
             # Honour the persisted profile budget.  A lower bound here used
@@ -350,11 +362,11 @@ class IntelligenceOrchestrator:
         if len(encoded) > max_context:
             # Keep a bounded cited anchor even for very small custom budgets;
             # never degrade to an uncited profile-only result.
-            first = next((item for item in profile_context.get("findings", []) if isinstance(item, Mapping)), None)
             profile_context = {"profile": {"id": key}, "findings": []}
-            if first and first.get("evidence"):
-                profile_context["findings"] = [{"summary": _text(first.get("summary"), "Visible evidence"), "evidence": list(first.get("evidence", []))[:1]}]
-            context_budget.update({"used_bytes": len(json.dumps(profile_context)), "status": "overflow", "overflow": True})
+            if evidence_anchor:
+                profile_context["findings"] = [evidence_anchor]
+            encoded = json.dumps(_json(profile_context), separators=(",", ":"), sort_keys=True)
+            context_budget.update({"used_bytes": len(encoded), "status": "overflow", "overflow": True})
         else:
             context_budget["used_bytes"] = len(encoded)
         profile_context["context_budget"] = context_budget
@@ -454,12 +466,7 @@ class IntelligenceOrchestrator:
                 try:
                     remaining = max(0.0, deadline - time.monotonic())
                     raw = future.result(timeout=remaining)
-                    if isinstance(raw, Mapping):
-                        for field in ("evidence_for", "evidence_against", "analogues", "dissent"):
-                            for item in raw.get(field, []) or []:
-                                ref = _ref_id(item)
-                                if ref is None or ref not in allowed_refs:
-                                    raise ValidationError(f"{profile_key}: unsupported or unauthorized evidence")
+                    raw = self._filter_raw_evidence_refs(raw, allowed_refs)
                     normalized = validate_expert_result(raw, allowed_refs=allowed_refs)
                     normalized["profile"] = self._contract_ref(profile)
                     normalized["specialist_id"] = profile_key
@@ -928,6 +935,45 @@ class IntelligenceOrchestrator:
         keys = set().union(*(allowed_scenario.get(domain, set()) for domain in domains))
         result["scenario_inputs"] = {key: value for key, value in scenario.items() if key in keys}
         return result
+
+    @staticmethod
+    def _first_cited_finding_anchor(findings: Any) -> dict[str, Any] | None:
+        for item in findings or []:
+            if not isinstance(item, Mapping):
+                continue
+            evidence = next((entry for entry in item.get("evidence", []) or [] if _ref_id(entry)), None)
+            if evidence is not None:
+                return {
+                    "summary": _text(item.get("summary") or item.get("title"), "Visible evidence"),
+                    "evidence": [_json(evidence)],
+                }
+        return None
+
+    @staticmethod
+    def _filter_raw_evidence_refs(value: Any, allowed_refs: set[str]) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        filtered = dict(value)
+        dropped_citations = 0
+        for field in ("evidence_for", "evidence_against", "analogues", "dissent"):
+            if field not in filtered:
+                continue
+            checked: list[Any] = []
+            for item in filtered.get(field, []) or []:
+                ref = _ref_id(item)
+                if ref is None or ref not in allowed_refs:
+                    dropped_citations += 1
+                    continue
+                checked.append(item)
+            filtered[field] = checked
+        if dropped_citations:
+            filtered["status"] = "degraded"
+            filtered["needs_review"] = True
+            unknowns = [_text(item) for item in _bounded_list(filtered.get("unknowns"))]
+            filtered["unknowns"] = unknowns[: MAX_ITEMS - 1] + [
+                f"{dropped_citations} evidence item(s) lacked an allowed citation and were dropped."
+            ]
+        return filtered
 
     @staticmethod
     def _evidence_matches_domain(evidence: Any, domain: str) -> bool:

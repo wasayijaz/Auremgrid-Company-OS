@@ -2,7 +2,7 @@
 
 Opening a database runs ordered, append-only schema migrations recorded in
 `schema_migrations`. The current documented release-line schema version is
-**53** (`crm_provider_import_records`); `/health` or `/health/detailed` is the
+**54** (`durable_automation_actions_and_delegation_depth`); `/health` or `/health/detailed` is the
 authoritative runtime evidence for the exact artifact being upgraded.
 
 Before upgrading:
@@ -12,7 +12,7 @@ Before upgrading:
 3. Run the full test suite against a copy.
 4. Start Auremgrid; migrations apply in order.
 5. Check `/health` (or `/health/detailed`) for the schema version; a healthy
-   schema-53 release-line installation reports `53`, and later artifacts must
+   schema-54 release-line installation reports `54`, and later artifacts must
    report their shipped schema version.
 6. Rebuild local projections with CompanyOS.rebuild_projections when required.
 
@@ -43,6 +43,8 @@ reversible action execution, with scoped idempotency, descriptor/payload hashes,
 run linkage, and an append-only no-delete boundary. Schemas 49 through 53 add
 Intelligence contract audit hooks, recommendation handoffs, local admin auth
 invites, Google Ads provider import records, and CRM provider import records.
+Schema 54 adds durable automation action execution records, replay-safe run
+fingerprints, and bounded delegated task depth.
 
 Schema 11-era databases also need the authenticated identity bootstrap. After
 migration, use the local `bootstrap-auth` command for an existing organization

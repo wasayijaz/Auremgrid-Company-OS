@@ -298,6 +298,47 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
         self.assertEqual(result["context_budget"]["status"], "overflow")
         self.assertTrue(any(event["stage"] == "context_budget" for event in result["trace"]))
 
+    def test_tiny_context_overflow_keeps_cited_anchor(self):
+        contracts = _Contracts(1)
+        contracts.profiles[0].update({"max_context": 1})
+        context = {
+            "findings": [{
+                "summary": "Visible work evidence should survive residual overflow.",
+                "evidence": [{
+                    "object_ref": {"type": "work_item", "id": "visible-work"},
+                    "summary": "The delivery item moved past its review date.",
+                }],
+            }],
+            "historical_analogues": [],
+            "decision_action_outcome_learning": [],
+            "scenario_inputs": {},
+        }
+        specialists, errors = IntelligenceOrchestrator(self.os, contracts)._run_specialists(
+            contracts.profiles, context, {"visible-work"}
+        )
+        self.assertEqual(errors, [])
+        specialist = specialists[0]
+        self.assertEqual(specialist["context_budget"]["status"], "overflow")
+        self.assertEqual(specialist["evidence_for"][0]["object_ref"]["id"], "visible-work")
+
+    def test_mixed_raw_specialist_evidence_drops_invalid_items_only(self):
+        contracts = _Contracts(1)
+        valid = {"object_ref": {"type": "work_item", "id": "visible-work"}, "summary": "Visible work signal."}
+
+        def mixed(_ctx):
+            value = _result()
+            value["evidence_for"] = [valid, {"summary": "uncited"}, {"ref": "not-visible"}]
+            return value
+
+        specialists, errors = IntelligenceOrchestrator(
+            self.os, contracts, specialist_handlers={"expert-0": mixed}
+        )._run_specialists(contracts.profiles, {"findings": []}, {"visible-work"})
+        self.assertEqual(errors, [])
+        self.assertEqual(specialists[0]["status"], "degraded")
+        self.assertEqual(specialists[0]["evidence_for"], [valid])
+        self.assertTrue(specialists[0]["needs_review"])
+        self.assertTrue(any("dropped" in item for item in specialists[0]["unknowns"]))
+
     def test_historical_analogue_wire_alias_is_normalized(self):
         from auremgrid.services.intelligence_orchestrator import validate_expert_result
         value = _result()
