@@ -197,6 +197,13 @@ class IntelligenceEngineTests(unittest.TestCase):
             self.assertIn("evidence", analogue)
             self.assertNotEqual(analogue.get("source", {}).get("workspace_id"), "hidden-workspace")
 
+    def test_literal_hypothesis_and_recommendation_read_models_are_complete(self) -> None:
+        result = self.os.intelligence.workspace("org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin")
+        for hypothesis in result["hypotheses"]:
+            self.assertTrue({"statement", "subject", "status", "confidence", "evidence_for", "evidence_against", "assumptions", "generated_by", "created_at", "updated_at", "resolved_at", "outcome"} <= set(hypothesis))
+        for recommendation in result["recommendations"]:
+            self.assertTrue({"recommended_at", "runbook", "experts", "confidence", "accepted", "rejected", "chosen_option", "measured_outcomes", "evaluation_window", "score", "lessons"} <= set(recommendation))
+
     def test_parameterized_what_if_context_plan_and_calibration_are_explicit(self) -> None:
         result = self.os.intelligence.workspace(
             "org_demo",

@@ -270,6 +270,11 @@ class IntelligenceService:
                 finding["deliberation"].update(model_reasoning)
                 finding["deliberation"]["mode"] = "model_backed"
                 finding["deliberation"]["provider_metadata"] = reasoning_meta
+        generated_at = _now().isoformat()
+        hypothesis_records = self._hypothesis_records(findings, generated_at)
+        recommendation_records = self._recommendation_records(
+            findings, recommendation_evaluation, deliberation, decision_links, scope, generated_at,
+        )
         return {
             "scope": scope,
             "context": context,
@@ -293,7 +298,9 @@ class IntelligenceService:
             "recommendation_evaluation": recommendation_evaluation,
             "deliberation": deliberation,
             "findings": findings,
-            "generated_at": _now().isoformat(),
+            "hypotheses": hypothesis_records,
+            "recommendations": recommendation_records,
+            "generated_at": generated_at,
         }
 
     @staticmethod
@@ -306,6 +313,60 @@ class IntelligenceService:
         if route in {"/work/capture", "/decisions", "/approvals"}:
             return "workspace_write" in capabilities
         return True
+
+    @staticmethod
+    def _hypothesis_records(findings: list[dict[str, Any]], generated_at: str) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for finding in findings:
+            for item in finding.get("hypotheses", [])[:12]:
+                confidence = item.get("confidence") or _confidence(0.0)
+                records.append({
+                    "statement": item.get("text") or item.get("hypothesis") or "Unknown hypothesis",
+                    "subject": finding.get("title") or finding.get("id"),
+                    "status": "review" if finding.get("needs_review") else "proposed",
+                    "confidence": confidence,
+                    "evidence_for": item.get("supporting_evidence", finding.get("supporting_evidence", []))[:8],
+                    "evidence_against": item.get("opposing_evidence", finding.get("opposing_evidence", []))[:8],
+                    "assumptions": item.get("assumptions", [])[:8],
+                    "generated_by": item.get("generated_by") or {"type": "intelligence_service", "id": "workspace"},
+                    "created_at": generated_at,
+                    "updated_at": generated_at,
+                    "resolved_at": None,
+                    "outcome": None,
+                })
+        return records[:64]
+
+    @staticmethod
+    def _recommendation_records(
+        findings: list[dict[str, Any]],
+        evaluation: dict[str, Any],
+        deliberation: dict[str, Any],
+        decision_links: list[dict[str, Any]],
+        scope: dict[str, Any],
+        generated_at: str,
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for finding in findings:
+            recommendation = finding.get("recommendation") or {}
+            if not isinstance(recommendation, dict):
+                recommendation = {"summary": str(recommendation)}
+            records.append({
+                "statement": recommendation.get("summary") or "Review the visible evidence.",
+                "recommended_at": generated_at,
+                "runbook": None,
+                "experts": [agent.get("agent") for agent in (deliberation.get("agents") or []) if agent.get("agent")],
+                "confidence": finding.get("confidence") or _confidence(0.0),
+                "accepted": None,
+                "rejected": None,
+                "chosen_option": None,
+                "measured_outcomes": [outcome for link in decision_links for outcome in link.get("outcomes", [])][:16],
+                "evaluation_window": {"start": scope.get("as_of"), "end": generated_at},
+                "score": (evaluation.get("calibrated_confidence") or {}).get("score"),
+                "lessons": evaluation.get("next_measurement"),
+                "created_at": generated_at,
+                "updated_at": generated_at,
+            })
+        return records[:32]
 
     def portfolio(
         self,
