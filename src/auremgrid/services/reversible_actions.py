@@ -55,6 +55,9 @@ ACTION_KINDS: dict[str, str] = {
     "generate_report": "report.generate",
     "create_notification": "notification.create",
     "acknowledge_attention": "proactive_attention.acknowledge",
+    "create_risk": "risk.create",
+    "add_work_comment": "work.comment.create",
+    "create_proposal": "brain.proposal.create",
 }
 
 
@@ -80,6 +83,40 @@ _ALLOWED_PAYLOAD_KEYS: dict[str, set[str]] = {
         "person_id",
         "fingerprint",
         "reason",
+        "idempotency_key",
+    },
+    "create_risk": {
+        "organization_id",
+        "workspace_id",
+        "person_id",
+        "type",
+        "severity",
+        "probability",
+        "impact",
+        "evidence",
+        "recommended_action",
+        "project_id",
+        "idempotency_key",
+    },
+    "add_work_comment": {
+        "organization_id",
+        "workspace_id",
+        "person_id",
+        "work_item_id",
+        "body",
+        "idempotency_key",
+    },
+    "create_proposal": {
+        "organization_id",
+        "workspace_id",
+        "person_id",
+        "proposer_type",
+        "kind",
+        "content",
+        "payload",
+        "evidence",
+        "confidence",
+        "source_id",
         "idempotency_key",
     },
 }
@@ -136,6 +173,48 @@ def _canonical_payload(action: str, payload: dict[str, Any], organization_id: st
         result = {
             "fingerprint": _required_text(payload, "fingerprint"),
             "reason": str(payload.get("reason", "approved agent acknowledgement")).strip() or "approved agent acknowledgement",
+            "workspace_id": workspace_id,
+        }
+    elif action == "create_risk":
+        probability = _as_float(payload.get("probability"), "probability")
+        if not 0 <= probability <= 1:
+            raise ValidationError("probability is out of range")
+        result = {
+            "type": _required_text(payload, "type"),
+            "severity": _required_text(payload, "severity"),
+            "probability": probability,
+            "impact": _required_text(payload, "impact"),
+            "evidence": _required_text(payload, "evidence"),
+            "recommended_action": _required_text(payload, "recommended_action"),
+            "project_id": payload.get("project_id"),
+            "workspace_id": workspace_id,
+        }
+        if result["project_id"] is not None:
+            result["project_id"] = _required_text(payload, "project_id")
+    elif action == "add_work_comment":
+        result = {
+            "work_item_id": _required_text(payload, "work_item_id"),
+            "body": _required_text(payload, "body"),
+            "workspace_id": workspace_id,
+        }
+    elif action == "create_proposal":
+        confidence = _as_float(payload.get("confidence"), "confidence")
+        if not 0 <= confidence <= 1:
+            raise ValidationError("confidence is out of range")
+        structured_payload = payload.get("payload")
+        if not isinstance(structured_payload, dict):
+            raise ValidationError("proposal payload must be an object")
+        source_id = payload.get("source_id")
+        if source_id is not None:
+            source_id = _required_text(payload, "source_id")
+        result = {
+            "proposer_type": _required_text(payload, "proposer_type"),
+            "kind": _required_text(payload, "kind"),
+            "content": _required_text(payload, "content"),
+            "payload": structured_payload,
+            "evidence": _required_text(payload, "evidence"),
+            "confidence": confidence,
+            "source_id": source_id,
             "workspace_id": workspace_id,
         }
     else:
@@ -363,6 +442,44 @@ class ReversibleActionExecutor:
                 payload["reason"],
             )
             return {"action": action, "kind": validated["kind"], "entity_type": "proactive_attention", "id": item["id"], "source_refs": [item["id"]], "result": item}
+        if action == "create_risk":
+            item = self.os.client_ops.create_risk(
+                organization_id,
+                run["task_workspace"],
+                identity.person_id,
+                payload["type"],
+                payload["severity"],
+                payload["probability"],
+                payload["impact"],
+                payload["evidence"],
+                payload["recommended_action"],
+                payload.get("project_id"),
+            )
+            result = item.to_dict() if hasattr(item, "to_dict") else dict(item)
+            return {"action": action, "kind": validated["kind"], "entity_type": "risk", "id": result["id"], "source_refs": [result["id"]], "result": result}
+        if action == "add_work_comment":
+            item = self.os.work_ops.add_comment(
+                organization_id,
+                run["task_workspace"],
+                identity.person_id,
+                payload["work_item_id"],
+                payload["body"],
+            )
+            return {"action": action, "kind": validated["kind"], "entity_type": "work_comment", "id": item["id"], "source_refs": [item["id"]], "result": item}
+        if action == "create_proposal":
+            item = self.os.brain_ops.create_proposal(
+                organization_id,
+                run["task_workspace"],
+                payload["proposer_type"],
+                identity,
+                payload["kind"],
+                payload["content"],
+                payload["payload"],
+                payload["evidence"],
+                payload["confidence"],
+                payload.get("source_id"),
+            )
+            return {"action": action, "kind": validated["kind"], "entity_type": "memory_proposal", "id": item["id"], "source_refs": [item["id"]], "result": item}
         raise ValidationError("unsupported agent action descriptor")
 
     def _record_audit(

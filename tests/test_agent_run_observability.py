@@ -161,6 +161,119 @@ class AgentRunObservabilityTests(unittest.TestCase):
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM notifications WHERE source_type='agent'").fetchone()[0], 1)
 
+    def test_risk_action_creates_canonical_risk(self) -> None:
+        self.os.auth.create_principal(self.org.id, self.owner.id, "owner@risk.test")
+        approval = self.os.agency_ops.request_approval(
+            self.org.id, "person", self.owner.id, "Create risk", "risk.create",
+            {
+                "workspace_id": self.primary.id,
+                "type": "delivery",
+                "severity": "high",
+                "probability": 0.75,
+                "impact": "Milestone may slip",
+                "evidence": "Dependency is blocked",
+                "recommended_action": "Escalate the dependency",
+            },
+            "approved risk", policy="auto", workspace_id=self.primary.id,
+        )
+        descriptor = {
+            "action": "create_risk", "kind": "risk.create", "safe": True, "one_way": False,
+            "payload": {
+                "workspace_id": self.primary.id,
+                "type": "delivery", "severity": "high", "probability": 0.75,
+                "impact": "Milestone may slip", "evidence": "Dependency is blocked",
+                "recommended_action": "Escalate the dependency",
+            },
+        }
+        task = self.os.agent_ops.enqueue_task(
+            self.org.id, self.owner.id, self.agent["id"], "Create risk", "Record risk",
+            self.primary.id, action_descriptor=descriptor, approval_request_id=approval["id"],
+        )
+        self.os.agent_ops.start_run(self.org.id, self.owner.id, self.agent["id"], task["id"])
+        result = run_one_job(self.os, self.org.id, self.primary.id, "worker-risk")
+        self.assertEqual(result["status"], "succeeded")
+        risk = self.os.store.conn.execute("SELECT * FROM risks WHERE organization_id=?", (self.org.id,)).fetchone()
+        self.assertEqual(risk["type"], "delivery")
+        self.assertEqual(float(risk["probability"]), 0.75)
+
+    def test_work_comment_action_creates_canonical_comment(self) -> None:
+        work = self.os.work_ops.create(
+            self.org.id, self.primary.id, self.owner.id, "Milestone", "Complete milestone", "Owner"
+        )
+        self.os.auth.create_principal(self.org.id, self.owner.id, "owner@comment.test")
+        approval = self.os.agency_ops.request_approval(
+            self.org.id, "person", self.owner.id, "Comment on work", "work.comment.create",
+            {"workspace_id": self.primary.id, "work_item_id": work.id, "body": "Agent review complete"},
+            "approved comment", policy="auto", workspace_id=self.primary.id,
+        )
+        descriptor = {
+            "action": "add_work_comment", "kind": "work.comment.create", "safe": True, "one_way": False,
+            "payload": {"workspace_id": self.primary.id, "work_item_id": work.id, "body": "Agent review complete"},
+        }
+        task = self.os.agent_ops.enqueue_task(
+            self.org.id, self.owner.id, self.agent["id"], "Comment on work", "Add comment",
+            self.primary.id, action_descriptor=descriptor, approval_request_id=approval["id"],
+        )
+        self.os.agent_ops.start_run(self.org.id, self.owner.id, self.agent["id"], task["id"])
+        result = run_one_job(self.os, self.org.id, self.primary.id, "worker-comment")
+        self.assertEqual(result["status"], "succeeded")
+        comment = self.os.store.conn.execute("SELECT * FROM work_comments WHERE work_item_id=?", (work.id,)).fetchone()
+        self.assertEqual(comment["body"], "Agent review complete")
+
+    def test_proposal_action_creates_pending_memory_proposal(self) -> None:
+        self.os.auth.create_principal(self.org.id, self.owner.id, "owner@proposal.test")
+        approval = self.os.agency_ops.request_approval(
+            self.org.id, "person", self.owner.id, "Propose memory", "brain.proposal.create",
+            {
+                "workspace_id": self.primary.id,
+                "proposer_type": "agent",
+                "kind": "memory",
+                "content": "The client prefers weekly written updates.",
+                "payload": {"preference": "weekly written updates"},
+                "evidence": "Repeated request in two meetings",
+                "confidence": 0.9,
+            },
+            "approved proposal", policy="auto", workspace_id=self.primary.id,
+        )
+        descriptor = {
+            "action": "create_proposal", "kind": "brain.proposal.create", "safe": True, "one_way": False,
+            "payload": {
+                "workspace_id": self.primary.id, "proposer_type": "agent", "kind": "memory",
+                "content": "The client prefers weekly written updates.",
+                "payload": {"preference": "weekly written updates"},
+                "evidence": "Repeated request in two meetings", "confidence": 0.9,
+            },
+        }
+        task = self.os.agent_ops.enqueue_task(
+            self.org.id, self.owner.id, self.agent["id"], "Propose memory", "Create proposal",
+            self.primary.id, action_descriptor=descriptor, approval_request_id=approval["id"],
+        )
+        self.os.agent_ops.start_run(self.org.id, self.owner.id, self.agent["id"], task["id"])
+        result = run_one_job(self.os, self.org.id, self.primary.id, "worker-proposal")
+        self.assertEqual(result["status"], "succeeded")
+        proposal = self.os.store.conn.execute("SELECT * FROM memory_proposals WHERE organization_id=?", (self.org.id,)).fetchone()
+        self.assertEqual(proposal["kind"], "memory")
+        self.assertEqual(proposal["status"], "pending")
+
+    def test_new_action_descriptor_payload_mismatch_is_denied(self) -> None:
+        self.os.auth.create_principal(self.org.id, self.owner.id, "owner@mismatch.test")
+        approval = self.os.agency_ops.request_approval(
+            self.org.id, "person", self.owner.id, "Create risk", "risk.create",
+            {"workspace_id": self.primary.id, "type": "delivery", "severity": "high", "probability": 0.5,
+             "impact": "Delay", "evidence": "Blocked", "recommended_action": "Escalate"},
+            "approved risk", policy="auto", workspace_id=self.primary.id,
+        )
+        descriptor = {
+            "action": "create_risk", "kind": "risk.create", "safe": True, "one_way": False,
+            "payload": {"workspace_id": self.primary.id, "type": "delivery", "severity": "high", "probability": 0.5,
+                        "impact": "Changed", "evidence": "Blocked", "recommended_action": "Escalate"},
+        }
+        with self.assertRaises(AuthorizationError):
+            self.os.agent_ops.enqueue_task(
+                self.org.id, self.owner.id, self.agent["id"], "Create risk", "Record risk",
+                self.primary.id, action_descriptor=descriptor, approval_request_id=approval["id"],
+            )
+
     def test_dashboard_agent_surfaces_are_workspace_isolated(self) -> None:
         primary_task = self.os.agent_ops.enqueue_task(
             self.org.id, self.owner.id, self.agent["id"], "Primary task", "Read primary work", self.primary.id
