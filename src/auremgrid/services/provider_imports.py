@@ -15,6 +15,57 @@ class ProviderImportService:
         self.os = os
         self.conn = os.store.conn
 
+    def preview(self, identity: Any, provider: str, account_id: str, workspace_mappings: dict[str, str],
+                resource: str, cursor: str | None = None, adapter: Any | None = None) -> dict[str, Any]:
+        identity.require("integration_sync")
+        if identity.workspace_id is not None and any(ws != identity.workspace_id for ws in workspace_mappings.values()):
+            raise AuthorizationError("provider import mapping is outside workspace scope")
+        adapter = adapter or {"stripe_accounting": StripeReadOnlyAdapter(), "meta_ads": MetaAdsReadOnlyAdapter()}.get(provider)
+        if adapter is None:
+            raise ValidationError("unsupported provider import")
+        workspace_id = workspace_mappings.get(account_id)
+        if workspace_id is None:
+            raise ValidationError("provider account must map to a workspace before import")
+        self.os._require_person_access(identity.organization_id, workspace_id, identity.person_id, write=True)
+        result = {"provider": provider, "resource": resource, "account_id": account_id,
+                  "cursor_before": cursor, "cursor_after": cursor, "status": "preview_not_connected",
+                  "previewed": 0, "would_import": 0, "canonical_would_write": 0,
+                  "quarantined": 0, "unsupported": 0, "quarantine_details": [],
+                  "records": [], "persisted": False}
+        if getattr(adapter, "transport", None) is None or getattr(adapter, "status", "not_connected") != "configured":
+            return result
+        page: ImportPage = adapter.pull(resource, cursor, account_id, workspace_mappings)
+        result["status"] = "preview_degraded" if page.quarantined else "preview_valid"
+        result["cursor_after"] = page.next_cursor
+        result["quarantine_details"] = list(page.quarantined)
+        result["quarantined"] = len(page.quarantined)
+        for record in page.records:
+            result["previewed"] += 1
+            result["would_import"] += 1
+            canonical = self._preview_canonical(record)
+            result[canonical["action"]] += 1
+            if canonical["action"] in {"quarantined", "unsupported"}:
+                result["quarantine_details"].append(canonical)
+            result["records"].append({
+                "provider": record.provider,
+                "object_type": record.object_type,
+                "external_id": record.external_id,
+                "workspace_id": record.workspace_id,
+                "account_id": record.account_id,
+                "occurred_at": record.occurred_at,
+                "amount": record.amount,
+                "currency": record.currency,
+                "status": record.status,
+                "payload_hash": record.payload_hash,
+                "dedupe_key": record.dedupe_key,
+                "canonical_action": canonical["action"],
+                "canonical_reason": canonical.get("reason"),
+            })
+        result["quarantined"] = len(result["quarantine_details"])
+        if result["quarantined"] and result["status"] == "preview_valid":
+            result["status"] = "preview_degraded"
+        return result
+
     def pull(self, identity: Any, provider: str, account_id: str, workspace_mappings: dict[str, str],
              resource: str, cursor: str | None = None, adapter: Any | None = None) -> dict[str, Any]:
         identity.require("integration_sync")
@@ -117,6 +168,26 @@ class ProviderImportService:
         self._quarantine(identity.organization_id, record.provider, record.object_type, record.external_id,
                          "unsupported_resource", {"resource": record.object_type, "payload": dict(record.payload)})
         return "unsupported"
+
+    def _preview_canonical(self, record: ProviderRecord) -> dict[str, Any]:
+        if record.provider == "stripe_accounting":
+            if record.amount is None or record.currency is None or record.occurred_at is None:
+                return {"action": "quarantined", "reason": "canonical_write_rejected", "error": "stripe record requires amount, currency, and timestamp", "external_id": record.external_id}
+            if record.object_type in {"invoices", "payments", "charges"}:
+                return {"action": "canonical_would_write"}
+            return {"action": "unsupported", "reason": "unsupported_resource", "external_id": record.external_id}
+        if record.provider == "meta_ads":
+            if record.object_type == "campaigns":
+                if not str(record.payload.get("name") or "").strip():
+                    return {"action": "quarantined", "reason": "canonical_write_rejected", "error": "meta campaign requires name", "external_id": record.external_id}
+                return {"action": "canonical_would_write"}
+            if record.object_type == "insights":
+                campaign_id = str(record.payload.get("campaign_id") or record.payload.get("canonical_campaign_id") or "").strip()
+                if not campaign_id:
+                    return {"action": "unsupported", "reason": "unsupported_without_campaign_mapping", "external_id": record.external_id}
+                return {"action": "canonical_would_write"}
+            return {"action": "unsupported", "reason": "unsupported_resource", "external_id": record.external_id}
+        return {"action": "unsupported", "reason": "unsupported_provider", "external_id": record.external_id}
 
     def _apply_stripe(self, identity: Any, record: ProviderRecord) -> str:
         if record.amount is None or record.currency is None or record.occurred_at is None:

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
+import threading
 import unittest
+from http.client import HTTPConnection
 
+from auremgrid.api.http import serve
 from auremgrid.connectors.financial import MetaAdsReadOnlyAdapter, StripeReadOnlyAdapter
 from auremgrid.domain.errors import AuthorizationError
 from auremgrid.domain.security import AuthenticatedIdentity
 from auremgrid.services.brain import CompanyOS
+from tests.auth_support import issue_identity
 
 
 class ProviderImportsTests(unittest.TestCase):
@@ -25,6 +30,73 @@ class ProviderImportsTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.os.close()
+
+    def state_counts(self) -> dict[str, int]:
+        return {
+            table: self.os.store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "provider_import_cursors",
+                "provider_import_records",
+                "provider_import_quarantines",
+                "invoices",
+                "campaign_metric_snapshots",
+                "ledger_audit",
+            )
+        }
+
+    def test_preview_normalizes_without_persisting_provider_or_canonical_state(self) -> None:
+        before = self.state_counts()
+        adapter = StripeReadOnlyAdapter(lambda **_: {
+            "data": [{"id": "in_preview", "amount": 100, "currency": "usd", "created": 1700000000, "due_at": "2023-11-20T22:13:20+00:00"}],
+            "next_cursor": "next-preview",
+        })
+        result = self.os.provider_imports.preview(self.identity, "stripe_accounting", "acct", {"acct": self.ws.id}, "invoices", adapter=adapter)
+        self.assertEqual(result["status"], "preview_valid")
+        self.assertFalse(result["persisted"])
+        self.assertEqual(result["would_import"], 1)
+        self.assertEqual(result["canonical_would_write"], 1)
+        self.assertEqual(result["cursor_after"], "next-preview")
+        self.assertEqual(result["records"][0]["external_id"], "in_preview")
+        self.assertEqual(self.state_counts(), before)
+
+    def test_preview_quarantine_details_are_returned_not_persisted(self) -> None:
+        before = self.state_counts()
+        adapter = StripeReadOnlyAdapter(lambda **_: {"data": [{"amount": 1, "currency": "usd"}]})
+        result = self.os.provider_imports.preview(self.identity, "stripe_accounting", "acct", {"acct": self.ws.id}, "invoices", adapter=adapter)
+        self.assertEqual(result["status"], "preview_degraded")
+        self.assertEqual(result["quarantined"], 1)
+        self.assertIn("provider record id is required", result["quarantine_details"][0]["error"])
+        self.assertEqual(self.state_counts(), before)
+
+    def test_http_preview_without_injected_transport_does_not_create_cursor(self) -> None:
+        self.os.create_actor(self.ws.id, "Import admin", "admin", "actor_import_admin")
+        token, _ = issue_identity(self.os, self.org.id, self.person.id, self.ws.id, "actor_import_admin")
+        server = serve(self.os, "127.0.0.1", 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = server.server_address
+            connection = HTTPConnection(host, port, timeout=5)
+            payload = json.dumps({
+                "provider": "stripe_accounting",
+                "account_id": "acct",
+                "workspace_mappings": {"acct": self.ws.id},
+                "resource": "invoices",
+            })
+            connection.request("POST", "/provider-imports/preview", body=payload, headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            })
+            response = connection.getresponse()
+            body = json.loads(response.read())
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(body["status"], "preview_not_connected")
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM provider_import_cursors").fetchone()[0], 0)
 
     def test_import_replay_and_conflict_quarantine(self) -> None:
         pages = [{"data": [{"id": "in_1", "amount": 100, "currency": "usd", "created": 1700000000, "due_at": "2023-11-20T22:13:20+00:00"}]}]

@@ -1267,13 +1267,16 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
             if parsed.path in {"/provider-imports/preview", "/provider-imports/sync"}:
                 mappings = payload.get("workspace_mappings") or {}
                 adapter = None
+                provider = _need(payload, "provider")
                 if parsed.path.endswith("preview"):
                     from auremgrid.connectors.financial import MetaAdsReadOnlyAdapter, StripeReadOnlyAdapter
-                    provider = _need(payload, "provider")
                     transport = payload.get("_transport")
                     adapter = {"stripe_accounting": StripeReadOnlyAdapter(transport), "meta_ads": MetaAdsReadOnlyAdapter(transport)}.get(provider)
-                result = self.os.provider_imports.pull(identity, _need(payload,"provider"), _need(payload,"account_id"), mappings,
-                    _need(payload,"resource"), _optional_str(payload.get("cursor")), adapter)
+                    result = self.os.provider_imports.preview(identity, provider, _need(payload,"account_id"), mappings,
+                        _need(payload,"resource"), _optional_str(payload.get("cursor")), adapter)
+                else:
+                    result = self.os.provider_imports.pull(identity, provider, _need(payload,"account_id"), mappings,
+                        _need(payload,"resource"), _optional_str(payload.get("cursor")), adapter)
                 self._json(200, result); return
             if parsed.path in {"/operator/pause", "/operator/resume"}:
                 scheduler = self.os.scheduler(identity.organization_id, _optional_str(payload.get("workspace_id")), _need(payload, "worker_id"))

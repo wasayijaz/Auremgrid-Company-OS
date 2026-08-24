@@ -144,7 +144,10 @@ objects, upload data, or change registry/recovery state.
 `POST /provider-imports/preview` and `/provider-imports/sync` are read-only
 normalization paths for injected Stripe Billing/accounting and Meta Ads pages.
 They require `integration_sync`, an account-to-workspace mapping, and a
-supported resource. Preview uses fixture/injected pages only; sync writes
+supported resource. Preview uses fixture/injected pages only and is a true
+non-persisting dry run: it normalizes records, reports validation/quarantine
+details, and writes no cursors, import records, import quarantines, canonical
+finance/campaign rows, or audit state. Sync is the persistent path; it writes
 append-only `provider_import_records`, cursor state, and quarantine records.
 These routes are not live registered connectors and never send or mutate
 provider data.
