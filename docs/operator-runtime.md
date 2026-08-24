@@ -24,6 +24,12 @@ runtime, migration dialect, FTS, trigger, id generation, catalog, and transactio
 blockers that must be resolved before a PostgreSQL deployment can be called
 ready.
 
+Agent command-center reads expose the exact supervised reversible action
+catalog enforced by the executor. Agent run detail also returns approved action
+execution rows with decoded result/error state and a replay boundary, so an
+operator can distinguish completed idempotent replay, active fenced execution,
+and failed same-key execution that needs a new approved task or idempotency key.
+
 The compose template binds the stdlib server only to loopback and puts TLS at
 the reverse proxy. Replace `AUREMGRID_DOMAIN` and provide a protected `.env`
 before deployment; do not expose port 8791 directly. The template is an

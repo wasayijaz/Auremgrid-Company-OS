@@ -89,6 +89,16 @@ gates, approval decisions, handoff acknowledgements, SLAs, and rework history.
 People records already retain titles, departments, managers, skills,
 availability, and capacity snapshots.
 
+Approved reversible action execution uses one local catalog enforced by the
+executor and exposed through the agent command-center service:
+`generate_report`, `create_notification`, `acknowledge_attention`,
+`create_risk`, `add_work_comment`, and `create_proposal`. Every catalog entry
+is safe, non-one-way, approval-gated, and limited to local canonical ledger
+routes. Run detail includes the execution ledger rows plus the replay boundary:
+successful same-key replays return the recorded local result, active executions
+block parallel replay, and failed same-key executions require a new approved
+task or idempotency key.
+
 The four-level taxonomy is the routing contract for the current level-routing
 slice. It should only be described as enforced end to end when level fields,
 resolution, persistence, API output, dashboard output, and behavior tests ship

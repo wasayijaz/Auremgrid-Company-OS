@@ -60,6 +60,15 @@ ACTION_KINDS: dict[str, str] = {
     "create_proposal": "brain.proposal.create",
 }
 
+_ACTION_LABELS: dict[str, str] = {
+    "generate_report": "Generate local report",
+    "create_notification": "Create local notification",
+    "acknowledge_attention": "Acknowledge proactive attention",
+    "create_risk": "Create local risk",
+    "add_work_comment": "Add local work comment",
+    "create_proposal": "Create pending brain proposal",
+}
+
 
 _ALLOWED_PAYLOAD_KEYS: dict[str, set[str]] = {
     "generate_report": {"organization_id", "workspace_id", "person_id", "report_type", "type", "idempotency_key"},
@@ -120,6 +129,26 @@ _ALLOWED_PAYLOAD_KEYS: dict[str, set[str]] = {
         "idempotency_key",
     },
 }
+
+
+def supervised_action_catalog() -> tuple[dict[str, Any], ...]:
+    """Return the exact local reversible action catalog enforced by this module."""
+
+    return tuple(
+        {
+            "action": action,
+            "kind": kind,
+            "label": _ACTION_LABELS[action],
+            "allowed_payload_keys": tuple(sorted(_ALLOWED_PAYLOAD_KEYS[action])),
+            "safe": True,
+            "one_way": False,
+            "requires_approval": True,
+            "external_write": False,
+            "provider_write": False,
+            "execution_surface": "local_canonical_ledger",
+        }
+        for action, kind in ACTION_KINDS.items()
+    )
 
 
 def _basic_descriptor(descriptor: dict[str, Any]) -> str:
@@ -386,13 +415,7 @@ class ReversibleActionExecutor:
                 return dict(existing)
             if existing["status"] == "running":
                 raise ValidationError("approved action execution is already running")
-            now = _now().isoformat()
-            self.conn.execute(
-                "UPDATE agent_action_executions SET status='running',error_json=NULL,completed_at=NULL WHERE id=?",
-                (existing["id"],),
-            )
-            self.conn.commit()
-            return dict(self.conn.execute("SELECT * FROM agent_action_executions WHERE id=?", (existing["id"],)).fetchone())
+            raise ValidationError("approved action execution failed previously; create a new approved task or idempotency key")
         now = _now().isoformat()
         item = {
             "id": self.os.jobs.new_id("agentaction"),

@@ -4,6 +4,7 @@ import unittest
 
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
 from auremgrid.services.brain import CompanyOS
+from auremgrid.services.reversible_actions import ACTION_KINDS, supervised_action_catalog
 from auremgrid.services.worker import run_one_job
 
 
@@ -139,7 +140,77 @@ class AgentRunObservabilityTests(unittest.TestCase):
         self.assertEqual(result["status"], "succeeded")
         detail = self.os.agent_ops.run_detail(self.org.id, self.owner.id, run["id"])
         self.assertEqual(detail["run"]["status"], "completed")
+        self.assertEqual(detail["action_execution_boundary"]["status"], "succeeded")
+        self.assertEqual(detail["action_execution_boundary"]["replay_state"], "idempotent_replay_returns_recorded_result")
+        self.assertEqual(detail["action_executions"][0]["action"], "generate_report")
+        self.assertEqual(detail["action_executions"][0]["result"]["entity_type"], "report")
         self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM jobs WHERE idempotency_key=?", (f"agent-action:{task['id']}",)).fetchone()[0], 1)
+
+    def test_supervised_action_catalog_matches_executor_allowlist(self) -> None:
+        catalog = supervised_action_catalog()
+        self.assertEqual({item["action"]: item["kind"] for item in catalog}, ACTION_KINDS)
+        self.assertTrue(all(item["safe"] and not item["one_way"] for item in catalog))
+        self.assertTrue(all(not item["external_write"] and not item["provider_write"] for item in catalog))
+
+        center = self.os.agent_ops.command_center(self.org.id, self.owner.id)
+        self.assertEqual(
+            {item["action"]: item["kind"] for item in center["supervised_action_catalog"]},
+            ACTION_KINDS,
+        )
+
+    def test_failed_action_execution_blocks_same_idempotency_replay(self) -> None:
+        self.os.auth.create_principal(self.org.id, self.owner.id, "owner@action-circuit.test")
+        payload = {
+            "workspace_id": self.primary.id,
+            "type": "unsupported_local_type",
+            "severity": "high",
+            "probability": 0.5,
+            "impact": "Bad imported recommendation",
+            "evidence": "Approved payload still has to pass canonical service validation",
+            "recommended_action": "Review before retry",
+            "idempotency_key": "risk-circuit-1",
+        }
+        approval = self.os.agency_ops.request_approval(
+            self.org.id,
+            "person",
+            self.owner.id,
+            "Create invalid risk",
+            "risk.create",
+            payload,
+            "approved bad local risk payload",
+            policy="auto",
+            workspace_id=self.primary.id,
+        )
+        descriptor = {"action": "create_risk", "kind": "risk.create", "safe": True, "one_way": False, "payload": payload}
+        first_task = self.os.agent_ops.enqueue_task(
+            self.org.id, self.owner.id, self.agent["id"], "Create invalid risk", "Record risk",
+            self.primary.id, action_descriptor=descriptor, approval_request_id=approval["id"],
+        )
+        first_run = self.os.agent_ops.start_run(self.org.id, self.owner.id, self.agent["id"], first_task["id"])
+        first = run_one_job(self.os, self.org.id, self.primary.id, "worker-risk-fail")
+        self.assertEqual(first["status"], "failed")
+        first_detail = self.os.agent_ops.run_detail(self.org.id, self.owner.id, first_run["id"])
+        self.assertEqual(first_detail["action_execution_boundary"]["status"], "failed")
+        self.assertEqual(
+            first_detail["action_execution_boundary"]["replay_state"],
+            "blocked_failed_execution_requires_new_approval_or_idempotency_key",
+        )
+        self.assertIn("unsupported risk type", first_detail["action_executions"][0]["error"]["message"])
+
+        second_task = self.os.agent_ops.enqueue_task(
+            self.org.id, self.owner.id, self.agent["id"], "Replay invalid risk", "Record risk again",
+            self.primary.id, action_descriptor=descriptor, approval_request_id=approval["id"],
+        )
+        second_run = self.os.agent_ops.start_run(self.org.id, self.owner.id, self.agent["id"], second_task["id"])
+        second = run_one_job(self.os, self.org.id, self.primary.id, "worker-risk-replay")
+        self.assertEqual(second["status"], "failed")
+        second_detail = self.os.agent_ops.run_detail(self.org.id, self.owner.id, second_run["id"])
+        self.assertEqual(second_detail["action_executions"], [])
+        self.assertIn("failed previously", second_detail["error"]["message"])
+        self.assertEqual(
+            self.os.store.conn.execute("SELECT COUNT(*) FROM agent_action_executions WHERE idempotency_key='risk-circuit-1'").fetchone()[0],
+            1,
+        )
 
     def test_notification_action_requires_exact_approved_payload(self) -> None:
         self.os.auth.create_principal(self.org.id, self.owner.id, "owner@notification.test")

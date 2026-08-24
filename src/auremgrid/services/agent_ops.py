@@ -13,7 +13,7 @@ from auremgrid.domain.models import (
     effective_capability_tags,
     normalize_agent_level,
 )
-from auremgrid.services.reversible_actions import validate_approved_action_descriptor
+from auremgrid.services.reversible_actions import supervised_action_catalog, validate_approved_action_descriptor
 
 
 def _now() -> datetime:
@@ -22,6 +22,23 @@ def _now() -> datetime:
 
 def _json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"))
+
+
+def _loads(value: Any, default: Any) -> Any:
+    try:
+        return json.loads(value) if value else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _action_operator_next_step(status: str) -> str:
+    if status == "succeeded":
+        return "No action needed; identical replays return the recorded local result."
+    if status == "running":
+        return "Wait for the active fenced execution to finish before retrying."
+    if status == "failed":
+        return "Review the recorded error and create a new approved task or idempotency key before retrying."
+    return "Review execution status before taking another action."
 
 
 class AgentOperations:
@@ -579,10 +596,16 @@ class AgentOperations:
         return {
             "agents": agents,
             "recent_runs": runs,
+            "supervised_action_catalog": self.supervised_action_catalog(organization_id, person_id),
             "running": sum(run["status"] == "running" for run in runs),
             "failed": sum(run["status"] == "failed" for run in runs),
             "token_cost": sum((run["cost"] or 0) for run in runs),
         }
+
+    def supervised_action_catalog(self, organization_id: str, person_id: str) -> list[dict[str, Any]]:
+        if self.company.org_membership(organization_id, person_id) is None:
+            raise AuthorizationError("organization membership required")
+        return [dict(item) for item in supervised_action_catalog()]
 
     def list_runs(
         self,
@@ -628,6 +651,7 @@ class AgentOperations:
         error = self.conn.execute("SELECT * FROM run_errors WHERE run_id=?", (run_id,)).fetchone()
         tools = self.conn.execute("SELECT * FROM tool_calls WHERE run_id=? ORDER BY started_at,id", (run_id,)).fetchall()
         traces = self.conn.execute("SELECT * FROM run_traces WHERE run_id=? ORDER BY sequence", (run_id,)).fetchall()
+        action_executions = self._action_executions_for_run(run_id)
         return {
             "run": run,
             "task": dict(task) if task else None,
@@ -635,6 +659,57 @@ class AgentOperations:
             "error": dict(error) if error else None,
             "tool_calls": [dict(row) for row in tools],
             "traces": [dict(row) for row in traces],
+            "action_executions": action_executions,
+            "action_execution_boundary": self._action_execution_boundary(dict(task) if task else None, action_executions),
+        }
+
+    def _action_executions_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT id,organization_id,workspace_id,agent_id,run_id,task_id,approval_request_id,
+                      action,action_kind,idempotency_key,descriptor_hash,payload_hash,status,
+                      result_json,error_json,created_at,completed_at
+               FROM agent_action_executions
+               WHERE run_id=?
+               ORDER BY created_at DESC,id DESC""",
+            (run_id,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["result"] = _loads(item.pop("result_json"), None)
+            item["error"] = _loads(item.pop("error_json"), None)
+            item["replay_state"] = self._action_replay_state(item)
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _action_replay_state(execution: dict[str, Any]) -> str:
+        if execution["status"] == "succeeded":
+            return "idempotent_replay_returns_recorded_result"
+        if execution["status"] == "running":
+            return "blocked_active_execution"
+        if execution["status"] == "failed":
+            return "blocked_failed_execution_requires_new_approval_or_idempotency_key"
+        return "unknown"
+
+    def _action_execution_boundary(self, task: dict[str, Any] | None, executions: list[dict[str, Any]]) -> dict[str, Any]:
+        if task is None or not task.get("action_descriptor_json"):
+            return {"status": "not_applicable", "requires_approval": False}
+        if not executions:
+            return {
+                "status": "approved_action_not_started",
+                "requires_approval": True,
+                "replay_state": "not_started",
+            }
+        latest = executions[0]
+        return {
+            "status": latest["status"],
+            "requires_approval": True,
+            "action": latest["action"],
+            "action_kind": latest["action_kind"],
+            "idempotency_key": latest["idempotency_key"],
+            "replay_state": latest["replay_state"],
+            "operator_next_step": _action_operator_next_step(latest["status"]),
         }
 
     def _run(self, organization_id: str, agent_id: str, run_id: str) -> Any:

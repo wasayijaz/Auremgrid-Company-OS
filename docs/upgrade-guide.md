@@ -56,11 +56,14 @@ Intelligence migrations add contracts, learning, evaluation safety, and
 proactive lifecycle/orchestration/action-descriptor records only; they do not
 promote hypotheses into facts or change agent routing. Descriptor execution is
 limited to the exact supervised catalog: `generate_report` (`report.generate`),
-`create_notification` (`notification.create`), and `acknowledge_attention`
-(`proactive_attention.acknowledge`). Execution requires a safe, non-one-way
-descriptor, an approved same-scope approval request with matching action kind
-and canonical payload, and a scoped idempotency key. Rejected or otherwise
-non-approved approvals block new execution; completed execution attempts remain
-ledgered. External-send, connector-write, one-way, and arbitrary descriptors are
-rejected.
+`create_notification` (`notification.create`), `acknowledge_attention`
+(`proactive_attention.acknowledge`), `create_risk` (`risk.create`),
+`add_work_comment` (`work.comment.create`), and `create_proposal`
+(`brain.proposal.create`). Execution requires a safe, non-one-way descriptor,
+an approved same-scope approval request with matching action kind and canonical
+payload, and a scoped idempotency key. Rejected or otherwise non-approved
+approvals block new execution; completed execution attempts remain ledgered.
+Failed same-key attempts are fenced until an operator creates a new approved
+task or idempotency key. External-send, connector-write, one-way, and arbitrary
+descriptors are rejected.
 
