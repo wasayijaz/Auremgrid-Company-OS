@@ -291,8 +291,9 @@ class DashboardSurfaceTests(unittest.TestCase):
         for marker in (
             "function intelligenceActionReason",
             "function intelligenceActions",
-            "action&&action.route",
+            "action&&action.route&&action.safe===true",
             "data-intelligence-action",
+            "The backend did not mark this descriptor safe.",
             "No backend route was granted by the server",
             "No evidence action descriptor returned",
         ):

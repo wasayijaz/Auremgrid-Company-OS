@@ -14,9 +14,10 @@ and `/dashboard/intelligence/runbooks`. The “Run expert review” control call
 the real read-only `/dashboard/intelligence/orchestrator/run` route and then
 loads the scoped `/dashboard/intelligence/orchestrator/result` by `trace_id`.
 The panel renders contributors, `runbook_route`, trace stages,
-contradictions, and degraded status from the backend response. Action buttons
-appear only when the response carries a safe descriptor with a backend route;
-otherwise the control is visibly disabled.
+contradictions, and degraded status from the backend response. Intelligence
+action buttons are live only when the response carries both a backend route and
+`safe: true`; routed descriptors that are not marked safe remain visible but
+disabled with the server-provided reason.
 
 The Command overview also loads `GET /dashboard/intelligence/executive` for its portfolio brief. The permanent Intelligence rail exposes causal links, supporting and opposing hypotheses, modeled scenarios, historical analogues, and decision-to-outcome learning when those structures are supported. These remain derived read models; suggested operations travel through canonical, permission-checked routes and are never silently executed.
 
