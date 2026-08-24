@@ -175,6 +175,9 @@ class AgentOperations:
         intent_tags: Sequence[str] | None = None,
         selected_level: AgentLevel | str | None = None,
         override_reason: str = "",
+        action_descriptor: dict[str, Any] | None = None,
+        orchestrator_trace_id: str | None = None,
+        approval_request_id: str | None = None,
     ) -> dict[str, Any]:
         if self.company.org_membership(organization_id, requested_by_person_id) is None:
             raise AuthorizationError("organization membership required")
@@ -194,6 +197,29 @@ class AgentOperations:
             raise ValidationError("agent task title and instructions are required")
         if priority < 0 or priority > 100:
             raise ValidationError("agent task priority must be between 0 and 100")
+        if action_descriptor is not None:
+            if not isinstance(action_descriptor, dict) or action_descriptor.get("safe") is not True or action_descriptor.get("one_way") is not False:
+                raise ValidationError("agent action descriptor must be safe and reversible")
+            if action_descriptor.get("action") not in {"generate_report"}:
+                raise ValidationError("unsupported agent action descriptor")
+            if not approval_request_id:
+                raise ValidationError("approved action descriptor required")
+            approval = self.conn.execute(
+                "SELECT status,workspace_id,action_type,payload FROM approval_requests WHERE id=? AND organization_id=?",
+                (approval_request_id, organization_id),
+            ).fetchone()
+            if approval is None or approval["status"] != "approved" or approval["workspace_id"] != workspace_id or approval["action_type"] != "report.generate":
+                raise AuthorizationError("same-scope approved action required")
+            try:
+                approved_payload = json.loads(approval["payload"] or "{}")
+            except (TypeError, ValueError):
+                approved_payload = {}
+            if approved_payload.get("report_type") != action_descriptor.get("payload", {}).get("type"):
+                raise AuthorizationError("approved report type does not match action descriptor")
+            if orchestrator_trace_id:
+                trace = self.conn.execute("SELECT 1 FROM intelligence_orchestrator_runs WHERE trace_id=? AND organization_id=? AND workspace_id=?", (orchestrator_trace_id, organization_id, workspace_id)).fetchone()
+                if trace is None:
+                    raise ValidationError("orchestrator trace is not durable in scope")
 
         tags = self.validate_capability_tags(intent_tags or ("execute",))
         recommended = self.resolve_level(tags)
@@ -212,7 +238,7 @@ class AgentOperations:
             "instructions": instructions,
             "priority": priority,
             "status": "queued",
-            "approval_request_id": None,
+            "approval_request_id": approval_request_id,
             "intent_tags": _json(tags),
             "recommended_level": recommended.value,
             "selected_level": selected.value,
@@ -220,13 +246,15 @@ class AgentOperations:
             "created_at": now,
             "started_at": None,
             "completed_at": None,
+            "action_descriptor_json": _json(action_descriptor) if action_descriptor is not None else None,
+            "orchestrator_trace_id": orchestrator_trace_id,
         }
         self.conn.execute(
             """INSERT INTO agent_tasks(
                 id,organization_id,workspace_id,agent_id,title,instructions,priority,status,
                 approval_request_id,intent_tags,recommended_level,selected_level,level_override_reason,
-                created_at,started_at,completed_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                created_at,started_at,completed_at,action_descriptor_json,orchestrator_trace_id
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             tuple(task.values()),
         )
         if selected != recommended:
@@ -263,6 +291,15 @@ class AgentOperations:
         ).fetchone()
         if task is None or task["status"] != "queued":
             raise ValidationError("queued agent task required")
+        if task["action_descriptor_json"]:
+            if not task["approval_request_id"]:
+                raise AuthorizationError("approved action descriptor required")
+            approval = self.conn.execute(
+                "SELECT status,workspace_id,action_type,payload FROM approval_requests WHERE id=? AND organization_id=?",
+                (task["approval_request_id"], organization_id),
+            ).fetchone()
+            if approval is None or approval["status"] != "approved" or approval["workspace_id"] != task["workspace_id"] or approval["action_type"] != "report.generate":
+                raise AuthorizationError("same-scope approved action required")
         if task["workspace_id"] is not None and task["workspace_id"] not in self.visible_workspace_ids(organization_id, person_id):
             raise AuthorizationError("agent task workspace is not visible to caller")
         now = _now().isoformat()
@@ -287,7 +324,24 @@ class AgentOperations:
         self.conn.execute("UPDATE agents SET status='running',current_task_id=? WHERE id=?", (task_id, agent_id))
         self.conn.execute("UPDATE agent_queue_items SET status='claimed',claimed_at=? WHERE task_id=?", (now, task_id))
         self.conn.commit()
+        if task["action_descriptor_json"]:
+            self._enqueue_approved_action(run, person_id)
         return run
+
+    def _enqueue_approved_action(self, run: dict[str, Any], person_id: str) -> None:
+        descriptor = json.loads(self.conn.execute("SELECT action_descriptor_json FROM agent_tasks WHERE id=?", (run["task_id"],)).fetchone()[0])
+        principal = self.conn.execute(
+            "SELECT id FROM auth_principals WHERE organization_id=? AND person_id=? AND status='active' LIMIT 1",
+            (run["organization_id"], person_id),
+        ).fetchone()
+        if principal is None:
+            raise AuthorizationError("active principal required for approved action")
+        from auremgrid.services.job_ops import JobOperations
+        JobOperations(self.conn, self.new_id).enqueue_job(
+            run["organization_id"], run["workspace_id"], principal["id"], "agent.run",
+            {"run_id": run["id"], "agent_id": run["agent_id"], "action": descriptor},
+            idempotency_key=f"agent-action:{run['task_id']}",
+        )
 
     def claim_next_task(self, organization_id: str, person_id: str, agent_id: str) -> dict[str, Any] | None:
         """Claim the highest-priority queued task that remains inside the agent scope."""

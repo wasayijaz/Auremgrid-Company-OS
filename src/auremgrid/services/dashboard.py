@@ -1058,12 +1058,36 @@ class DashboardService(_ExistingDashboardService):
             f"SELECT * FROM workflow_handoff_acknowledgements WHERE run_id IN ({marks}) AND created_at<=? ORDER BY created_at,rowid",
             (*run_ids, cutoff),
         ).fetchall()]
-        handoff_contracts: dict[tuple[str,str],str] = {}
+        stage_contracts: dict[tuple[str, str], dict[str, Any]] = {}
         for run in run_rows:
             snapshot=_json_object(run["template_snapshot"])
             for item in snapshot.get("stages",[]) if isinstance(snapshot.get("stages"),list) else []:
-                if isinstance(item,dict) and item.get("key"):
-                    handoff_contracts[(str(run["id"]),str(item["key"]))]=str(item.get("handoff_contract") or "")
+                if isinstance(item,dict):
+                    key = item.get("key") or item.get("id") or item.get("slug") or item.get("stage_key")
+                    if key:
+                        duration = item.get("expected_duration_hours")
+                        if duration is None:
+                            duration = item.get("estimate_hours")
+                        stage_contracts[(str(run["id"]), str(key))] = {
+                            "handoff_contract": str(item.get("handoff_contract") or ""),
+                            "expected_duration_hours": _optional_float(duration),
+                        }
+        assignee_ids = sorted({
+            str(stage["assignee_person_id"]) for stage in stages if stage.get("assignee_person_id")
+        })
+        people_by_id: dict[str, dict[str, Any]] = {}
+        if assignee_ids:
+            people_marks = ",".join("?" for _ in assignee_ids)
+            people_by_id = {
+                str(row["id"]): dict(row) for row in self.conn.execute(
+                    f"""SELECT p.id,p.name,p.title,p.department,wm.role AS workspace_role
+                        FROM people p
+                        JOIN workspace_memberships wm ON wm.person_id=p.id
+                        WHERE p.organization_id=? AND wm.workspace_id=? AND p.id IN ({people_marks})
+                        ORDER BY p.name,p.id""",
+                    (organization_id, workspace_id, *assignee_ids),
+                ).fetchall()
+            }
 
         history_by_stage: dict[str, list[dict[str, Any]]] = defaultdict(list)
         history_by_run: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1116,7 +1140,9 @@ class DashboardService(_ExistingDashboardService):
                 ) if stage["status"] == "blocked" else None
             stage["required_evidence"] = _json_list(stage["required_evidence"])
             stage["requires_approval"] = bool(stage["requires_approval"])
-            stage["handoff_contract"] = handoff_contracts.get((str(stage["run_id"]),str(stage["stage_key"])),"")
+            contract = stage_contracts.get((str(stage["run_id"]), str(stage["stage_key"])), {})
+            stage["handoff_contract"] = str(contract.get("handoff_contract") or "")
+            stage["expected_duration_hours"] = contract.get("expected_duration_hours")
             stage_by_id[str(stage["id"])] = stage
 
         rendered_stages: list[dict[str, Any]] = []
@@ -1167,10 +1193,21 @@ class DashboardService(_ExistingDashboardService):
                 identity,workspace_id,stage,ready,not missing,approval_view,request_view,
                 missing_handoffs
             )
+            assignee_person = people_by_id.get(str(stage["assignee_person_id"])) if stage["assignee_person_id"] else None
+            owner = {
+                "wing": stage["assignee_wing"], "role": stage["assignee_role"],
+                "person_id": stage["assignee_person_id"], "person": assignee_person,
+            }
+            expected_duration_hours = stage.get("expected_duration_hours")
             rendered_stages.append({
                 "id": stage_id, "run_id": stage["run_id"], "stage_key": stage["stage_key"], "name": stage["name"],
                 "sequence": stage["sequence"], "status": stage["status"],
-                "assignee": {"wing": stage["assignee_wing"], "role": stage["assignee_role"], "person_id": stage["assignee_person_id"]},
+                "assignee": owner, "owner": owner,
+                "expected_duration_hours": expected_duration_hours,
+                "expected_duration": {
+                    "hours": expected_duration_hours,
+                    "source": "template_snapshot" if expected_duration_hours is not None else "unknown",
+                },
                 "readiness": {"ready": ready, "dependencies_clear": dependencies_clear, "handoffs_clear": handoffs_clear},
                 "dependencies": dependency_view,
                 "evidence": {"total": sum(counts.values()), "by_kind": dict(sorted(counts.items())), "required": stage["required_evidence"], "missing": missing},
@@ -1197,12 +1234,30 @@ class DashboardService(_ExistingDashboardService):
                     {"workspace_id":workspace_id,"run_id":run["id"],"expected_version":run["version"]},
                     ["reason"],
                 ))
+            expected_total = sum(
+                float(stage["expected_duration_hours"])
+                for stage in children if stage.get("expected_duration_hours") is not None
+            )
+            active_expected = sum(
+                float(stage["expected_duration_hours"])
+                for stage in children
+                if stage.get("expected_duration_hours") is not None and stage.get("status") not in _TERMINAL
+            )
             runs.append({
                 "id": run["id"], "definition_key": run["definition_key"], "definition_name": run["definition_name"],
                 "definition_version": run["definition_version"], "status": run["status"],
                 "due": {"at": run["due_at"], "escalation_at": run["escalation_at"], "overdue": bool(run["due_at"] and run["due_at"] < cutoff and run["status"] not in _TERMINAL)},
                 "blocker": run["blocked_reason"] if not historical else next((stage["blocker"] for stage in children if stage["blocker"]), None),
                 "progress": {"completed": counts["completed"], "total": len(children), "status_counts": dict(sorted(counts.items()))},
+                "rollups": {
+                    "expected_duration_hours": round(expected_total, 4),
+                    "active_expected_duration_hours": round(active_expected, 4),
+                    "unestimated_stage_count": sum(stage.get("expected_duration_hours") is None for stage in children),
+                    "owner_roles": sorted({
+                        str((stage.get("owner") or {}).get("role")) for stage in children
+                        if (stage.get("owner") or {}).get("role")
+                    }),
+                },
                 "allowed_actions": actions,
             })
         return self._workflow_response(moment, historical, runs, rendered_stages)
@@ -1444,6 +1499,15 @@ def _json_list(value: Any) -> list[str]:
         return [str(item) for item in parsed] if isinstance(parsed, list) else []
     except (TypeError, ValueError):
         return []
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _redirect(entity_id: str, redirects: dict[str, str]) -> str:

@@ -40,7 +40,7 @@ Auremgrid runs as a local-first Python process with SQLite. This checklist cover
 ## Monitoring
 
 - [ ] Poll `/health` from an external monitor (uptime check)
-- [ ] Check that health reports schema version 45 for this release
+- [ ] Check that health reports schema version 47 for this release
 - [ ] Alert on process crashes, backup failures, or recovery mode activation
 
 ## Secrets
@@ -49,4 +49,4 @@ Auremgrid runs as a local-first Python process with SQLite. This checklist cover
 - [ ] Never commit `.env` to the repository
 - [ ] Rotate API keys and tokens on a regular schedule
 - [ ] Provide your own OAuth client registrations and token-exchange transport before using OAuth routes; no provider client credentials ship with the repository
-- [ ] Treat `deploy/Caddyfile` and `deploy/docker-compose.yml` as loopback/TLS proxy templates; certificate, firewall, and access-policy operation remains yours
+- [ ] Treat `Dockerfile`, `deploy/Caddyfile`, and `deploy/docker-compose.yml` as private single-host templates; certificate, firewall, browser-runtime, provider-connectivity, and access-policy operation remains yours

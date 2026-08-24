@@ -222,6 +222,40 @@ class AgentLevelRoutingTests(unittest.TestCase):
             finally:
                 second.close()
 
+    def test_migration47_replays_old_action_descriptor_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pre47-action-descriptor.sqlite"
+            _create_schema46_action_descriptor_agent_database(path)
+
+            upgraded = CompanyOS(path)
+            try:
+                self.assertEqual(upgraded.store.schema_version, LATEST_SCHEMA_VERSION)
+                task_columns = {
+                    row["name"] for row in upgraded.store.conn.execute("PRAGMA table_info(agent_tasks)").fetchall()
+                }
+                self.assertTrue({"action_descriptor_json", "orchestrator_trace_id"}.issubset(task_columns))
+                task = upgraded.store.conn.execute(
+                    """SELECT title,instructions,action_descriptor_json,orchestrator_trace_id
+                    FROM agent_tasks WHERE id='task_pre47_descriptor'"""
+                ).fetchone()
+                self.assertEqual(task["title"], "Existing supervised action")
+                self.assertEqual(task["instructions"], "Preserve the approved descriptor")
+                self.assertEqual(
+                    json.loads(task["action_descriptor_json"]),
+                    {"route": "/work/items", "method": "POST", "reversible": True},
+                )
+                self.assertIsNone(task["orchestrator_trace_id"])
+                indexes = {
+                    row["name"] for row in upgraded.store.conn.execute("PRAGMA index_list(agent_tasks)").fetchall()
+                }
+                self.assertIn("idx_agent_tasks_orchestrator_trace", indexes)
+                migration = upgraded.store.conn.execute(
+                    "SELECT name FROM schema_migrations WHERE version=47"
+                ).fetchone()
+                self.assertEqual(migration["name"], "supervised_reversible_agent_actions")
+            finally:
+                upgraded.close()
+
     def test_migration19_upgrades_true_schema18_seeded_agents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "pre19.sqlite"
@@ -396,6 +430,70 @@ def _create_schema18_seeded_agent_database(path: Path) -> None:
             (
                 "task_terra_pre18", "org_pre18", "ws_pre18", "agent_terra_pre18",
                 "Existing implementation", "Preserve this old task", 25, "queued", None, now, None, None,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _create_schema46_action_descriptor_agent_database(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.executescript(SCHEMA)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+        conn.execute("INSERT INTO schema_migrations(version, name) VALUES (1, 'v0_1_kernel')")
+        for migration in MIGRATIONS:
+            if migration.version >= 47:
+                continue
+            conn.executescript(migration.sql)
+            conn.execute("INSERT INTO schema_migrations(version, name) VALUES (?, ?)", (migration.version, migration.name))
+        conn.execute("ALTER TABLE agent_tasks ADD COLUMN action_descriptor_json TEXT")
+
+        now = "2026-01-01T00:00:00+00:00"
+        conn.execute("INSERT INTO organizations(id,name,created_at) VALUES (?,?,?)", ("org_pre47", "Pre47 Agency", now))
+        conn.execute("INSERT INTO workspaces(id,name,created_at) VALUES (?,?,?)", ("ws_pre47", "Pre47 Client", now))
+        conn.execute(
+            "INSERT INTO workspace_organization(workspace_id,organization_id,kind) VALUES (?,?,?)",
+            ("ws_pre47", "org_pre47", "client"),
+        )
+        conn.execute(
+            """INSERT INTO people(
+                id,organization_id,name,email,title,department,manager_id,status,created_at,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            ("person_owner_pre47", "org_pre47", "Owner", None, None, None, None, "active", now, now),
+        )
+        conn.execute(
+            "INSERT INTO workspace_memberships(id,workspace_id,person_id,role,created_at) VALUES (?,?,?,?,?)",
+            ("workspace_membership_owner_pre47", "ws_pre47", "person_owner_pre47", "admin", now),
+        )
+        conn.execute(
+            "INSERT INTO agent_roles(id,organization_id,name,description,default_tools,default_write_permissions) VALUES (?,?,?,?,?,?)",
+            ("role_pre47", "org_pre47", "builder", "Implement approved work", "[]", '["domain.write"]'),
+        )
+        conn.execute(
+            """INSERT INTO agents(
+                id,organization_id,name,role_id,model,tools,allowed_workspace_ids,memory_access,
+                write_permissions,status,current_task_id,created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "agent_pre47", "org_pre47", "Terra", "role_pre47", "unconfigured", "[]",
+                '["ws_pre47"]', "proposal_only", '["domain.write"]', "idle", None, now,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO agent_tasks(
+                id,organization_id,workspace_id,agent_id,title,instructions,priority,status,
+                approval_request_id,created_at,started_at,completed_at,action_descriptor_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "task_pre47_descriptor", "org_pre47", "ws_pre47", "agent_pre47",
+                "Existing supervised action", "Preserve the approved descriptor", 25,
+                "queued", None, now, None, None,
+                '{"route":"/work/items","method":"POST","reversible":true}',
             ),
         )
         conn.commit()

@@ -18,10 +18,11 @@ import uuid
 from typing import Any, Callable, Mapping, Sequence
 
 from auremgrid.domain.errors import AuthorizationError, ValidationError
+from auremgrid.adapters.reasoning import invoke_reasoning_provider
 
 
 MAX_ITEMS = 64
-MAX_SPECIALISTS = 8
+MAX_SPECIALISTS = 13
 MAX_ITERATIONS = 3
 MAX_TEXT = 2000
 
@@ -97,10 +98,11 @@ def validate_expert_result(value: Mapping[str, Any], *, allowed_refs: set[str] |
         "recommendation": _json(value.get("recommendation")),
         "expected_impact": _json(value.get("expected_impact")),
         "needs_review": bool(value.get("needs_review")),
+        "dissent": _bounded_list(value.get("dissent")),
     }
     if allowed_refs is not None:
         dropped_citations = 0
-        for key in ("evidence_for", "evidence_against", "analogues"):
+        for key in ("evidence_for", "evidence_against", "analogues", "dissent"):
             checked: list[Any] = []
             for item in result[key]:
                 ref = _ref_id(item)
@@ -135,20 +137,26 @@ class IntelligenceOrchestrator:
         *,
         limits: OrchestrationLimits | None = None,
         specialist_handlers: Mapping[str, Callable[[Mapping[str, Any]], Mapping[str, Any]]] | None = None,
+        specialist_provider: Any | Mapping[str, Any] | None = None,
     ) -> None:
         self.os = os
         self.contracts = contracts
         self.limits = limits or OrchestrationLimits()
         self.specialist_handlers = dict(specialist_handlers or {})
-        self._runs: list[dict[str, Any]] = []
+        self.specialist_provider = specialist_provider
 
     def get_run(self, trace_id: str, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any] | None:
         self.os._require_person_access(organization_id, workspace_id, person_id)
-        for item in reversed(self._runs):
-            scope = item.get("scope") or {}
-            if item["trace_id"] == trace_id and scope.get("organization_id") == organization_id and scope.get("workspace_id") == workspace_id and scope.get("person_id") == person_id:
-                return _json(item)
-        return None
+        row = self.os.store.conn.execute(
+            "SELECT result_json FROM intelligence_orchestrator_runs WHERE trace_id=? AND organization_id=? AND workspace_id=? AND person_id=?",
+            (trace_id, organization_id, workspace_id, person_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return _json(json.loads(row[0]))
+        except (TypeError, ValueError):
+            return None
 
     def run(
         self,
@@ -223,6 +231,8 @@ class IntelligenceOrchestrator:
             "trace_id": trace_id,
             "status": "degraded" if errors or not specialists else "ready",
             "contradictions": contradictions,
+            "specialists": specialists,
+            "dissent": [item for specialist in specialists for item in specialist.get("dissent", [])][: self.limits.max_items],
             "runbook_route": {"status": "matched" if runbook else "no_match", "reason": route_reason},
             "runbook": self._contract_ref(runbook),
             "profiles": [self._contract_ref(p) for p in profiles[: self.limits.max_specialists]],
@@ -231,30 +241,88 @@ class IntelligenceOrchestrator:
             "scope": {"organization_id": organization_id, "workspace_id": workspace_id, "person_id": person_id},
             "generated_at": _now(),
         }
-        self._runs.append(result)
+        self._persist_run(result)
         return _json(result)
 
+    def _persist_run(self, result: Mapping[str, Any]) -> None:
+        scope = result.get("scope") or {}
+        now = str(result.get("generated_at") or _now())
+        payload = json.dumps(_json(result), separators=(",", ":"), sort_keys=True)
+        with self.os.store.atomic(immediate=True):
+            self.os.store.conn.execute(
+                "INSERT INTO intelligence_orchestrator_runs(trace_id,organization_id,workspace_id,person_id,status,result_json,generated_at,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    result.get("trace_id"), scope.get("organization_id"), scope.get("workspace_id"),
+                    scope.get("person_id"), result.get("status"), payload, now, now,
+                ),
+            )
+
+    @staticmethod
+    def _profile_payload(profile: Any) -> dict[str, Any]:
+        keys = ("id", "version", "name", "specialty", "mission", "reasoning_method", "max_context", "max_iterations")
+        return {key: IntelligenceOrchestrator._field(profile, key) for key in keys if IntelligenceOrchestrator._field(profile, key) is not None}
+
     def _invoke_specialist(self, key: str, profile: Any, context: Mapping[str, Any]) -> Mapping[str, Any]:
+        profile_context = dict(context)
+        profile_context["profile"] = self._profile_payload(profile)
+        max_context = self._field(profile, "max_context")
+        try:
+            max_context = max(128, min(256 * 1024, int(max_context)))
+        except (TypeError, ValueError):
+            max_context = 64 * 1024
+        encoded = json.dumps(_json(profile_context), separators=(",", ":"), sort_keys=True)
+        if len(encoded) > max_context:
+            for field in ("findings", "historical_analogues", "decision_action_outcome_learning", "scenario_inputs"):
+                profile_context[field] = [] if field != "scenario_inputs" else {}
+                encoded = json.dumps(_json(profile_context), separators=(",", ":"), sort_keys=True)
+                if len(encoded) <= max_context:
+                    break
+        if len(encoded) > max_context:
+            profile_context = {"profile": {"id": key}}
+        provider = self.specialist_provider
+        if isinstance(provider, Mapping):
+            provider = provider.get(key)
+        if provider is None:
+            provider = getattr(self.os, "strategic_reasoning_provider", None)
+        if provider is not None:
+            try:
+                raw, metadata = invoke_reasoning_provider(provider, profile_context)
+                result = dict(raw)
+                result["provider_metadata"] = metadata
+                return result
+            except Exception:
+                # Optional provider failures degrade this perspective to the
+                # deterministic local path; no provider exception escapes.
+                pass
         handler = self.specialist_handlers.get(key)
         if handler is not None:
-            return handler(context)
-        findings = context.get("findings") or []
+            result = dict(handler(profile_context))
+            result.setdefault("provider_metadata", {"status": "injected_handler", "profile_id": key})
+            return result
+        findings = profile_context.get("findings") or []
         first = findings[0] if findings else {}
-        evidence = first.get("evidence", [])[:4] if isinstance(first, Mapping) else []
+        profile_domains = self._field(profile, "domains") or self._field(profile, "allowed_domains") or ()
+        profile_domains = [str(item) for item in profile_domains]
+        all_evidence = first.get("evidence", []) if isinstance(first, Mapping) else []
+        evidence = [item for index, item in enumerate(all_evidence) if not profile_domains or index % max(1, len(profile_domains)) == 0][:4]
+        specialty = _text(self._field(profile, "specialty") or self._field(profile, "mission") or key)
+        method = _text(self._field(profile, "reasoning_method") or "bounded evidence review")
+        base_hypothesis = (first.get("hypotheses") or [{"text": "No hypothesis established."}])[0].get("text", "No hypothesis established.") if isinstance(first, Mapping) else "No hypothesis established."
         return {
-            "finding": first.get("summary") if isinstance(first, Mapping) else "No visible finding.",
+            "finding": f"{specialty} ({', '.join(profile_domains[:2])}): " + _text(first.get("summary"), "No visible finding.") if isinstance(first, Mapping) else f"{specialty}: No visible finding.",
             "evidence_for": evidence,
             "evidence_against": first.get("opposing_evidence", [])[:2] if isinstance(first, Mapping) else [],
-            "assumptions": ["Only ACL-visible canonical records were considered."],
+            "assumptions": [f"{method} applied to ACL-visible canonical records."],
             "unknowns": ["Unobserved external causes remain unknown."],
-            "hypothesis": (first.get("hypotheses") or [{"text": "No hypothesis established."}])[0].get("text", "No hypothesis established.") if isinstance(first, Mapping) else "No hypothesis established.",
+            "hypothesis": f"{method}: {base_hypothesis}",
             "confidence": ((first.get("confidence") or {}).get("score", 0.35) if isinstance(first, Mapping) else 0.35),
-            "analogues": context.get("historical_analogues", [])[:4],
+            "analogues": profile_context.get("historical_analogues", [])[:4],
             "risks": [item.get("summary") for item in (first.get("scenarios", [])[:2] if isinstance(first, Mapping) else [])],
             "options": [first.get("recommendation")] if isinstance(first, Mapping) else [],
             "recommendation": first.get("recommendation", {}) if isinstance(first, Mapping) else {},
             "expected_impact": first.get("impact", {}) if isinstance(first, Mapping) else {},
             "needs_review": not bool(findings),
+            "dissent": first.get("opposing_evidence", [])[:2] if isinstance(first, Mapping) else [],
         }
 
     def _run_specialists(
@@ -274,6 +342,10 @@ class IntelligenceOrchestrator:
                 raw = future.result(timeout=max(0.01, float(self.limits.timeout_seconds)))
                 normalized = validate_expert_result(raw, allowed_refs=allowed_refs)
                 normalized["profile"] = self._contract_ref(profile)
+                normalized["specialist_id"] = profile_key
+                normalized["perspective"] = _text(self._field(profile, "specialty") or self._field(profile, "mission") or profile_key)
+                if isinstance(raw, Mapping) and raw.get("provider_metadata"):
+                    normalized["provider_metadata"] = _json(raw.get("provider_metadata"))
                 results.append(normalized)
             except FutureTimeoutError:
                 future.cancel()
@@ -292,7 +364,7 @@ class IntelligenceOrchestrator:
                 "finding": "No specialist produced a bounded result.", "evidence_for": [], "evidence_against": [],
                 "assumptions": [], "unknowns": ["Specialist output unavailable."], "hypothesis": "No hypothesis established.",
                 "confidence": 0.0, "analogues": [], "risks": errors, "options": [], "recommendation": {"summary": "Review available evidence manually."},
-                "expected_impact": {"level": "unknown"}, "needs_review": True,
+                "expected_impact": {"level": "unknown"}, "needs_review": True, "dissent": [],
             }, allowed_refs=allowed_refs)
         best = max(specialists, key=lambda item: item.get("confidence", 0.0))
         combined = dict(best)
@@ -300,6 +372,7 @@ class IntelligenceOrchestrator:
         combined["evidence_against"] = [item for specialist in specialists for item in specialist.get("evidence_against", [])][: self.limits.max_items]
         combined["analogues"] = [item for specialist in specialists for item in specialist.get("analogues", [])][: self.limits.max_items]
         combined["risks"] = [item for specialist in specialists for item in specialist.get("risks", [])][: self.limits.max_items]
+        combined["dissent"] = [item for specialist in specialists for item in specialist.get("dissent", [])][: self.limits.max_items]
         combined["needs_review"] = bool(combined.get("needs_review") or contradictions or errors)
         if contradictions:
             combined["unknowns"] = list(combined.get("unknowns", [])) + ["Independent specialists disagree on the visible signal."]
@@ -317,7 +390,12 @@ class IntelligenceOrchestrator:
         for left_index, left in enumerate(specialists):
             for right in specialists[left_index + 1:]:
                 if left.get("hypothesis") and right.get("hypothesis") and left["hypothesis"].strip().lower() != right["hypothesis"].strip().lower() and left.get("confidence", 0) >= 0.55 and right.get("confidence", 0) >= 0.55:
-                    contradictions.append({"left": left.get("profile"), "right": right.get("profile"), "reason": "Independent hypotheses differ."})
+                    contradictions.append({
+                        "left": left.get("profile"), "right": right.get("profile"),
+                        "left_hypothesis": left.get("hypothesis"), "right_hypothesis": right.get("hypothesis"),
+                        "left_evidence": left.get("evidence_for", [])[:8], "right_evidence": right.get("evidence_for", [])[:8],
+                        "reason": "Independent hypotheses differ.",
+                    })
         return contradictions[:MAX_ITEMS]
 
     def _select_profiles(self, org: str, ws: str, person: str, profile_ids: Sequence[str] | None, runbook: Any) -> list[Any]:

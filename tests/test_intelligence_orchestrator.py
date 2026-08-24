@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import time
+import tempfile
 from pathlib import Path
 
 from auremgrid.services.brain import CompanyOS
@@ -65,7 +66,7 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
         orchestrator = IntelligenceOrchestrator(self.os, contracts, specialist_handlers=handlers)
         result = orchestrator.run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin")
         self.assertTrue(result["needs_review"])
-        self.assertLessEqual(len(result["profiles"]), 8)
+        self.assertLessEqual(len(result["profiles"]), 13)
         self.assertLessEqual(len(result["trace"]), 8)
 
     def test_missing_specialist_is_deterministic_degraded(self):
@@ -118,6 +119,61 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
         self.assertIsNotNone(orchestrator.get_run(result["trace_id"], "org_demo", "ws_alpha", "person_demo_owner"))
         with self.assertRaises(Exception):
             orchestrator.get_run(result["trace_id"], "org_demo", "ws_alpha", "person_demo_viewer")
+
+    def test_orchestrator_result_survives_restart_and_keeps_specialists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "orchestrator.sqlite"
+            first_os = CompanyOS(path)
+            first_os.seed_demo(FIXTURES)
+            contracts = _Contracts(13)
+            result = IntelligenceOrchestrator(first_os, contracts).run(
+                "org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin",
+                profile_ids=[f"expert-{i}" for i in range(13)],
+            )
+            self.assertEqual(len(result["specialists"]), 13)
+            trace_id = result["trace_id"]
+            first_os.close()
+            second_os = CompanyOS(path)
+            try:
+                fetched = IntelligenceOrchestrator(second_os, contracts).get_run(
+                    trace_id, "org_demo", "ws_alpha", "person_demo_owner"
+                )
+                self.assertIsNotNone(fetched)
+                self.assertEqual(fetched["trace_id"], trace_id)
+                self.assertEqual(len(fetched["specialists"]), 13)
+            finally:
+                second_os.close()
+
+    def test_specialist_provider_receives_profile_context_for_each_profile(self):
+        calls = []
+        class Provider:
+            name = "fixture"
+            model = "fixture"
+            version = "1"
+            def deliberate(self, context):
+                calls.append(context["profile"]["id"])
+                return _result(context["profile"]["id"])
+        contracts = _Contracts(13)
+        result = IntelligenceOrchestrator(self.os, contracts, specialist_provider=Provider()).run(
+            "org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin",
+            profile_ids=[f"expert-{i}" for i in range(13)],
+        )
+        self.assertEqual(calls, [f"expert-{i}" for i in range(13)])
+        self.assertEqual({item["specialist_id"] for item in result["specialists"]}, set(calls))
+
+    def test_default_specialists_use_distinct_profile_methods(self):
+        contracts = _Contracts(3)
+        contracts.profiles[0].update({"specialty": "Growth", "domains": ["growth"], "reasoning_method": "objective map"})
+        contracts.profiles[1].update({"specialty": "Risk", "domains": ["risk"], "reasoning_method": "blast radius"})
+        contracts.profiles[2].update({"specialty": "QA", "domains": ["quality"], "reasoning_method": "acceptance checklist"})
+        result = IntelligenceOrchestrator(self.os, contracts).run(
+            "org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin",
+            profile_ids=["expert-0", "expert-1", "expert-2"],
+        )
+        findings = [item["finding"] for item in result["specialists"]]
+        hypotheses = [item["hypothesis"] for item in result["specialists"]]
+        self.assertEqual(len(set(findings)), 3)
+        self.assertEqual(len(set(hypotheses)), 3)
 
     def test_default_runbook_uses_trigger_match_and_reports_no_match(self):
         contracts = _Contracts(1)

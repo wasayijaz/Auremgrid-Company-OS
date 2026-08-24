@@ -14,7 +14,7 @@ from auremgrid.services.brain import CompanyOS
 from tests.auth_support import issue_identity
 
 
-def workflow_template(key: str = "dashboard_flow") -> dict:
+def workflow_template(key: str = "dashboard_flow", assignee_person_id: str | None = None) -> dict:
     return {
         "key": key,
         "name": "Dashboard flow",
@@ -26,12 +26,15 @@ def workflow_template(key: str = "dashboard_flow") -> dict:
                 "required_evidence": ["brief"],
                 "handoff_to": {"wing": "delivery", "role": "operator"},
                 "handoff_contract": "approved brief",
+                "expected_duration_hours": 4,
+                **({"assignee_person_id": assignee_person_id} if assignee_person_id else {}),
             },
             {
                 "key": "deliver", "name": "Deliver", "sequence": 2,
                 "assignee": {"wing": "delivery", "role": "operator"},
                 "depends_on": ["brief"], "required_evidence": ["deliverable"],
                 "requires_approval": True,
+                "expected_duration_hours": 6,
             },
         ],
     }
@@ -259,13 +262,20 @@ class DashboardServiceTests(unittest.TestCase):
 
     def test_workflow_board_derives_readiness_and_capability_actions(self) -> None:
         run = self.os.workflow_ops.create_run(
-            self.org.id, self.ws.id, self.owner.id, workflow_template()
+            self.org.id, self.ws.id, self.owner.id, workflow_template(assignee_person_id=self.viewer.id)
         )
         owner_board = self.dashboard.workflow_board(
             self.owner_identity, self.org.id, self.ws.id, self.owner.id
         )
         stages = {stage["stage_key"]: stage for stage in owner_board["stages"]}
         self.assertTrue(stages["brief"]["readiness"]["ready"])
+        self.assertEqual(stages["brief"]["owner"]["role"], "lead")
+        self.assertEqual(stages["brief"]["owner"]["person_id"], self.viewer.id)
+        self.assertEqual(stages["brief"]["owner"]["person"]["name"], "Viewer")
+        self.assertEqual(stages["brief"]["expected_duration"]["hours"], 4.0)
+        self.assertEqual(owner_board["runs"][0]["rollups"]["expected_duration_hours"], 10.0)
+        self.assertEqual(owner_board["runs"][0]["rollups"]["active_expected_duration_hours"], 10.0)
+        self.assertEqual(owner_board["runs"][0]["rollups"]["owner_roles"], ["lead", "operator"])
         self.assertIn("start_stage", {action["action"] for action in stages["brief"]["allowed_actions"]})
         self.assertFalse(stages["deliver"]["readiness"]["ready"])
         self.assertEqual(stages["deliver"]["dependencies"][0]["status"], "pending")
@@ -286,6 +296,7 @@ class DashboardServiceTests(unittest.TestCase):
         )
         after_ack=self.dashboard.workflow_board(self.owner_identity,self.org.id,self.ws.id,self.owner.id)
         self.assertTrue(next(stage for stage in after_ack["stages"] if stage["stage_key"]=="deliver")["readiness"]["ready"])
+        self.assertEqual(after_ack["runs"][0]["rollups"]["active_expected_duration_hours"], 6.0)
 
         viewer_board = self.dashboard.workflow_board(
             self.viewer_identity, self.org.id, self.ws.id, self.viewer.id

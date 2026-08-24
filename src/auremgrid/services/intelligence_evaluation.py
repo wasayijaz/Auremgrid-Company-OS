@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from auremgrid.services.brain import CompanyOS
+from auremgrid.services.intelligence_orchestrator import IntelligenceOrchestrator
 
 
 FIXTURES = Path(__file__).resolve().parents[3] / "fixtures"
@@ -138,6 +139,54 @@ def run_intelligence_evaluations() -> dict[str, Any]:
             "acl_evidence_scope", viewer_result["context"]["evidence_count"] == 0,
             "viewer without an actor binding receives no Brain-source evidence",
         ))
+
+        profile_ids = [item["id"] for item in owner_os.intelligence_contracts.list_profiles(
+            "org_demo", "ws_alpha", "person_demo_owner"
+        )]
+        orchestrated = owner_os.intelligence_orchestrator.run(
+            "org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin",
+            profile_ids=profile_ids,
+        )
+        specialists = orchestrated.get("specialists", [])
+        specialists_ok = (
+            len(specialists) == 13
+            and len({item.get("specialist_id") for item in specialists}) == 13
+            and all(item.get("profile", {}).get("id") for item in specialists)
+        )
+        checks.append(_case(
+            "orchestrator_profile_fanout", specialists_ok,
+            f"offline orchestration produced {len(specialists)} profile-scoped specialist outputs",
+        ))
+        persisted = owner_os.intelligence_orchestrator.get_run(
+            orchestrated["trace_id"], "org_demo", "ws_alpha", "person_demo_owner"
+        )
+        checks.append(_case(
+            "orchestrator_trace_persistence", persisted is not None and persisted.get("trace_id") == orchestrated["trace_id"],
+            "orchestrator trace is retrievable from the durable scoped store",
+        ))
+
+        def specialist_result(_ctx: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "finding": "bounded finding", "evidence_for": [], "evidence_against": [],
+                "assumptions": [], "unknowns": [], "hypothesis": "profile-specific dissent",
+                "confidence": 0.8, "analogues": [], "risks": [], "options": [],
+                "recommendation": {"summary": "review"}, "expected_impact": {"level": "medium"},
+                "needs_review": False, "dissent": [{"text": "opposing bounded view"}],
+            }
+        dissent_orchestrator = IntelligenceOrchestrator(
+            owner_os,
+            owner_os.intelligence_contracts,
+            specialist_handlers={
+                "cosmo_strategy_architect": specialist_result,
+                "cosmo_delivery_lead": specialist_result,
+            },
+        )
+        dissent_run = dissent_orchestrator.run(
+            "org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin",
+            profile_ids=["cosmo_strategy_architect", "cosmo_delivery_lead"],
+        )
+        dissent_ok = "dissent" in dissent_run and isinstance(dissent_run["dissent"], list)
+        checks.append(_case("orchestrator_dissent_retention", dissent_ok, "bounded dissent remains in the offline result"))
     finally:
         owner_os.close()
 

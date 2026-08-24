@@ -3463,6 +3463,44 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        46,
+        "intelligence_orchestrator_runs",
+        """
+        CREATE TABLE IF NOT EXISTS intelligence_orchestrator_runs (
+            trace_id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            person_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('ready','degraded')),
+            result_json TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_intelligence_orchestrator_scope
+            ON intelligence_orchestrator_runs(organization_id,workspace_id,person_id,created_at DESC);
+        CREATE TRIGGER IF NOT EXISTS intelligence_orchestrator_runs_no_update
+            BEFORE UPDATE ON intelligence_orchestrator_runs BEGIN
+            SELECT RAISE(ABORT, 'intelligence orchestrator runs are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS intelligence_orchestrator_runs_no_delete
+            BEFORE DELETE ON intelligence_orchestrator_runs BEGIN
+            SELECT RAISE(ABORT, 'intelligence orchestrator runs are append-only');
+        END;
+        """,
+    ),
+    Migration(
+        47,
+        "supervised_reversible_agent_actions",
+        """
+        ALTER TABLE agent_tasks ADD COLUMN action_descriptor_json TEXT;
+        ALTER TABLE agent_tasks ADD COLUMN orchestrator_trace_id TEXT;
+        CREATE INDEX IF NOT EXISTS idx_agent_tasks_orchestrator_trace ON agent_tasks(orchestrator_trace_id);
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
@@ -3508,6 +3546,18 @@ def _backfill_primary_agent_levels(conn: sqlite3.Connection) -> None:
                   )""",
             (level, _json_compact(list(_AGENT_LEVEL_CAPABILITIES[level])), agent_name, *role_names),
         )
+
+
+def _supervised_reversible_agent_actions_sql(conn: sqlite3.Connection) -> str:
+    task_columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_tasks)").fetchall()}
+    statements: list[str] = []
+    for column in ("action_descriptor_json", "orchestrator_trace_id"):
+        if column not in task_columns:
+            statements.append(f"ALTER TABLE agent_tasks ADD COLUMN {column} TEXT;")
+    statements.append(
+        "CREATE INDEX IF NOT EXISTS idx_agent_tasks_orchestrator_trace ON agent_tasks(orchestrator_trace_id);"
+    )
+    return "\n".join(statements)
 
 
 def migrate(conn: sqlite3.Connection) -> int:
@@ -3586,6 +3636,8 @@ def migrate(conn: sqlite3.Connection) -> int:
             quarantine_columns = {row[1] for row in conn.execute("PRAGMA table_info(provider_import_quarantines)").fetchall()}
             if "quarantine_details" in quarantine_columns:
                 sql = sql.replace("ALTER TABLE provider_import_quarantines ADD COLUMN quarantine_details TEXT;", "")
+        if migration.version == 47:
+            sql = _supervised_reversible_agent_actions_sql(conn)
         with conn:
             conn.executescript(sql)
             if migration.version == 19:

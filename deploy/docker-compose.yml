@@ -1,22 +1,35 @@
 services:
   web:
-    build: ..
-    command: ["python", "-m", "auremgrid", "serve", "--db", "/data/auremgrid.sqlite", "--host", "127.0.0.1", "--port", "8791"]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["python", "-m", "auremgrid", "serve", "--db", "/data/auremgrid.sqlite", "--host", "0.0.0.0", "--port", "8791"]
     env_file: .env
     volumes: ["auremgrid-data:/data"]
     expose: ["8791"]
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     restart: unless-stopped
   worker:
-    build: ..
+    build:
+      context: ..
+      dockerfile: Dockerfile
     command: ["python", "-m", "auremgrid", "worker-loop", "--db", "/data/auremgrid.sqlite", "--organization", "${AUREMGRID_ORGANIZATION_ID}", "--worker-id", "worker-1"]
     env_file: .env
     volumes: ["auremgrid-data:/data"]
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     restart: unless-stopped
   proxy:
     image: caddy:2-alpine
     depends_on: [web]
-    ports: ["443:443"]
-    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy-data:/data", "caddy-config:/config"]
+    command: ["caddy", "reverse-proxy", "--from", "${AUREMGRID_DOMAIN:-localhost}", "--to", "web:8791"]
+    ports: ["127.0.0.1:443:443"]
+    volumes: ["caddy-data:/data", "caddy-config:/config"]
     restart: unless-stopped
 volumes:
   auremgrid-data:

@@ -48,6 +48,31 @@ class DashboardSurfaceTests(unittest.TestCase):
             self.assertIn(marker, self.html)
         self.assertIn("if(!row||row.historical", self.html)
 
+    def test_capacity_surface_uses_backend_rollups_without_browser_recomputation(self) -> None:
+        for marker in (
+            "capacityCell407",
+            "capacityDemand407",
+            "booked_hours",
+            "work_remaining_hours",
+            "workflow_hours",
+            "net_available_hours",
+            "Account rollups",
+            "Workflow wing rollups",
+            "not recomputed in the browser",
+        ):
+            self.assertIn(marker, self.html)
+        self.assertNotIn("await Promise.all(rows.map(async row", self.html)
+
+    def test_workflow_surface_renders_server_owner_duration_and_rollups(self) -> None:
+        for marker in (
+            "row.owner||row.assignee",
+            "expected_duration",
+            "expected_duration_hours",
+            "data.rollups",
+            "server-granted actions",
+        ):
+            self.assertIn(marker, self.html)
+
     def test_descriptor_buttons_are_injected_for_live_rows_only(self) -> None:
         fixture = {"id":"p1","allowed_actions":[{"action":"approve","method":"POST","route":"/brain/promote","payload":{"proposal_id":"p1"},"required_fields":[]}]}
         self.assertIn("injectDescriptorButtons(data.proposals", self.html)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from auremgrid.services.brain import CompanyOS
@@ -12,6 +13,7 @@ JOB_CAPABILITIES = {
     "projection.rebuild": "brain_promote",
     "connector.sync": "integration_sync",
     "proactive_intelligence.refresh": "brain_read",
+    "agent.run": "workspace_write",
 }
 
 
@@ -66,6 +68,33 @@ def run_one_job(
                 "attention_count": len(snapshot["attention"]),
                 "unchanged": bool(snapshot.get("unchanged")),
             }
+        elif job["type"] == "agent.run":
+            action = payload.get("action") or {}
+            if action.get("safe") is not True or action.get("one_way") is not False or action.get("action") != "generate_report":
+                raise ValueError("unsupported or irreversible agent action")
+            run_row = os.store.conn.execute(
+                "SELECT r.*,t.approval_request_id,t.workspace_id AS task_workspace FROM agent_runs r JOIN agent_tasks t ON t.id=r.task_id WHERE r.id=? AND r.agent_id=?",
+                (payload.get("run_id"), payload.get("agent_id")),
+            ).fetchone()
+            if run_row is None or run_row["status"] != "running" or run_row["task_workspace"] != workspace_id:
+                raise AuthorizationError("agent run scope is invalid")
+            approval = os.store.conn.execute(
+                "SELECT status,workspace_id,action_type,payload FROM approval_requests WHERE id=? AND organization_id=?",
+                (run_row["approval_request_id"], organization_id),
+            ).fetchone()
+            if approval is None or approval["status"] != "approved" or approval["workspace_id"] != workspace_id or approval["action_type"] != "report.generate":
+                raise AuthorizationError("approved same-scope action required")
+            try:
+                approved_payload = json.loads(approval["payload"] or "{}")
+            except (TypeError, ValueError):
+                approved_payload = {}
+            requested_type = action.get("payload", {}).get("type") or action.get("payload", {}).get("report_type")
+            if approved_payload.get("report_type") != requested_type:
+                raise AuthorizationError("approved report type does not match action")
+            result = os.agent_ops.generate_report(
+                organization_id, identity.person_id, str(action.get("payload", {}).get("type") or action.get("payload", {}).get("report_type") or "client_weekly_report"), workspace_id,
+            )
+            os.agent_ops.complete_run(organization_id, str(payload.get("agent_id")), str(payload.get("run_id")), json.dumps(result, sort_keys=True), source_refs=[str(result.get("id", ""))])
         elif job["type"] == "connector.sync":
             stream_lock=os.integrations.resume_job_stream(job["id"],worker_id,str(payload["mapping_hash"]))
             def connector_progress(value: float) -> None:

@@ -34,6 +34,11 @@ per-person provisioning, and documented revocation. Public multi-tenant login
 requires a dedicated identity provider; do not expose the local setup command
 or create an unauthenticated token-minting HTTP route.
 
+The included `Dockerfile` and `deploy/docker-compose.yml` are private
+single-host packaging templates. They exercise image/static boundaries and a
+loopback proxy default; they do not prove browser automation, live provider
+connectivity, managed hosting, or public-production hardening.
+
 Keep the SQLite database on durable storage. Use the online `backup` and
 `verify-backup` commands before upgrades; do not copy a live WAL file. Run
 durable jobs with a separate `worker-once` process. Secrets belong in an

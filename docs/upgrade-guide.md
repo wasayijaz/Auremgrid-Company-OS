@@ -1,7 +1,7 @@
 # Upgrade guide
 
 Opening a database runs ordered, append-only schema migrations recorded in
-`schema_migrations`. The current schema version is **45** (`proactive_intelligence_attention_lifecycle`).
+`schema_migrations`. The current schema version is **47** (`supervised_reversible_agent_actions`).
 
 Before upgrading:
 
@@ -10,7 +10,7 @@ Before upgrading:
 3. Run the full test suite against a copy.
 4. Start Auremgrid; migrations apply in order.
 5. Check `/health` (or `/health/detailed`) for the schema version; a healthy
-   current installation reports `45`.
+   current installation reports `47`.
 6. Rebuild local projections with CompanyOS.rebuild_projections when required.
 
 Migrations preserve canonical rows. Obsolete API compatibility layers are not
@@ -33,6 +33,11 @@ and pause-state records, richer provider-import quarantine details, immutable
 Intelligence expert profiles/runbooks, append-only Intelligence hypotheses and
 recommendation lifecycle records, shadow-only Intelligence evaluation/circuit
 breaker records, and proactive Intelligence attention lifecycle state.
+Schema 46 adds append-only persisted Intelligence orchestration traces for
+durable specialist review results. Schema 47 adds supervised reversible action
+descriptor fields to agent tasks and records the orchestration trace that
+proposed them when available; replay is safe for older physical schemas that
+already carried an action descriptor column.
 
 Schema 11-era databases also need the authenticated identity bootstrap. After
 migration, use the local `bootstrap-auth` command for an existing organization
@@ -45,6 +50,8 @@ Portal reports remain snapshots of completed report runs and require an
 approved `report.portal_publish` request before becoming visible to client
 portal identities; no migration creates sends or external delivery.
 Intelligence migrations add contracts, learning, evaluation safety, and
-proactive lifecycle records only; they do not promote hypotheses into facts,
-change agent routing, or execute recommendation descriptors.
+proactive lifecycle/orchestration/action-descriptor records only; they do not
+promote hypotheses into facts or change agent routing. Descriptor execution is
+limited to approved same-scope `generate_report`; unapproved, one-way,
+external-send, connector-write, and arbitrary descriptors are rejected.
 

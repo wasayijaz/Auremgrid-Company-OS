@@ -4,6 +4,7 @@ import unittest
 
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
 from auremgrid.services.brain import CompanyOS
+from auremgrid.services.worker import run_one_job
 
 
 class AgentRunObservabilityTests(unittest.TestCase):
@@ -118,6 +119,27 @@ class AgentRunObservabilityTests(unittest.TestCase):
                 self.org.id, self.owner.id, self.agent["id"], "Invalid priority", "Do not queue", self.primary.id,
                 priority=101,
             )
+
+    def test_approved_reversible_agent_action_dispatches_idempotently(self) -> None:
+        principal = self.os.auth.create_principal(self.org.id, self.owner.id, "owner@agent.test")
+        approval = self.os.agency_ops.request_approval(
+            self.org.id, "person", self.owner.id, "Generate report", "report.generate",
+            {"report_type": "client_weekly_report"}, "approved reversible report", policy="auto", workspace_id=self.primary.id,
+        )
+        descriptor = {
+            "action": "generate_report", "safe": True, "one_way": False,
+            "payload": {"type": "client_weekly_report"},
+        }
+        task = self.os.agent_ops.enqueue_task(
+            self.org.id, self.owner.id, self.agent["id"], "Generate report", "Generate report",
+            self.primary.id, action_descriptor=descriptor, approval_request_id=approval["id"],
+        )
+        run = self.os.agent_ops.start_run(self.org.id, self.owner.id, self.agent["id"], task["id"])
+        result = run_one_job(self.os, self.org.id, self.primary.id, "worker-approved")
+        self.assertEqual(result["status"], "succeeded")
+        detail = self.os.agent_ops.run_detail(self.org.id, self.owner.id, run["id"])
+        self.assertEqual(detail["run"]["status"], "completed")
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM jobs WHERE idempotency_key=?", (f"agent-action:{task['id']}",)).fetchone()[0], 1)
 
     def test_dashboard_agent_surfaces_are_workspace_isolated(self) -> None:
         primary_task = self.os.agent_ops.enqueue_task(
