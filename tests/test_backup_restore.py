@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from auremgrid.domain.errors import AuthenticationError, ValidationError
 from auremgrid.services.brain import CompanyOS
-from auremgrid.storage.backup import create_backup, restore_backup, verify_backup
+from auremgrid.storage.backup import create_backup, restore_backup, rotate_backups, verify_backup
 from tests.auth_support import LATEST_SCHEMA_VERSION
 
 
@@ -89,6 +90,28 @@ class BackupRestoreTests(unittest.TestCase):
                 handle.write(b"tamper")
             with self.assertRaises(ValidationError):
                 verify_backup(backup_path, manifest["sha256"])
+
+    def test_rotate_backups_honors_daily_and_weekly_retention(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = datetime(2026, 8, 24, tzinfo=timezone.utc)
+            for days_ago in range(18):
+                backup = root / f"backup-{days_ago:02d}.sqlite"
+                backup.write_bytes(b"backup")
+                created_at = (base - timedelta(days=days_ago)).isoformat()
+                backup.with_suffix(".sqlite.manifest.json").write_text(
+                    json.dumps({"created_at": created_at}) + "\n",
+                    encoding="utf-8",
+                )
+
+            removed = rotate_backups(root, keep_daily=3, keep_weekly=2)
+            remaining = sorted(path.name for path in root.glob("*.sqlite"))
+            self.assertEqual(
+                remaining,
+                ["backup-00.sqlite", "backup-01.sqlite", "backup-02.sqlite", "backup-03.sqlite", "backup-08.sqlite"],
+            )
+            self.assertEqual(len(removed), 13)
+            self.assertFalse((root / "backup-17.sqlite.manifest.json").exists())
 
 
 if __name__ == "__main__":

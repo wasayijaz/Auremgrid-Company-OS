@@ -60,6 +60,18 @@ class HttpAuthenticationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(me["person_id"], "person_owner")
 
+    def test_metrics_require_authentication_while_basic_health_is_public(self) -> None:
+        status, health = self.request("GET", "/health")
+        self.assertEqual(status, 200)
+        self.assertTrue(health["ok"])
+        status, body = self.request("GET", "/metrics")
+        self.assertEqual(status, 401)
+        self.assertEqual(body["error"], "authentication_error")
+        status, metrics = self.request("GET", "/metrics", self.token)
+        self.assertEqual(status, 200)
+        self.assertIn("counters", metrics)
+        self.assertIn("latency_ms", metrics)
+
     def test_forged_person_and_cross_workspace_are_denied(self) -> None:
         status, _ = self.request(
             "GET", "/workflows/templates?organization_id=org_auth_http&person_id=someone_else", self.token

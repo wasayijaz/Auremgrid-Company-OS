@@ -198,15 +198,31 @@ def rotate_backups(directory: str | Path, keep_daily: int = 7, keep_weekly: int 
                 backups.append({"path": f, "manifest": {}})
         else:
             backups.append({"path": f, "manifest": {}})
-    if len(backups) <= keep_daily:
-        return []
+    if keep_daily < 0 or keep_weekly < 0:
+        raise ValidationError("backup retention counts must be non-negative")
     backups.sort(key=lambda b: b["manifest"].get("created_at", ""), reverse=True)
-    kept = 0
+    kept_paths: set[Path] = set()
+    weekly_seen: set[str] = set()
+    daily_kept = 0
+    weekly_kept = 0
+    for b in backups:
+        created_at = str(b["manifest"].get("created_at") or "")
+        if daily_kept < keep_daily:
+            kept_paths.add(b["path"])
+            daily_kept += 1
+            continue
+        try:
+            weekly_key = datetime.fromisoformat(created_at.replace("Z", "+00:00")).date().isocalendar()[:2]
+            weekly_label = f"{weekly_key[0]}-W{weekly_key[1]:02d}"
+        except ValueError:
+            weekly_label = ""
+        if weekly_label and weekly_label not in weekly_seen and weekly_kept < keep_weekly:
+            kept_paths.add(b["path"])
+            weekly_seen.add(weekly_label)
+            weekly_kept += 1
     removed = []
     for b in backups:
-        if kept < keep_daily:
-            kept += 1
-        else:
+        if b["path"] not in kept_paths:
             b["path"].unlink(missing_ok=True)
             mp = _manifest_path(b["path"])
             mp.unlink(missing_ok=True)
