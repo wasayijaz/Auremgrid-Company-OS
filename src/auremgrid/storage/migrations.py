@@ -3621,6 +3621,50 @@ MIGRATIONS = (
             ON auth_invites(organization_id, revoked_at, consumed_at, expires_at, created_at);
         """,
     ),
+    Migration(
+        52,
+        "google_ads_provider_import_records",
+        """
+        DROP TRIGGER IF EXISTS provider_import_records_no_update;
+        DROP TRIGGER IF EXISTS provider_import_records_no_delete;
+        DROP TABLE IF EXISTS provider_import_records_v51;
+        ALTER TABLE provider_import_records RENAME TO provider_import_records_v51;
+        CREATE TABLE provider_import_records (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            provider TEXT NOT NULL CHECK(provider IN ('stripe_accounting','meta_ads','google_ads')),
+            object_type TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            occurred_at TEXT,
+            amount REAL,
+            currency TEXT,
+            payload_hash TEXT NOT NULL,
+            source TEXT NOT NULL,
+            imported_at TEXT NOT NULL,
+            UNIQUE(organization_id, provider, object_type, external_id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        INSERT INTO provider_import_records(
+            id,organization_id,workspace_id,provider,object_type,external_id,account_id,
+            occurred_at,amount,currency,payload_hash,source,imported_at
+        )
+            SELECT id,organization_id,workspace_id,provider,object_type,external_id,account_id,
+                   occurred_at,amount,currency,payload_hash,source,imported_at
+            FROM provider_import_records_v51;
+        DROP TABLE provider_import_records_v51;
+        CREATE INDEX IF NOT EXISTS idx_provider_import_records_scope
+            ON provider_import_records(organization_id, workspace_id, provider, object_type, imported_at);
+        CREATE TRIGGER IF NOT EXISTS provider_import_records_no_update BEFORE UPDATE ON provider_import_records BEGIN
+            SELECT RAISE(ABORT, 'provider import records are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_import_records_no_delete BEFORE DELETE ON provider_import_records BEGIN
+            SELECT RAISE(ABORT, 'provider import records are append-only');
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

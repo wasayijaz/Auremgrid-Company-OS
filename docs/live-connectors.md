@@ -104,7 +104,10 @@ than pretending to connect. Public webhook intake and refresh-token rotation
 are not part of the packaged demo. CI uses injected transports and does not
 claim that a live customer account was connected.
 
-Read-only Stripe Billing/accounting and Meta Ads adapters normalize injected
-provider pages into immutable provider import records with cursor/quarantine
-state. They are not live registered connector entries, do not appear as
-`live_enabled` catalog connectors, and never send or mutate provider data.
+Read-only Stripe Billing/accounting, Meta Ads, and Google Ads adapters normalize
+injected provider pages into immutable provider import records with
+cursor/quarantine state. Google Ads sync supports `campaigns` and `metrics`;
+metric canonical writes require an explicit `canonical_campaign_id`, while
+ad groups and ads remain provider-ledger records only. They are not live
+registered connector entries, do not appear as `live_enabled` catalog
+connectors, and never send or mutate provider data.

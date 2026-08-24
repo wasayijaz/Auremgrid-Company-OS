@@ -1,4 +1,4 @@
-"""Read-only Stripe and Meta Ads import adapters.
+"""Read-only Stripe, Meta Ads, and Google Ads import adapters.
 
 Adapters normalize provider responses into immutable records; they do not send,
 mutate, or invent provider data.  Network access is always injected by callers.
@@ -127,7 +127,10 @@ class ReadOnlyProviderAdapter:
         text = str(value).strip()
         if not text:
             return None
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc).replace(microsecond=0).isoformat()
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat()
 
 
 class StripeReadOnlyAdapter(ReadOnlyProviderAdapter):
@@ -138,3 +141,56 @@ class StripeReadOnlyAdapter(ReadOnlyProviderAdapter):
 class MetaAdsReadOnlyAdapter(ReadOnlyProviderAdapter):
     provider = "meta_ads"
     resources = ("campaigns", "insights")
+
+
+class GoogleAdsReadOnlyAdapter(ReadOnlyProviderAdapter):
+    provider = "google_ads"
+    resources = ("campaigns", "ad_groups", "ads", "metrics")
+
+    def _normalize(self, resource: str, item: Mapping[str, Any], account_id: str, workspace_id: str) -> ProviderRecord:
+        external_id = str(
+            _first(item, "id", "external_id", f"{resource[:-1]}.id", f"{resource[:-1]}.resourceName", "resourceName")
+            or ""
+        ).strip()
+        campaign_id = str(_first(item, "campaign_id", "campaign.id", "campaignId") or "").strip()
+        occurred = _first(item, "created", "created_at", "date_start", "segments.date", "date")
+        occurred_at = self._timestamp(occurred)
+        if not external_id and resource == "metrics" and campaign_id and occurred_at:
+            external_id = f"campaign:{campaign_id}:date:{occurred_at[:10]}"
+        if not external_id:
+            raise ValidationError("provider record id is required")
+        amount = _first(item, "amount", "amount_paid", "spend", "value", "metrics.cost", "metrics.value")
+        micros = _first(item, "cost_micros", "costMicros", "metrics.costMicros", "metrics.cost_micros")
+        amount_value = float(amount) if amount is not None else (float(micros) / 1_000_000 if micros is not None else None)
+        currency = _first(item, "currency", "currency_code", "currencyCode", "customer.currencyCode")
+        status = _first(item, "status", f"{resource[:-1]}.status")
+        return ProviderRecord(
+            self.provider,
+            resource,
+            external_id,
+            account_id,
+            workspace_id,
+            occurred_at,
+            amount_value,
+            str(currency).upper() if currency else None,
+            str(status) if status is not None else None,
+            dict(item),
+            self.provider,
+        )
+
+
+def _first(item: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = _get_path(item, key)
+        if value is not None:
+            return value
+    return None
+
+
+def _get_path(item: Mapping[str, Any], key: str) -> Any:
+    current: Any = item
+    for part in key.split("."):
+        if not isinstance(current, Mapping) or part not in current:
+            return None
+        current = current[part]
+    return current

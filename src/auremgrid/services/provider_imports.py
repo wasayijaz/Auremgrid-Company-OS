@@ -6,7 +6,13 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
-from auremgrid.connectors.financial import ImportPage, MetaAdsReadOnlyAdapter, ProviderRecord, StripeReadOnlyAdapter
+from auremgrid.connectors.financial import (
+    GoogleAdsReadOnlyAdapter,
+    ImportPage,
+    MetaAdsReadOnlyAdapter,
+    ProviderRecord,
+    StripeReadOnlyAdapter,
+)
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
 
 
@@ -20,7 +26,11 @@ class ProviderImportService:
         identity.require("integration_sync")
         if identity.workspace_id is not None and any(ws != identity.workspace_id for ws in workspace_mappings.values()):
             raise AuthorizationError("provider import mapping is outside workspace scope")
-        adapter = adapter or {"stripe_accounting": StripeReadOnlyAdapter(), "meta_ads": MetaAdsReadOnlyAdapter()}.get(provider)
+        adapter = adapter or {
+            "stripe_accounting": StripeReadOnlyAdapter(),
+            "meta_ads": MetaAdsReadOnlyAdapter(),
+            "google_ads": GoogleAdsReadOnlyAdapter(),
+        }.get(provider)
         if adapter is None:
             raise ValidationError("unsupported provider import")
         workspace_id = workspace_mappings.get(account_id)
@@ -71,7 +81,11 @@ class ProviderImportService:
         identity.require("integration_sync")
         if identity.workspace_id is not None and any(ws != identity.workspace_id for ws in workspace_mappings.values()):
             raise AuthorizationError("provider import mapping is outside workspace scope")
-        adapter = adapter or {"stripe_accounting": StripeReadOnlyAdapter(), "meta_ads": MetaAdsReadOnlyAdapter()}.get(provider)
+        adapter = adapter or {
+            "stripe_accounting": StripeReadOnlyAdapter(),
+            "meta_ads": MetaAdsReadOnlyAdapter(),
+            "google_ads": GoogleAdsReadOnlyAdapter(),
+        }.get(provider)
         if adapter is None:
             raise ValidationError("unsupported provider import")
         workspace_id = workspace_mappings.get(account_id)
@@ -161,6 +175,8 @@ class ProviderImportService:
                 return self._apply_stripe(identity, record)
             if record.provider == "meta_ads":
                 return self._apply_meta(identity, record)
+            if record.provider == "google_ads":
+                return self._apply_google_ads(identity, record)
         except (AuthorizationError, NotFoundError, ValidationError, TypeError, ValueError) as exc:
             self._quarantine(identity.organization_id, record.provider, record.object_type, record.external_id,
                              "canonical_write_rejected", {"error": str(exc), "payload": dict(record.payload)})
@@ -183,6 +199,18 @@ class ProviderImportService:
                 return {"action": "canonical_would_write"}
             if record.object_type == "insights":
                 campaign_id = str(record.payload.get("campaign_id") or record.payload.get("canonical_campaign_id") or "").strip()
+                if not campaign_id:
+                    return {"action": "unsupported", "reason": "unsupported_without_campaign_mapping", "external_id": record.external_id}
+                return {"action": "canonical_would_write"}
+            return {"action": "unsupported", "reason": "unsupported_resource", "external_id": record.external_id}
+        if record.provider == "google_ads":
+            if record.object_type == "campaigns":
+                name = _nested(record.payload, "name", "campaign.name")
+                if not str(name or "").strip():
+                    return {"action": "quarantined", "reason": "canonical_write_rejected", "error": "google ads campaign requires name", "external_id": record.external_id}
+                return {"action": "canonical_would_write"}
+            if record.object_type == "metrics":
+                campaign_id = str(record.payload.get("canonical_campaign_id") or "").strip()
                 if not campaign_id:
                     return {"action": "unsupported", "reason": "unsupported_without_campaign_mapping", "external_id": record.external_id}
                 return {"action": "canonical_would_write"}
@@ -231,6 +259,49 @@ class ProviderImportService:
             return "canonical_written"
         return "unsupported"
 
+    def _apply_google_ads(self, identity: Any, record: ProviderRecord) -> str:
+        source = f"{record.provider}:{record.object_type}:{record.external_id}"
+        if record.object_type == "campaigns":
+            name = str(_nested(record.payload, "name", "campaign.name") or "").strip()
+            if not name:
+                raise ValidationError("google ads campaign requires name")
+            objective = str(
+                _nested(record.payload, "objective", "advertising_channel_type", "advertisingChannelType", "campaign.advertisingChannelType")
+                or "provider import"
+            )
+            self.os.agency_ops.create_campaign(
+                identity.organization_id,
+                record.workspace_id,
+                identity.person_id,
+                name,
+                objective,
+                "google_ads",
+                budget=record.amount,
+                currency=record.currency or "USD",
+            )
+            return "canonical_written"
+        if record.object_type == "metrics":
+            campaign_id = str(record.payload.get("canonical_campaign_id") or "").strip()
+            if not campaign_id:
+                self._quarantine(identity.organization_id, record.provider, record.object_type, record.external_id,
+                                 "unsupported_without_campaign_mapping", {"payload": dict(record.payload)})
+                return "unsupported"
+            self.os.agency_ops.record_campaign_metrics(
+                identity.organization_id,
+                record.workspace_id,
+                identity.person_id,
+                campaign_id,
+                source,
+                record.amount,
+                _num(_nested(record.payload, "revenue", "value", "metrics.conversionsValue", "metrics.allConversionsValue")),
+                _num(_nested(record.payload, "leads", "conversions", "metrics.conversions")),
+                _num(_nested(record.payload, "impressions", "metrics.impressions")),
+                _num(_nested(record.payload, "clicks", "metrics.clicks")),
+            )
+            return "canonical_written"
+        return "unsupported"
+
+
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -238,3 +309,16 @@ def _digest(value: Any) -> str:
 
 def _num(value: Any) -> float | None:
     return float(value) if value is not None else None
+
+
+def _nested(item: Any, *keys: str) -> Any:
+    for key in keys:
+        current = item
+        for part in key.split("."):
+            if not isinstance(current, dict) or part not in current:
+                current = None
+                break
+            current = current[part]
+        if current is not None:
+            return current
+    return None

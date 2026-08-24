@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from auremgrid.connectors.financial import MetaAdsReadOnlyAdapter, StripeReadOnlyAdapter
+from auremgrid.connectors.financial import GoogleAdsReadOnlyAdapter, MetaAdsReadOnlyAdapter, StripeReadOnlyAdapter
 from auremgrid.domain.errors import ValidationError
 
 
@@ -10,6 +10,7 @@ class FinancialProviderAdapterTests(unittest.TestCase):
     def test_unconfigured_provider_is_truthfully_not_connected(self) -> None:
         self.assertEqual(StripeReadOnlyAdapter().status, "not_connected")
         self.assertEqual(MetaAdsReadOnlyAdapter().pull("campaigns", None, "acct", {"acct": "ws"}).records, ())
+        self.assertEqual(GoogleAdsReadOnlyAdapter().pull("metrics", None, "acct", {"acct": "ws"}).records, ())
 
     def test_stripe_page_normalizes_and_dedupes(self) -> None:
         adapter = StripeReadOnlyAdapter(lambda **_: {"data": [
@@ -33,6 +34,21 @@ class FinancialProviderAdapterTests(unittest.TestCase):
     def test_unmapped_account_fails_closed(self) -> None:
         with self.assertRaises(ValidationError):
             StripeReadOnlyAdapter().pull("invoices", None, "acct", {})
+
+    def test_google_ads_metrics_normalize_nested_fields_and_cost_micros(self) -> None:
+        adapter = GoogleAdsReadOnlyAdapter(lambda **_: {"data": [{
+            "campaign": {"id": "123", "name": "Search Leads"},
+            "segments": {"date": "2026-08-20"},
+            "metrics": {"costMicros": 2500000, "clicks": 20, "impressions": 1000, "conversions": 3},
+            "customer": {"currencyCode": "usd"},
+        }], "next_cursor": "gads-next"})
+        page = adapter.pull("metrics", None, "acct", {"acct": "ws"})
+        self.assertEqual(page.records[0].provider, "google_ads")
+        self.assertEqual(page.records[0].object_type, "metrics")
+        self.assertEqual(page.records[0].external_id, "campaign:123:date:2026-08-20")
+        self.assertEqual(page.records[0].amount, 2.5)
+        self.assertEqual(page.records[0].currency, "USD")
+        self.assertEqual(page.next_cursor, "gads-next")
 
 
 if __name__ == "__main__":
