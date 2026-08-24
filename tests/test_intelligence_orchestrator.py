@@ -161,6 +161,34 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
         self.assertEqual(sorted(calls, key=lambda value: int(value.rsplit("-", 1)[1])), [f"expert-{i}" for i in range(13)])
         self.assertEqual({item["specialist_id"] for item in result["specialists"]}, set(calls))
 
+    def test_profile_context_is_domain_scoped_and_trace_correlated(self):
+        contracts = _Contracts(1)
+        contracts.profiles[0].update({"domains": ["work"]})
+        seen = {}
+        def handler(context):
+            seen.update(context)
+            return _result()
+        result = IntelligenceOrchestrator(
+            self.os, contracts, specialist_handlers={"expert-0": handler}
+        ).run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin")
+        self.assertNotIn("finance_amount_delta", seen.get("scenario_inputs", {}))
+        self.assertTrue(all(event.get("trace_id") == result["trace_id"] for event in result["trace"]))
+
+    def test_runbook_gates_are_evaluated_read_only(self):
+        contracts = _Contracts(1)
+        contracts.runbooks[0].update({
+            "handoff_gates": ["owner named"],
+            "quality_gates": ["evidence cited"],
+            "scenario_policy": "bounded",
+        })
+        result = IntelligenceOrchestrator(
+            self.os, contracts, specialist_handlers={"expert-0": lambda _ctx: _result()}
+        ).run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin")
+        gate = next(item for item in result["trace"] if item["stage"] == "runbook_gates")
+        self.assertEqual(gate["handoff"]["status"], "completed")
+        self.assertEqual(gate["quality"]["status"], "completed")
+        self.assertEqual(gate["scenario"]["status"], "completed")
+
     def test_specialist_fanout_is_bounded_parallel(self):
         def slow(_ctx):
             time.sleep(0.08)

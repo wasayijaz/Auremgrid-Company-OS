@@ -185,6 +185,8 @@ class IntelligenceOrchestrator:
         )
         allowed_refs = self._visible_refs(situation)
         context = self._bounded_context(situation)
+        # Carry the durable correlation id through every specialist context.
+        context["trace_id"] = trace_id
         trace.append({"stage": "situation_builder", "status": "completed", "evidence_count": len(allowed_refs)})
 
         runbook = self._select_runbook(
@@ -231,6 +233,10 @@ class IntelligenceOrchestrator:
         trace.append({"stage": "contradiction_detector", "status": "completed", "count": len(contradictions)})
         final = self._synthesize(situation, specialists, contradictions, errors, allowed_refs)
         final = self._reality_check(final, situation, allowed_refs)
+        gate_events, gate_review = self._runbook_gates(runbook, situation, specialists, contradictions, errors)
+        trace.extend(gate_events)
+        if gate_review:
+            final["needs_review"] = True
         trace.extend([
             {"stage": "synthesizer", "status": "completed"},
             {"stage": "reality_checker", "status": "completed" if not final["needs_review"] else "review"},
@@ -250,6 +256,9 @@ class IntelligenceOrchestrator:
             "scope": {"organization_id": organization_id, "workspace_id": workspace_id, "person_id": person_id},
             "generated_at": _now(),
         }
+        # Every emitted stage event is correlated to the persisted run.
+        for event in trace:
+            event.setdefault("trace_id", trace_id)
         self._persist_run(result)
         return _json(result)
 
@@ -268,12 +277,13 @@ class IntelligenceOrchestrator:
 
     @staticmethod
     def _profile_payload(profile: Any) -> dict[str, Any]:
-        keys = ("id", "version", "name", "specialty", "mission", "reasoning_method", "max_context", "max_iterations")
+        keys = ("id", "version", "name", "specialty", "mission", "reasoning_method", "max_context", "max_iterations", "domains", "allowed_domains", "allowed_tools", "tools")
         return {key: IntelligenceOrchestrator._field(profile, key) for key in keys if IntelligenceOrchestrator._field(profile, key) is not None}
 
     def _invoke_specialist(self, key: str, profile: Any, context: Mapping[str, Any]) -> Mapping[str, Any]:
         profile_context = dict(context)
         profile_context["profile"] = self._profile_payload(profile)
+        profile_context = self._restrict_profile_context(profile, profile_context)
         max_context = self._field(profile, "max_context")
         try:
             max_context = max(128, min(256 * 1024, int(max_context)))
@@ -571,3 +581,82 @@ class IntelligenceOrchestrator:
             context["findings"] = context["findings"][:8]
             context["historical_analogues"] = context["historical_analogues"][:8]
         return context
+
+    def _runbook_gates(
+        self,
+        runbook: Any,
+        situation: Mapping[str, Any],
+        specialists: Sequence[Mapping[str, Any]],
+        contradictions: Sequence[Mapping[str, Any]],
+        errors: Sequence[str],
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Evaluate runbook gates as bounded, read-only orchestration stages."""
+        if runbook is None:
+            return [], False
+        activation = list(self._field(runbook, "activation_sequence") or [])
+        handoff = list(self._field(runbook, "handoff_gates") or [])
+        quality = list(self._field(runbook, "quality_gates") or [])
+        scenario_policy = self._field(runbook, "scenario_policy")
+        events: list[dict[str, Any]] = []
+        review = False
+        activation_status = "completed" if activation else "degraded"
+        if not activation:
+            review = True
+        handoff_ok = bool(specialists) and not errors
+        review |= not handoff_ok and bool(handoff)
+        quality_ok = bool(specialists) and all(item.get("evidence_for") or item.get("unknowns") for item in specialists)
+        review |= not quality_ok and bool(quality)
+        contradiction_ok = not contradictions
+        review |= not contradiction_ok
+        scenario_ok = not scenario_policy or isinstance(situation.get("context", {}).get("scenario_inputs"), Mapping)
+        review |= not scenario_ok
+        events.append({
+            "stage": "runbook_gates",
+            "status": "review" if review else activation_status,
+            "activation": {"status": activation_status, "steps": activation[:8]},
+            "handoff": {"status": "completed" if handoff_ok else "degraded", "gates": handoff[:8]},
+            "quality": {"status": "completed" if quality_ok else "review", "gates": quality[:8]},
+            "contradiction": {"status": "completed" if contradiction_ok else "review", "count": len(contradictions)},
+            "scenario": {"status": "completed" if scenario_ok else "review", "policy": scenario_policy},
+        })
+        return events, review
+
+    def _restrict_profile_context(self, profile: Any, context: Mapping[str, Any]) -> dict[str, Any]:
+        """Give each specialist only evidence in its declared domains."""
+        domains = {
+            str(item).strip().lower()
+            for item in (self._field(profile, "domains") or self._field(profile, "allowed_domains") or ())
+            if str(item).strip()
+        }
+        if not domains:
+            return dict(context)
+        result = dict(context)
+        findings = []
+        for item in context.get("findings", []) or []:
+            if not isinstance(item, Mapping):
+                continue
+            marker = " ".join(str(item.get(key) or "").lower() for key in ("id", "type", "title", "domain"))
+            if any(domain in marker for domain in domains):
+                findings.append(item)
+        result["findings"] = findings
+        # These aggregates lack reliable domain labels; do not leak broad
+        # company history into a domain-scoped specialist.
+        result["historical_analogues"] = [
+            item for item in context.get("historical_analogues", []) or []
+            if isinstance(item, Mapping) and any(domain in json.dumps(item, sort_keys=True).lower() for domain in domains)
+        ]
+        result["decision_action_outcome_learning"] = [
+            item for item in context.get("decision_action_outcome_learning", []) or []
+            if isinstance(item, Mapping) and any(domain in json.dumps(item, sort_keys=True).lower() for domain in domains)
+        ]
+        scenario = context.get("scenario_inputs") or {}
+        allowed_scenario = {
+            "work": {"work_hours_delta", "deadline_days_delta"},
+            "capacity": {"capacity_hours_delta", "leave_hours_delta", "hiring_hours_delta"},
+            "finance": {"finance_amount_delta", "client_revenue_delta", "client_cost_delta"},
+            "scope": {"scope_usage_delta"},
+            "client_health": {"client_health_delta"},
+        }
+        keys = set().union(*(allowed_scenario.get(domain, set()) for domain in domains))
+        result["scenario_inputs"] = {key: value for key, value in scenario.items() if key in keys}
+        return result
