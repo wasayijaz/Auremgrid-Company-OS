@@ -379,8 +379,12 @@ class OutboundSendService:
         install = self.conn.execute("SELECT * FROM provider_installations WHERE id=?", (installation_id,)).fetchone()
         if install is None or install["status"] != "active": raise NotFoundError("provider installation not found")
         _scope(identity, install["organization_id"], install["workspace_id"], "external_send")
-        approval = self.conn.execute("SELECT status,organization_id FROM approval_requests WHERE id=?", (approval_request_id,)).fetchone()
-        if approval is None or approval["organization_id"] != install["organization_id"] or approval["status"] != "approved": raise AuthorizationError("explicit human approval is required")
+        approval = self.conn.execute("SELECT status,organization_id,workspace_id,action_type FROM approval_requests WHERE id=?", (approval_request_id,)).fetchone()
+        if (approval is None or approval["organization_id"] != install["organization_id"]
+                or approval["workspace_id"] != install["workspace_id"]
+                or approval["action_type"] != "external_send"
+                or approval["status"] != "approved"):
+            raise AuthorizationError("explicit human approval is required")
         controls = {r["key"]: r["value"] for r in self.conn.execute("SELECT key,value FROM system_state WHERE key IN ('recovery_mode','outbound_dispatch')")}
         if controls.get("recovery_mode") == "1" or controls.get("outbound_dispatch") == "disabled": raise ValidationError("outbound dispatch is blocked in recovery mode")
         safe = redact(payload)
@@ -388,7 +392,10 @@ class OutboundSendService:
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":")); payload_hash = _digest(raw); now = _iso(_now())
         with self.conn:
             existing = self.conn.execute("SELECT * FROM outbound_send_intents WHERE organization_id=? AND idempotency_key=?", (install["organization_id"], idempotency_key)).fetchone()
-            if existing is not None: return dict(existing)
+            if existing is not None:
+                if existing["payload_hash"] != payload_hash:
+                    raise ValidationError("outbound idempotency key was reused with a different payload")
+                return dict(existing)
             intent_id = self.new_id("send")
             self.conn.execute("INSERT INTO outbound_send_intents VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (intent_id, install["organization_id"], install["workspace_id"], installation_id, approval_request_id, idempotency_key, raw, payload_hash, "pending", 0, None, now, now))
             outbox_id = self.new_id("outbox")
@@ -403,10 +410,33 @@ class OutboundSendService:
             raise NotFoundError("outbound intent not found")
         if row["status"] == "sent":
             return dict(row)
+        install = self.conn.execute("SELECT status,organization_id,workspace_id FROM provider_installations WHERE id=?", (row["installation_id"],)).fetchone()
+        approval = self.conn.execute("SELECT status,organization_id,workspace_id,action_type FROM approval_requests WHERE id=?", (row["approval_request_id"],)).fetchone()
+        if (install is None or install["status"] != "active" or approval is None
+                or approval["status"] != "approved" or approval["action_type"] != "external_send"
+                or approval["organization_id"] != row["organization_id"]
+                or approval["workspace_id"] != row["workspace_id"]):
+            raise AuthorizationError("outbound approval or installation is no longer valid")
         controls = {r["key"]: r["value"] for r in self.conn.execute("SELECT key,value FROM system_state WHERE key IN ('recovery_mode','outbound_dispatch')")}
         if controls.get("recovery_mode") == "1" or controls.get("outbound_dispatch") == "disabled":
             raise ValidationError("outbound dispatch is blocked in recovery mode")
         payload = json.loads(row["payload"])
+        worker = "outbound-" + secrets.token_urlsafe(12)
+        lease_token = secrets.token_urlsafe(24)
+        now = _now()
+        expires = _iso(now + timedelta(seconds=60))
+        with self.conn:
+            event = self.conn.execute("SELECT * FROM outbox_events WHERE aggregate_type='outbound_send' AND aggregate_id=?", (intent_id,)).fetchone()
+            if event is None:
+                raise NotFoundError("outbound outbox event not found")
+            if event["status"] == "published":
+                return dict(self.conn.execute("SELECT * FROM outbound_send_intents WHERE id=?", (intent_id,)).fetchone())
+            claimed = self.conn.execute(
+                "UPDATE outbox_events SET lease_owner=?,lease_token=?,lease_expires_at=?,updated_at=?,version=version+1 WHERE id=? AND status='pending' AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at<=?)",
+                (worker, lease_token, expires, _iso(now), event["id"], _iso(now)),
+            )
+            if claimed.rowcount != 1:
+                raise ValidationError("outbound intent is already leased")
         try:
             transport(payload)
         except Exception as exc:
@@ -415,10 +445,12 @@ class OutboundSendService:
             now = _iso(_now())
             with self.conn:
                 self.conn.execute("UPDATE outbound_send_intents SET status=?,attempts=?,last_error=?,updated_at=? WHERE id=?", (status, attempts, exc.__class__.__name__, now, intent_id))
-                self.conn.execute("UPDATE outbox_events SET status=?,attempts=?,last_error=?,updated_at=?,version=version+1 WHERE aggregate_id=? AND aggregate_type='outbound_send'", ("failed" if status == "failed" else "pending", attempts, exc.__class__.__name__, now, intent_id))
+                self.conn.execute("UPDATE outbox_events SET status=?,attempts=?,last_error=?,lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=?,version=version+1 WHERE aggregate_id=? AND aggregate_type='outbound_send' AND lease_owner=? AND lease_token=?", ("failed" if status == "failed" else "pending", attempts, exc.__class__.__name__, now, intent_id, worker, lease_token))
             return dict(self.conn.execute("SELECT * FROM outbound_send_intents WHERE id=?", (intent_id,)).fetchone())
         now = _iso(_now())
         with self.conn:
+            updated = self.conn.execute("UPDATE outbox_events SET status='published',attempts=attempts+1,published_at=?,lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=?,version=version+1 WHERE aggregate_id=? AND aggregate_type='outbound_send' AND lease_owner=? AND lease_token=?", (now, now, intent_id, worker, lease_token))
+            if updated.rowcount != 1:
+                raise ValidationError("outbound lease fencing rejected completion")
             self.conn.execute("UPDATE outbound_send_intents SET status='sent',attempts=attempts+1,last_error=NULL,updated_at=? WHERE id=?", (now, intent_id))
-            self.conn.execute("UPDATE outbox_events SET status='published',attempts=attempts+1,published_at=?,updated_at=?,version=version+1 WHERE aggregate_id=? AND aggregate_type='outbound_send'", (now, now, intent_id))
         return dict(self.conn.execute("SELECT * FROM outbound_send_intents WHERE id=?", (intent_id,)).fetchone())

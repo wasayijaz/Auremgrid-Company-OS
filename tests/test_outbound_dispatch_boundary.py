@@ -40,5 +40,28 @@ class OutboundDispatchBoundaryTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError): self.service.create_intent(self.identity, self.install["id"], pending, "send-pending", {"message": "hello"})
         with self.assertRaises(ValidationError): self.service.create_intent(self.identity, self.install["id"], self.approval, "send-secret", {"authorization": "Bearer abc"})
 
+    def test_same_org_wrong_scope_or_action_approval_is_rejected(self) -> None:
+        now = "2026-08-22T00:00:00+00:00"
+        for suffix, workspace_id, action_type in (("ws", self.org.id, "external_send"), ("kind", None, "integration_sync")):
+            approval = new_id("approval")
+            self.os.store.conn.execute("INSERT INTO approval_requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (approval, self.org.id, workspace_id, "person", "p", "provider", action_type, "{}", "test", "person", "human", "approved", now, None, "", now)); self.os.store.conn.commit()
+            with self.assertRaises(AuthorizationError):
+                self.service.create_intent(self.identity, self.install["id"], approval, "send-" + suffix, {"message": "hello"})
+
+    def test_idempotency_payload_conflict_and_revocation_are_rejected(self) -> None:
+        item = self.service.create_intent(self.identity, self.install["id"], self.approval, "send-conflict", {"message": "hello"})
+        with self.assertRaises(ValidationError):
+            self.service.create_intent(self.identity, self.install["id"], self.approval, "send-conflict", {"message": "changed"})
+        self.os.store.conn.execute("UPDATE provider_installations SET status='revoked' WHERE id=?", (self.install["id"],)); self.os.store.conn.commit()
+        with self.assertRaises(AuthorizationError):
+            self.service.dispatch(item["id"], lambda _: None)
+
+    def test_stale_outbox_lease_fences_second_dispatcher(self) -> None:
+        item = self.service.create_intent(self.identity, self.install["id"], self.approval, "send-lease", {"message": "hello"})
+        now = "2026-08-22T00:00:00+00:00"
+        self.os.store.conn.execute("UPDATE outbox_events SET lease_owner='worker-a',lease_token='token-a',lease_expires_at=? WHERE aggregate_id=?", ("2099-01-01T00:00:00+00:00", item["id"])); self.os.store.conn.commit()
+        with self.assertRaises(ValidationError):
+            self.service.dispatch(item["id"], lambda _: self.fail("transport must not run"))
+
 
 if __name__ == "__main__": unittest.main()
