@@ -129,6 +129,48 @@ class AuthTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError):
             self.auth.authenticate_session(live["token"])
 
+    def test_lost_invite_claim_does_not_create_orphan_principal_or_session(self) -> None:
+        admin = self.auth.authenticate_session(self.auth.create_session(self.principal["id"])["token"])
+        invite = self.auth.create_invite(admin, "p3", "three@example.test", expires_in=timedelta(days=1))
+        self.conn.execute(
+            "UPDATE auth_invites SET consumed_at='2026-08-24T00:00:00+00:00', consumed_by_principal_id=? WHERE id=?",
+            (admin.principal_id, invite["id"]),
+        )
+        self.conn.commit()
+        principal_count = self.conn.execute(
+            "SELECT COUNT(*) FROM auth_principals WHERE organization_id='o1' AND person_id='p3'"
+        ).fetchone()[0]
+        session_count = self.conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0]
+        with self.assertRaises(AuthorizationError):
+            self.auth.consume_invite(admin, invite["token"])
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM auth_principals WHERE organization_id='o1' AND person_id='p3'").fetchone()[0],
+            principal_count,
+        )
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0], session_count)
+
+    def test_invite_claim_rolls_back_if_session_recovery_fails_after_claim(self) -> None:
+        admin = self.auth.authenticate_session(self.auth.create_session(self.principal["id"])["token"])
+        invite = self.auth.create_invite(admin, "p3", "three@example.test", expires_in=timedelta(days=1))
+        session_count = self.conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0]
+        original = self.auth._create_principal_uncommitted
+        try:
+            def fail_create_principal(*_args: object) -> dict[str, object]:
+                raise RuntimeError("simulated post-claim failure")
+            self.auth._create_principal_uncommitted = fail_create_principal  # type: ignore[method-assign]
+            with self.assertRaises(RuntimeError):
+                self.auth.consume_invite(admin, invite["token"])
+        finally:
+            self.auth._create_principal_uncommitted = original  # type: ignore[method-assign]
+        row = self.conn.execute("SELECT consumed_at,consumed_by_principal_id FROM auth_invites WHERE id=?", (invite["id"],)).fetchone()
+        self.assertIsNone(row["consumed_at"])
+        self.assertIsNone(row["consumed_by_principal_id"])
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM auth_principals WHERE organization_id='o1' AND person_id='p3'").fetchone()[0],
+            0,
+        )
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0], session_count)
+
 
 class AuthFileStorageTests(unittest.TestCase):
     def test_schema_11_upgrade_adds_credential_generation_in_schema_12(self) -> None:

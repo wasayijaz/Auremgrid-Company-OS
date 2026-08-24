@@ -75,6 +75,11 @@ class AuthService:
         return row
 
     def create_principal(self, organization_id: str, person_id: str, email: str) -> dict[str, Any]:
+        item = self._create_principal_uncommitted(organization_id, person_id, email)
+        self.conn.commit()
+        return item
+
+    def _create_principal_uncommitted(self, organization_id: str, person_id: str, email: str) -> dict[str, Any]:
         if not isinstance(email, str) or not email.strip():
             raise ValidationError("email is required")
         person = self._person(organization_id, person_id)
@@ -101,7 +106,6 @@ class AuthService:
             "INSERT INTO auth_principals(id,organization_id,person_id,email,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
             tuple(item.values()),
         )
-        self.conn.commit()
         return item
 
     @staticmethod
@@ -171,6 +175,11 @@ class AuthService:
         return _now() + expires_in
 
     def create_session(self, principal_id: str, expires_in: timedelta = timedelta(days=7)) -> dict[str, Any]:
+        item = self._create_session_uncommitted(principal_id, expires_in)
+        self.conn.commit()
+        return item
+
+    def _create_session_uncommitted(self, principal_id: str, expires_in: timedelta = timedelta(days=7)) -> dict[str, Any]:
         principal = self._principal(principal_id)
         expires_at = self._valid_lifetime(expires_in)
         token = self._new_token()
@@ -187,7 +196,6 @@ class AuthService:
             "INSERT INTO auth_sessions(id,principal_id,token_hash,created_at,expires_at,revoked_at,last_seen_at) VALUES (?,?,?,?,?,?,?)",
             tuple(item.values()),
         )
-        self.conn.commit()
         return {**item, "token": token}
 
     def create_api_token(
@@ -469,29 +477,40 @@ class AuthService:
             raise AuthorizationError("invite expired")
         person_id = str(_row_value(row, "person_id", 2))
         email = str(_row_value(row, "email", 3))
-        principal = self.create_principal(identity.organization_id, person_id, email)
         workspace_id = _row_value(row, "workspace_id", 4)
         actor_id = _row_value(row, "actor_id", 5)
-        binding = None
-        if workspace_id and actor_id:
-            self._assert_actor_binding_target(identity.organization_id, person_id, str(workspace_id), str(actor_id))
-            binding = self._bind_principal_actor(principal["id"], str(workspace_id), str(actor_id))
-        session = self.create_session(principal["id"])
         now = _iso(_now())
-        cursor = self.conn.execute(
-            "UPDATE auth_invites SET consumed_at=?, consumed_by_principal_id=? WHERE id=? AND consumed_at IS NULL AND revoked_at IS NULL",
-            (now, identity.principal_id, _row_value(row, "id", 0)),
-        )
-        if cursor.rowcount != 1:
-            raise AuthorizationError("invite already consumed")
-        self.conn.commit()
-        updated = self.conn.execute("SELECT * FROM auth_invites WHERE id=?", (_row_value(row, "id", 0),)).fetchone()
-        return {
-            "invite": self._invite_dict(updated),
-            "principal": self._principal_dict(self._principal(principal["id"], identity.organization_id)),
-            "session": {"id": session["id"], "token": session["token"], "expires_at": session["expires_at"], "shown_once": True},
-            "actor_binding": binding,
-        }
+        try:
+            if not self.conn.in_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
+            cursor = self.conn.execute(
+                """UPDATE auth_invites
+                      SET consumed_at=?, consumed_by_principal_id=?
+                    WHERE id=? AND organization_id=? AND token_hash=?
+                      AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at>?""",
+                (now, identity.principal_id, _row_value(row, "id", 0), identity.organization_id, digest, now),
+            )
+            if cursor.rowcount != 1:
+                self.conn.rollback()
+                raise AuthorizationError("invite already consumed")
+            principal = self._create_principal_uncommitted(identity.organization_id, person_id, email)
+            binding = None
+            if workspace_id and actor_id:
+                self._assert_actor_binding_target(identity.organization_id, person_id, str(workspace_id), str(actor_id))
+                binding = self._bind_principal_actor(principal["id"], str(workspace_id), str(actor_id))
+            session = self._create_session_uncommitted(principal["id"])
+            updated = self.conn.execute("SELECT * FROM auth_invites WHERE id=?", (_row_value(row, "id", 0),)).fetchone()
+            self.conn.commit()
+            return {
+                "invite": self._invite_dict(updated),
+                "principal": self._principal_dict(self._principal(principal["id"], identity.organization_id)),
+                "session": {"id": session["id"], "token": session["token"], "expires_at": session["expires_at"], "shown_once": True},
+                "actor_binding": binding,
+            }
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
 
     def list_sessions(self, identity: AuthenticatedIdentity, include_revoked: bool = False) -> list[dict[str, Any]]:
         self._assert_manage_auth(identity)
