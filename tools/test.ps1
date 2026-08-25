@@ -5,7 +5,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $env:PYTHONPATH = Join-Path $repoRoot "src"
 
 $candidates = @(
-    "$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe",
+    (Join-Path $repoRoot ".venv\Scripts\python.exe"),
     "python",
     "py"
 )
@@ -24,4 +24,4 @@ foreach ($candidate in $candidates) {
     }
 }
 
-Write-Error "No working Python 3.12+ runtime found. Install Python or run inside Codex's bundled runtime."
+Write-Error "No working Python 3.12+ runtime found. Install Python 3.12+ or create a local .venv."

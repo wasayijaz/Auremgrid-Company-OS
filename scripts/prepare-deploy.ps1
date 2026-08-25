@@ -7,7 +7,6 @@ Write-Host "=== Auremgrid Deployment Readiness ===" -ForegroundColor Cyan
 
 $python = $null
 $candidates = @(
-    "$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe",
     (Join-Path $repoRoot ".venv\Scripts\python.exe"),
     "python",
     "py"

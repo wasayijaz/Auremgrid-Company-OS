@@ -5,7 +5,7 @@
 .mypy_cache
 .ruff_cache
 .uv-cache
-.codex-runtime
+.agent-runtime
 .auremgrid-backups
 .tmp
 __pycache__

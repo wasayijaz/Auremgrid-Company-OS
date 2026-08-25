@@ -47,6 +47,16 @@ deploy/                private single-host Docker Compose and Caddy templates
 
 The package name is `auremgrid-company-os`; the Python import surface exports `CompanyOS` from `auremgrid.services.brain`. The CLI script name is `auremgrid` when installed, and the repository also includes a zero-install launcher at `scripts/auremgrid.py`.
 
+## Git Attribution Guard
+
+This repository pins both Git identities to `Auremgrid <auremgrid@users.noreply.github.com>`, rejects third-party attribution trailers, and rejects the reserved third-party attribution reference in newly staged content. After cloning, activate the repository hooks once:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-git-guard.ps1
+```
+
+The reusable instructions are in `skills/git-attribution-guard/SKILL.md`; `scripts/test-git-guard.ps1` exercises the protected cases in a temporary repository. Hooks protect ordinary commits and merge commits; Git's `--no-verify` option deliberately bypasses client-side hooks, so it must not be used for this repository. Existing published history is not rewritten by this setup.
+
 The source currently carries a migration chain through schema version 58 for this release line. Runtime `/health` and `/health/detailed` report the actual schema version of the opened database.
 
 ## Capability Map
