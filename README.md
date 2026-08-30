@@ -57,7 +57,7 @@ powershell -ExecutionPolicy Bypass -File scripts/install-git-guard.ps1
 
 The reusable instructions are in `skills/git-attribution-guard/SKILL.md`; `scripts/test-git-guard.ps1` exercises the protected cases in a temporary repository. Hooks protect ordinary commits and merge commits; Git's `--no-verify` option deliberately bypasses client-side hooks, so it must not be used for this repository. Existing published history is not rewritten by this setup.
 
-The source currently carries a migration chain through schema version 58 for this release line. Runtime `/health` and `/health/detailed` report the actual schema version of the opened database.
+The source currently carries a migration chain through schema version 59 for this release line. Runtime `/health` and `/health/detailed` report the actual schema version of the opened database.
 
 ## Capability Map
 

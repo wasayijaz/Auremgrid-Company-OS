@@ -3975,6 +3975,234 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        59,
+        "source_physical_delete_preserves_metadata_history",
+        """
+        DROP TRIGGER IF EXISTS source_lifecycle_identity_no_update;
+        DROP TRIGGER IF EXISTS source_lifecycle_no_delete;
+        DROP TRIGGER IF EXISTS source_lifecycle_close_once;
+        DROP TRIGGER IF EXISTS source_lifecycle_effective_close_once;
+        DROP TRIGGER IF EXISTS provider_route_events_no_update;
+        DROP TRIGGER IF EXISTS provider_route_events_no_delete;
+        DROP TRIGGER IF EXISTS provider_route_mutation_source_id_no_update;
+        DROP TRIGGER IF EXISTS provider_route_mutation_state_no_rewrite;
+        DROP TRIGGER IF EXISTS graphiti_episode_mappings_no_update;
+        DROP TRIGGER IF EXISTS graphiti_episode_mappings_no_delete;
+
+        DROP TABLE IF EXISTS source_lifecycle_intervals_v59;
+        CREATE TABLE source_lifecycle_intervals_v59 (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            source_id TEXT,
+            source_key TEXT NOT NULL,
+            activated_at TEXT NOT NULL,
+            retired_at TEXT,
+            effective_from TEXT NOT NULL,
+            effective_until TEXT,
+            activation_reason TEXT NOT NULL,
+            retirement_reason TEXT,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE SET NULL,
+            CHECK(retired_at IS NULL OR retired_at >= activated_at),
+            CHECK(effective_until IS NULL OR effective_until >= effective_from)
+        );
+        INSERT INTO source_lifecycle_intervals_v59
+            SELECT * FROM source_lifecycle_intervals;
+        DROP TABLE source_lifecycle_intervals;
+        ALTER TABLE source_lifecycle_intervals_v59 RENAME TO source_lifecycle_intervals;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_source_lifecycle_current
+            ON source_lifecycle_intervals(workspace_id, source_key)
+            WHERE retired_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_source_lifecycle_as_of
+            ON source_lifecycle_intervals(workspace_id, source_key, effective_from, effective_until, source_id);
+
+        DROP TABLE IF EXISTS provider_object_route_events_v59;
+        CREATE TABLE provider_object_route_events_v59 (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            route_key TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_id TEXT,
+            provider_version TEXT NOT NULL,
+            operation TEXT NOT NULL CHECK(operation IN ('activate','retire')),
+            occurred_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE SET NULL,
+            UNIQUE(workspace_id, connector, account_key, external_id, route_key, provider_version, operation)
+        );
+        INSERT INTO provider_object_route_events_v59
+            SELECT * FROM provider_object_route_events;
+        DROP TABLE provider_object_route_events;
+        ALTER TABLE provider_object_route_events_v59 RENAME TO provider_object_route_events;
+        CREATE INDEX IF NOT EXISTS idx_provider_route_events_object
+            ON provider_object_route_events(workspace_id, connector, account_key, external_id, occurred_at);
+
+        DROP TABLE IF EXISTS provider_route_mutation_staging_v59;
+        CREATE TABLE provider_route_mutation_staging_v59 (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            connector TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            route_key TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            source_id TEXT,
+            provider_version TEXT NOT NULL,
+            operation TEXT NOT NULL CHECK(operation IN ('activate','retire')),
+            occurred_at TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('staged','applied')),
+            created_at TEXT NOT NULL,
+            applied_at TEXT,
+            event_dedupe_key TEXT,
+            FOREIGN KEY(batch_id) REFERENCES connector_ingest_batches(id),
+            FOREIGN KEY(event_id) REFERENCES connector_source_events(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE SET NULL,
+            UNIQUE(event_id, route_key, provider_version, operation)
+        );
+        INSERT INTO provider_route_mutation_staging_v59
+            SELECT id,batch_id,event_id,workspace_id,connector,account_key,external_id,route_key,source_key,source_id,
+                   provider_version,operation,occurred_at,status,created_at,applied_at,event_dedupe_key
+            FROM provider_route_mutation_staging;
+        DROP TABLE provider_route_mutation_staging;
+        ALTER TABLE provider_route_mutation_staging_v59 RENAME TO provider_route_mutation_staging;
+        CREATE INDEX IF NOT EXISTS idx_provider_route_mutation_batch
+            ON provider_route_mutation_staging(batch_id, status, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_route_mutation_dedupe
+            ON provider_route_mutation_staging(
+                workspace_id,connector,account_key,external_id,route_key,event_dedupe_key,operation
+            )
+            WHERE event_dedupe_key IS NOT NULL;
+
+        DROP TABLE IF EXISTS graphiti_episode_mappings_v59;
+        CREATE TABLE graphiti_episode_mappings_v59 (
+            episode_key TEXT PRIMARY KEY,
+            remote_episode_uuid TEXT NOT NULL,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            generation TEXT NOT NULL,
+            source_id TEXT,
+            document_id TEXT,
+            observed_at TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE SET NULL,
+            FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE SET NULL
+        );
+        INSERT INTO graphiti_episode_mappings_v59
+            SELECT * FROM graphiti_episode_mappings;
+        DROP TABLE graphiti_episode_mappings;
+        ALTER TABLE graphiti_episode_mappings_v59 RENAME TO graphiti_episode_mappings;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_graphiti_episode_remote_uuid
+            ON graphiti_episode_mappings(remote_episode_uuid);
+        CREATE INDEX IF NOT EXISTS idx_graphiti_episode_generation
+            ON graphiti_episode_mappings(organization_id,workspace_id,generation,source_id,document_id);
+        CREATE TRIGGER IF NOT EXISTS graphiti_episode_mappings_valid_insert
+        BEFORE INSERT ON graphiti_episode_mappings BEGIN
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM workspace_organization
+                WHERE workspace_id=NEW.workspace_id AND organization_id=NEW.organization_id
+            ) THEN RAISE(ABORT,'Graphiti episode workspace scope mismatch') END;
+            SELECT CASE WHEN NEW.source_id IS NULL OR NOT EXISTS (
+                SELECT 1 FROM sources
+                WHERE id=NEW.source_id AND workspace_id=NEW.workspace_id
+            ) THEN RAISE(ABORT,'Graphiti episode source scope mismatch') END;
+            SELECT CASE WHEN NEW.document_id IS NULL OR NOT EXISTS (
+                SELECT 1 FROM documents
+                WHERE id=NEW.document_id AND workspace_id=NEW.workspace_id AND source_id=NEW.source_id
+            ) THEN RAISE(ABORT,'Graphiti episode document scope mismatch') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM graph_projection_generations
+                WHERE workspace_id=NEW.workspace_id AND generation=NEW.generation
+            ) THEN RAISE(ABORT,'Graphiti episode generation scope mismatch') END;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS source_lifecycle_identity_no_update
+        BEFORE UPDATE OF id, workspace_id, source_id, source_key, activated_at, effective_from, activation_reason
+            ON source_lifecycle_intervals
+        BEGIN
+            SELECT CASE WHEN NOT (OLD.source_id IS NOT NULL AND NEW.source_id IS NULL)
+                THEN RAISE(ABORT, 'source lifecycle identity is immutable') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS source_lifecycle_no_delete
+        BEFORE DELETE ON source_lifecycle_intervals
+        BEGIN
+            SELECT RAISE(ABORT, 'source lifecycle history is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS source_lifecycle_close_once
+        BEFORE UPDATE OF retired_at, retirement_reason ON source_lifecycle_intervals
+        WHEN OLD.retired_at IS NOT NULL OR NEW.retired_at IS NULL OR OLD.retirement_reason IS NOT NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'source lifecycle retirement is immutable once closed');
+        END;
+        CREATE TRIGGER IF NOT EXISTS source_lifecycle_effective_close_once
+        BEFORE UPDATE OF effective_until ON source_lifecycle_intervals
+        WHEN OLD.effective_until IS NOT NULL OR NEW.effective_until IS NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'source lifecycle semantic retirement is immutable once closed');
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_route_events_no_update
+        BEFORE UPDATE ON provider_object_route_events
+        BEGIN
+            SELECT CASE WHEN NOT (OLD.source_id IS NOT NULL AND NEW.source_id IS NULL)
+                THEN RAISE(ABORT, 'provider route events are immutable') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_route_events_no_delete
+        BEFORE DELETE ON provider_object_route_events
+        BEGIN
+            SELECT RAISE(ABORT, 'provider route events are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_route_mutation_source_id_no_update
+        BEFORE UPDATE OF source_id ON provider_route_mutation_staging
+        BEGIN
+            SELECT CASE WHEN NOT (
+                    OLD.source_id IS NULL AND NEW.source_id IS NOT NULL
+                    AND OLD.operation='activate'
+                    AND OLD.status='staged' AND OLD.applied_at IS NULL
+                )
+                AND NOT (OLD.source_id IS NOT NULL AND NEW.source_id IS NULL)
+                THEN RAISE(ABORT, 'provider route source link is immutable') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_route_mutation_state_no_rewrite
+        BEFORE UPDATE OF status,applied_at ON provider_route_mutation_staging
+        WHEN OLD.status != 'staged' OR NEW.status != 'applied' OR OLD.applied_at IS NOT NULL OR NEW.applied_at IS NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'provider route mutation state is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS graphiti_episode_mappings_no_update
+        BEFORE UPDATE ON graphiti_episode_mappings
+        BEGIN
+            SELECT CASE WHEN NOT (
+                    OLD.source_id IS NOT NULL AND NEW.source_id IS NULL
+                    AND OLD.document_id IS NEW.document_id
+                )
+                AND NOT (
+                    OLD.document_id IS NOT NULL AND NEW.document_id IS NULL
+                    AND OLD.source_id IS NEW.source_id
+                )
+                AND NOT (
+                    OLD.source_id IS NOT NULL AND NEW.source_id IS NULL
+                    AND OLD.document_id IS NOT NULL AND NEW.document_id IS NULL
+                )
+                THEN RAISE(ABORT, 'Graphiti episode mappings are immutable') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS graphiti_episode_mappings_no_delete
+        BEFORE DELETE ON graphiti_episode_mappings
+        BEGIN
+            SELECT RAISE(ABORT, 'Graphiti episode mappings are immutable');
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
@@ -4124,7 +4352,7 @@ def _durable_intelligence_hypothesis_subject_timestamps_sql(conn: sqlite3.Connec
     return "\n".join(statements)
 
 
-def migrate(conn: sqlite3.Connection) -> int:
+def migrate(conn: sqlite3.Connection, *, target_version: int | None = None) -> int:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
     )
@@ -4132,6 +4360,8 @@ def migrate(conn: sqlite3.Connection) -> int:
     if 1 not in applied:
         conn.execute("INSERT INTO schema_migrations(version, name) VALUES (1, 'v0_1_kernel')")
     for migration in MIGRATIONS:
+        if target_version is not None and migration.version > target_version:
+            break
         if migration.version in applied:
             continue
         sql = migration.sql

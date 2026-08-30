@@ -85,6 +85,7 @@ class PrivateSingleHostDeployTests(unittest.TestCase):
         self.assertTrue(result["checks"]["backup_verified"])
         self.assertTrue(result["checks"]["restore_recovery_mode"])
         self.assertTrue(result["checks"]["restore_outbound_disabled"])
+        self.assertTrue(result["checks"]["restore_projection_healthy"])
 
     def test_ci_builds_container_and_validates_private_host_compose(self) -> None:
         workflow = ROOT.joinpath(".github", "workflows", "ci.yml").read_text(encoding="utf-8")

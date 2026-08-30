@@ -86,6 +86,7 @@ class JobOperationTests(unittest.TestCase):
             ):
                 connection.execute(f"ALTER TABLE integrations DROP COLUMN {column}")
             connection.execute("DROP INDEX IF EXISTS idx_provider_mutation_exact_event")
+            connection.execute("DROP INDEX IF EXISTS idx_provider_route_mutation_dedupe")
             for trigger in (
                 "provider_mutation_event_key_required", "provider_mutation_identity_no_update",
                 "provider_mutation_source_bind_once", "provider_mutation_apply_once",

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from auremgrid.connectors.google_auth import ConnectorInboxRepository, ConnectorSourceEvent
-from auremgrid.domain.errors import ValidationError
+from auremgrid.domain.errors import AuthorizationError, ValidationError
 from auremgrid.services.brain import CompanyOS, new_id
 from tests.auth_support import LATEST_SCHEMA_VERSION, issue_identity
 
@@ -199,11 +199,9 @@ class EvidenceLifecycleTests(unittest.TestCase):
         )["context"]["evidence_count"], 0)
 
         out = self.os.retention.execute_deletion(self.org.id, self.person.id, "documents", [document_id], "expired")
-        self.os._embeddings.pop(document_id, None)
-        result = self.os.rebuild_projections(self.ws.id)
 
         self.assertEqual(out["count"], 1)
-        self.assertEqual(result["documents"], 0)
+        self.assertNotIn(document_id, self.os._embeddings)
         self.assertTrue(self.os.search(self.ws.id, self.actor.id, "secret deletion phrase").unknown)
         self.assertIsNone(self.os.store.conn.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone())
         self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM documents_fts WHERE document_id=?", (document_id,)).fetchone()[0], 0)
@@ -224,6 +222,91 @@ class EvidenceLifecycleTests(unittest.TestCase):
         self.assertEqual(audit["workspace_id"], self.ws.id)
         self.assertNotIn("secret deletion phrase", audit["snapshot_json"])
         self.assertIn('"content":"[REDACTED]"', audit["snapshot_json"])
+
+    def test_retention_source_delete_physically_removes_source_and_live_embeddings(self) -> None:
+        _, identity = issue_identity(self.os, self.org.id, self.person.id, self.ws.id, self.actor.id)
+        ingest = self.os.ingest_text(
+            self.ws.id,
+            self.actor.id,
+            "drive/files/delete-source",
+            "FACT: Source Probe | status | source-only secret phrase",
+            "memory://delete-source",
+        )
+        source_id = ingest.source.id
+        document_id = str(ingest.document_id)
+        self.os.store.activate_provider_route(
+            self.ws.id,
+            "google_drive",
+            "acct",
+            "delete-source",
+            "folder:root",
+            ingest.source.source_key,
+            source_id,
+            "v1",
+        )
+        tag = self.os.brain_ops.create_tag(identity, self.ws.id, "Source Delete")
+        self.os.brain_ops.tag_source(identity, self.ws.id, source_id, tag["id"])
+        self.assertFalse(self.os.search(self.ws.id, self.actor.id, "source-only secret phrase").unknown)
+        self.assertIn(document_id, self.os._embeddings)
+
+        out = self.os.retention.execute_deletion(self.org.id, self.person.id, "sources", [source_id], "expired")
+
+        self.assertEqual(out["count"], 1)
+        self.assertNotIn(document_id, self.os._embeddings)
+        self.assertIsNone(self.os.store.conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone())
+        self.assertIsNone(self.os.store.conn.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone())
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM facts WHERE source_id=?", (source_id,)).fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM relations WHERE source_id=?", (source_id,)).fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM document_embedding_projection WHERE document_id=?", (document_id,)).fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM brain_source_tags WHERE source_id=?", (source_id,)).fetchone()[0], 0)
+        self.assertTrue(self.os.search(self.ws.id, self.actor.id, "source-only secret phrase").unknown)
+        lifecycle = self.os.store.conn.execute(
+            "SELECT source_id,retired_at,retirement_reason FROM source_lifecycle_intervals WHERE workspace_id=? AND source_key=?",
+            (self.ws.id, ingest.source.source_key),
+        ).fetchone()
+        self.assertIsNone(lifecycle["source_id"])
+        self.assertEqual(lifecycle["retirement_reason"], "retention_delete")
+        event = self.os.store.conn.execute(
+            "SELECT source_id,source_key FROM provider_object_route_events WHERE workspace_id=? AND external_id=?",
+            (self.ws.id, "delete-source"),
+        ).fetchone()
+        self.assertIsNone(event["source_id"])
+        self.assertEqual(event["source_key"], ingest.source.source_key)
+        audit = self.os.store.conn.execute(
+            "SELECT * FROM deletion_audit WHERE table_name='sources' AND record_id=?",
+            (source_id,),
+        ).fetchone()
+        self.assertEqual(audit["workspace_id"], self.ws.id)
+        self.assertNotIn("memory://delete-source", audit["snapshot_json"])
+
+    def test_retention_deletion_requires_target_workspace_membership(self) -> None:
+        intruder = self.os.create_person(self.org.id, "Intruder", "intruder@example.test", role="member")
+        self.os.add_person_to_workspace(self.org.id, self.ws.id, intruder.id, "operator")
+        target = self.os.ingest_text(
+            self.other_ws.id,
+            self.other_actor.id,
+            "other-delete",
+            "Other workspace protected evidence",
+            "memory://other-delete",
+        )
+
+        with self.assertRaises(AuthorizationError):
+            self.os.retention.execute_deletion(
+                self.org.id,
+                intruder.id,
+                "documents",
+                [str(target.document_id)],
+                "expired",
+            )
+
+        self.assertIsNotNone(self.os.store.conn.execute(
+            "SELECT * FROM documents WHERE id=?",
+            (str(target.document_id),),
+        ).fetchone())
+        self.assertEqual(self.os.store.conn.execute(
+            "SELECT COUNT(*) FROM deletion_audit WHERE record_id=?",
+            (str(target.document_id),),
+        ).fetchone()[0], 0)
 
     def test_generation_seen_markers_retire_only_unseen_route_objects(self) -> None:
         first = self._ingest("drive/files/first", "First generation object")

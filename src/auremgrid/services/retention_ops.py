@@ -60,8 +60,15 @@ SENSITIVE_EXPORT_COLUMN_MARKERS = (
 
 
 class RetentionOperations:
-    def __init__(self, conn: Any, new_id: Callable[[str], str], authorize: Callable[..., Any]) -> None:
+    def __init__(
+        self,
+        conn: Any,
+        new_id: Callable[[str], str],
+        authorize: Callable[..., Any],
+        on_documents_deleted: Callable[[set[str]], None] | None = None,
+    ) -> None:
         self.conn, self.new_id, self.authorize = conn, new_id, authorize
+        self.on_documents_deleted = on_documents_deleted
 
     def create_policy(self, organization_id: str, person_id: str, scope: str,
         data_category: str, max_age_days: int, action: str, scope_id: str | None = None) -> dict[str, Any]:
@@ -98,6 +105,7 @@ class RetentionOperations:
             raise ValidationError("record_ids must not be empty")
         now = _now().isoformat()
         deleted = []
+        deleted_document_ids: set[str] = set()
         table_columns = self._table_columns()
         columns = table_columns.get(table_name)
         if columns is None:
@@ -108,13 +116,14 @@ class RetentionOperations:
                 continue
             row_data = dict(row)
             workspace_id = row_data.get("workspace_id")
+            self._authorize_delete_target(organization_id, person_id, workspace_id)
             snapshot = json.dumps(self._audit_snapshot(table_name, row_data), sort_keys=True, separators=(",", ":"))
             audit_id = self.new_id("da")
             self._insert_audit(audit_id, organization_id, workspace_id, table_name, rid, reason, person_id, policy_id, snapshot, now)
             if table_name == "documents":
-                self._delete_document_evidence(row_data)
+                deleted_document_ids.update(self._delete_document_evidence(row_data))
             elif table_name == "sources":
-                self._delete_source_evidence(row_data)
+                deleted_document_ids.update(self._delete_source_evidence(row_data))
             elif table_name == "campaigns":
                 # Metric snapshots are campaign-owned evidence. Retaining them after
                 # deleting their campaign would leave orphaned performance data that
@@ -134,7 +143,22 @@ class RetentionOperations:
                 self.conn.execute(f"DELETE FROM {table_name} WHERE id=?", (rid,))
             deleted.append({"id": rid, "audit_id": audit_id})
         self.conn.commit()
+        if deleted_document_ids and self.on_documents_deleted is not None:
+            self.on_documents_deleted(deleted_document_ids)
         return {"deleted": deleted, "count": len(deleted)}
+
+    def _authorize_delete_target(
+        self,
+        organization_id: str,
+        person_id: str,
+        workspace_id: str | None,
+    ) -> None:
+        if workspace_id:
+            self.authorize(organization_id, workspace_id, person_id, write=True)
+            return
+        membership = self.authorize(organization_id, person_id, write=True)
+        if getattr(membership, "role", None) not in {"owner", "admin"}:
+            raise AuthorizationError("organization admin required for organization-scoped deletion")
 
     def _find_deletable_row(self, organization_id: str, table_name: str, columns: set[str], record_id: str) -> Any | None:
         if "id" not in columns:
@@ -182,7 +206,7 @@ class RetentionOperations:
                 snapshot[key] = value
         return snapshot
 
-    def _delete_document_evidence(self, document: dict[str, Any]) -> None:
+    def _delete_document_evidence(self, document: dict[str, Any]) -> set[str]:
         workspace_id = document["workspace_id"]
         document_id = document["id"]
         source_id = document["source_id"]
@@ -198,6 +222,7 @@ class RetentionOperations:
             (workspace_id, document_id),
         )
         self.conn.execute("DELETE FROM documents WHERE workspace_id=? AND id=?", (workspace_id, document_id))
+        deleted_document_ids = {document_id}
         remaining = self.conn.execute(
             "SELECT 1 FROM documents WHERE workspace_id=? AND source_id=? LIMIT 1",
             (workspace_id, source_id),
@@ -208,18 +233,20 @@ class RetentionOperations:
                 (workspace_id, source_id),
             ).fetchone()
             if source is not None:
-                self._delete_source_evidence(dict(source), delete_documents=False)
+                deleted_document_ids.update(self._delete_source_evidence(dict(source), delete_documents=False))
+        return deleted_document_ids
 
-    def _delete_source_evidence(self, source: dict[str, Any], *, delete_documents: bool = True) -> None:
+    def _delete_source_evidence(self, source: dict[str, Any], *, delete_documents: bool = True) -> set[str]:
         workspace_id = source["workspace_id"]
         source_id = source["id"]
+        deleted_document_ids: set[str] = set()
         if delete_documents:
             documents = self.conn.execute(
                 "SELECT * FROM documents WHERE workspace_id=? AND source_id=?",
                 (workspace_id, source_id),
             ).fetchall()
             for document in documents:
-                self._delete_document_evidence(dict(document))
+                deleted_document_ids.update(self._delete_document_evidence(dict(document)))
         self._delete_optional("facts", "workspace_id=? AND source_id=?", (workspace_id, source_id))
         self._delete_optional("relations", "workspace_id=? AND source_id=?", (workspace_id, source_id))
         self._delete_optional("brain_source_tags", "workspace_id=? AND source_id=?", (workspace_id, source_id))
@@ -230,8 +257,8 @@ class RetentionOperations:
         )
         self._retire_source_lifecycle(workspace_id, source_id)
         self._retire_provider_routes(workspace_id, source_id)
-        if self._source_can_be_deleted(workspace_id, source_id):
-            self.conn.execute("DELETE FROM sources WHERE workspace_id=? AND id=?", (workspace_id, source_id))
+        self.conn.execute("DELETE FROM sources WHERE workspace_id=? AND id=?", (workspace_id, source_id))
+        return deleted_document_ids
 
     def _delete_optional(self, table_name: str, where_sql: str, params: tuple[Any, ...]) -> None:
         if table_name in self._table_columns():

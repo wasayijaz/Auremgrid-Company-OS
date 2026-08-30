@@ -64,6 +64,7 @@ class RepositoryPolicyTests(unittest.TestCase):
         for marker in (
             "python -m auremgrid.cli evaluate-intelligence",
             "python scripts/private_host_smoke.py",
+            "python scripts/forward_migration_rehearsal.py",
             "python scripts/performance_baseline.py",
             "./scripts/test-git-guard.ps1",
         ):
@@ -71,6 +72,8 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertIn("pip install -e .", workflow)
         self.assertIn(".[browser]", workflow)
         self.assertIn("playwright install", workflow.lower())
+        self.assertIn("git diff --check", workflow)
+        self.assertIn("git diff-tree --check", workflow)
 
     def test_retired_source_labels_are_absent_from_current_tree(self) -> None:
         findings: list[str] = []

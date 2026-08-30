@@ -19,7 +19,7 @@ Run it with:
 .venv\\Scripts\\python.exe scripts/performance_baseline.py
 ```
 
-Reference run (Windows, schema 58, two timed samples, 2026-08-31):
+Reference run (Windows, schema 59, two timed samples, 2026-08-31):
 
 | Clients | Dashboard (ms) | Brain search (ms) | Intel workspace (ms) | Intel portfolio (ms) | Proactive refresh (ms) | Workflow query (ms) | Large work list (ms) | Projection rebuild (ms) | Backup + verify (ms) | Migration/open (ms) | Worker jobs/sec |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|

@@ -10,6 +10,7 @@ contact a provider or mutate a durable database.
 
 from pathlib import Path
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from auremgrid.services.brain import CompanyOS
@@ -74,17 +75,79 @@ def _seed(provider: Any | None = None) -> CompanyOS:
     return os
 
 
+def _seed_decision_learning_fixture(os: CompanyOS) -> None:
+    """Add a small, deterministic decision→outcome→learning chain."""
+    decision = os.create_decision(
+        "org_demo", "person_demo_owner", "Retargeting ad set delivery",
+        "Keep the retargeting delivery owner-led and measure completion.",
+        workspace_id="ws_alpha", evidence="evaluation fixture", tags=["evaluation_fixture"],
+    )
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    conn = os.store.conn
+    conn.execute(
+        "UPDATE decisions SET effective_from=? WHERE id=?", ("2026-01-01T00:00:00+00:00", decision.id)
+    )
+    conn.execute(
+        "INSERT INTO work_events(id,workspace_id,work_item_id,actor_id,action,from_status,to_status,detail,recorded_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("wev_evaluation_outcome", "ws_alpha", "work_demo_retargeting_ads", "act_alpha_admin",
+         "transition", "assigned", "completed", "Retargeting ad set completed after decision", now),
+    )
+    conn.execute(
+        "INSERT INTO feedback_events(id,organization_id,workspace_id,pattern_id,category,raw_feedback,source_type,source_id,recorded_by_person_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("feedback_evaluation_learning", "org_demo", "ws_alpha", None, "delivery",
+         "Retargeting delivery completed cleanly after assigning an owner.", "evaluation", None,
+         "person_demo_owner", now),
+    )
+    conn.commit()
+
+
+def _canonical_refs_resolve(os: CompanyOS, value: Any, workspace_id: str) -> bool:
+    tables = {
+        "fact": "facts", "work_item": "work_items", "risk": "risks", "decision": "decisions",
+        "signal": "signals", "work_event": "work_events", "client_health_snapshot": "client_health_snapshots",
+        "feedback_event": "feedback_events", "performance_insight": "performance_insights",
+    }
+    refs: list[dict[str, Any]] = []
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            ref = node.get("object_ref") or node.get("ref")
+            if isinstance(ref, dict) and ref.get("type") and ref.get("id"):
+                refs.append(ref)
+            for child in node.values(): visit(child)
+        elif isinstance(node, list):
+            for child in node: visit(child)
+    visit(value)
+    if not refs:
+        return False
+    for ref in refs:
+        table = tables.get(str(ref["type"]))
+        if table is None:
+            return False
+        row = os.store.conn.execute(f"SELECT * FROM {table} WHERE id=?", (str(ref["id"]),)).fetchone()
+        if row is None:
+            return False
+        if "workspace_id" in row.keys() and row["workspace_id"] != workspace_id:
+            return False
+    return True
+
+
 def run_intelligence_evaluations() -> dict[str, Any]:
     """Run all built-in checks and return a stable JSON-compatible report."""
     checks: list[dict[str, Any]] = []
     owner_os = _seed()
     try:
+        _seed_decision_learning_fixture(owner_os)
         owner = owner_os.intelligence.workspace(
             "org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin"
         )
         evidence = [item for finding in owner["findings"] for item in finding.get("evidence", [])]
         citations_ok = bool(evidence) and all(
-            item.get("citation") and item.get("object_ref") for item in evidence
+            item.get("citation") and item.get("object_ref")
+            and _canonical_refs_resolve(owner_os, item, "ws_alpha")
+            and (item["citation"].get("source_id") is None or owner_os.store.conn.execute(
+                "SELECT 1 FROM sources WHERE id=? AND workspace_id=?", (item["citation"]["source_id"], "ws_alpha")
+            ).fetchone() is not None)
+            for item in evidence
         )
         checks.append(_case(
             "evidence_citations", citations_ok,
@@ -143,6 +206,36 @@ def run_intelligence_evaluations() -> dict[str, Any]:
             "viewer without an actor binding receives no Brain-source evidence",
         ))
 
+        # A stale graph/evidence watermark must be visible to callers as a
+        # degraded, uncertain read rather than silently presented as current.
+        owner_os.graph_health = {"status": "degraded", "detail": "stale_snapshot"}
+        stale = owner_os.intelligence.workspace(
+            "org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin",
+        )
+        stale_ok = (
+            stale.get("status") == "degraded"
+            and stale.get("uncertainty", {}).get("label") == "medium"
+            and stale.get("degraded_reason")
+            and stale.get("uncertainty", {}).get("reason") == stale.get("degraded_reason")
+        )
+        checks.append(_case("stale_evidence_degraded", stale_ok, "stale evidence watermark is explicit in status and uncertainty"))
+        owner_os.graph_health = {}
+
+        decision_links = owner.get("decision_action_outcome_learning", [])
+        chain_ok = any(
+            link.get("decision", {}).get("id")
+            and link.get("outcomes")
+            and link.get("learnings")
+            and (link.get("evaluation") or {}).get("status") == "validated"
+            for link in decision_links
+        )
+        checks.append(_case("decision_outcome_learning_chain", chain_ok, "fixture decision links to a terminal outcome and learning record"))
+        assumptions_ok = bool(owner.get("recommended_plan", {}).get("constraints")) and all(
+            finding.get("hypotheses") and any(h.get("assumptions") for h in finding.get("hypotheses", []))
+            for finding in owner.get("findings", [])
+        )
+        checks.append(_case("assumptions_visible", assumptions_ok, "findings and plan expose explicit assumptions or constraints"))
+
         profile_ids = [item["id"] for item in owner_os.intelligence_contracts.list_profiles(
             "org_demo", "ws_alpha", "person_demo_owner"
         )]
@@ -154,7 +247,10 @@ def run_intelligence_evaluations() -> dict[str, Any]:
         specialists_ok = (
             len(specialists) == 13
             and len({item.get("specialist_id") for item in specialists}) == 13
-            and all(item.get("profile", {}).get("id") for item in specialists)
+            and {item.get("profile", {}).get("id") for item in specialists} == set(profile_ids)
+            and all(item.get("evidence_for") and item.get("evidence_against") for item in specialists)
+            and all(item.get("assumptions") and item.get("unknowns") for item in specialists)
+            and all(_canonical_refs_resolve(owner_os, item, "ws_alpha") for item in specialists)
         )
         checks.append(_case(
             "orchestrator_profile_fanout", specialists_ok,
@@ -205,22 +301,25 @@ def run_intelligence_evaluations() -> dict[str, Any]:
         # these checks deliberately structural so they remain deterministic
         # across fixture refreshes and provider versions.
         question_checks = {
-            "attention": bool(owner.get("findings") or owner.get("status") in {"insufficient_evidence", "degraded"}),
-            "risk": bool(owner.get("domains", {}).get("risks", {}).get("items") is not None),
-            "change": isinstance(owner.get("context", {}).get("change_count"), int),
-            "overdue": any(term in json.dumps(owner.get("findings", [])).lower() for term in ("overdue", "past its expected date", "past due")),
-            "scope": isinstance(owner.get("domains", {}).get("scope"), dict),
+            "attention": bool(owner.get("findings")),
+            "risk": isinstance(owner.get("domains", {}).get("risks", {}).get("items"), list),
+            "change": isinstance(owner.get("context", {}).get("change_count"), int) and owner["context"]["change_count"] > 0,
+            "overdue": any("overdue" in json.dumps(f).lower() or "past its expected date" in json.dumps(f).lower() for f in owner.get("findings", [])),
+            "scope": isinstance(owner.get("domains", {}).get("scope"), dict) and "usage_count" in owner["domains"]["scope"],
             "slip": any("slip" in json.dumps(f).lower() or "deadline" in json.dumps(f).lower() for f in owner.get("findings", [])),
-            "overload": isinstance(owner.get("domains", {}).get("capacity"), dict),
-            "campaign": isinstance(owner.get("domains", {}).get("campaign_metrics"), dict),
+            "overload": isinstance(owner.get("domains", {}).get("capacity"), dict) and "demand_hours" in owner["domains"]["capacity"],
+            "campaign": isinstance(owner.get("domains", {}).get("campaign_metrics"), dict) and "items" in owner["domains"]["campaign_metrics"],
             "creative_fatigue": "creative" in json.dumps(owner).lower() or "campaign" in json.dumps(owner).lower(),
-            "opportunity": bool(owner.get("recommendations") is not None),
+            "opportunity": isinstance(owner.get("recommendations"), list) and owner.get("recommendations") is not None,
             "analogue": isinstance(owner.get("historical_analogues"), list),
-            "options": bool(owner.get("recommended_plan") is not None),
-            "scenario": isinstance(owner.get("findings", [{}])[0].get("scenarios", []), list) if owner.get("findings") else False,
-            "recommendation": isinstance(owner.get("recommendation_evaluation"), dict),
-            "opposing_evidence": bool(owner.get("opposing_evidence")) or any(f.get("opposing_evidence") for f in owner.get("findings", [])),
-            "confidence": all(0.0 <= float((f.get("confidence") or {}).get("score", 0.0)) <= 1.0 for f in owner.get("findings", [])),
+            "options": bool(owner.get("recommended_plan", {}).get("steps")),
+            "scenario": any(
+                f.get("scenarios") and any(s.get("assumptions") for s in f.get("scenarios", []))
+                for f in owner.get("findings", [])
+            ),
+            "recommendation": isinstance(owner.get("recommendation_evaluation"), dict) and bool(owner["recommendation_evaluation"].get("status")),
+            "opposing_evidence": any(f.get("hypotheses") and any(h.get("opposing_evidence") for h in f.get("hypotheses", [])) for f in owner.get("findings", [])),
+            "confidence": bool(owner.get("findings")) and all(0.0 <= float((f.get("confidence") or {}).get("score", 0.0)) <= 1.0 for f in owner.get("findings", [])),
         }
         for question, passed in question_checks.items():
             checks.append(_case(
@@ -317,7 +416,8 @@ def run_intelligence_evaluations() -> dict[str, Any]:
                 degraded.get("runbook_route", {}).get("status") == "matched"
                 and degraded.get("runbook", {}).get("id") == runbook_id
                 and degraded.get("status") == "degraded"
-                and len(degraded.get("profiles", [])) <= 13
+                and len(degraded.get("profiles", [])) == len(profile_ids_for_runbook)
+                and {item.get("id") for item in degraded.get("profiles", [])} == set(profile_ids_for_runbook)
                 and safe_citations and usable and degraded.get("needs_review") is True,
                 f"{runbook_id}: bounded degraded fallback with citation safety",
             ))

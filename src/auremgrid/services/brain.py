@@ -218,7 +218,12 @@ class CompanyOS:
         self.performance = PerformanceOperations(self.store.conn, new_id, self._require_person_access)
         self.forecasts = ForecastOperations(self.store.conn, new_id, self._require_scope_access)
         self.revenue = RevenueOperations(self.store.conn, new_id, self._require_person_access, self.company)
-        self.retention = RetentionOperations(self.store.conn, new_id, self._require_scope_access)
+        self.retention = RetentionOperations(
+            self.store.conn,
+            new_id,
+            self._require_scope_access,
+            self._evict_deleted_documents_from_live_projections,
+        )
         self.intelligence = IntelligenceService(self)
         self.intelligence_contracts = IntelligenceContractService(self)
         self.intelligence_contracts.seed_defaults()
@@ -242,6 +247,10 @@ class CompanyOS:
             allowlist = {"google": {"https://app.test/callback", "http://localhost:8000/oauth/callback"}}
             self._oauth_service = OAuthConnectorService(self.store.conn, new_id, None, allowlist)
         return self._oauth_service
+
+    def _evict_deleted_documents_from_live_projections(self, document_ids: set[str]) -> None:
+        for document_id in document_ids:
+            self._embeddings.pop(document_id, None)
 
     def scheduler(self, organization_id: str, workspace_id: str | None, worker_id: str, poll_seconds: float = 1.0) -> DurableScheduler:
         return DurableScheduler(self, organization_id, workspace_id, worker_id, poll_seconds)

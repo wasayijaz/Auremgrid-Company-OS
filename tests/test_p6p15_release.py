@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from auremgrid.storage.migrations import MIGRATIONS
 from tests.dashboard_bundle import read_dashboard_bundle
 
 
@@ -67,7 +68,7 @@ class P6P15ReleaseEvidenceTests(unittest.TestCase):
         checklist = ROOT.joinpath("docs", "production-checklist.md").read_text(encoding="utf-8")
         migrations = ROOT.joinpath("src", "auremgrid", "storage", "migrations.py").read_text(encoding="utf-8")
         for document in (self.doc, upgrade, checklist):
-            self.assertIn("58", document)
+            self.assertIn(str(MIGRATIONS[-1].version), document)
             self.assertNotIn("schema 56", document)
         self.assertIn("forward-migration rehearsal", checklist)
         self.assertIn("/health/detailed", checklist)

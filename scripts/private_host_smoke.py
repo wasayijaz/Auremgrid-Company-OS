@@ -105,6 +105,7 @@ def run_smoke(work_dir: Path) -> dict[str, Any]:
     restored = restore_backup(backup_path, restored_path)
     restored_os = CompanyOS(restored_path)
     try:
+        restored_projection = restored_os.rebuild_projections()
         state = dict(restored_os.store.conn.execute("SELECT key,value FROM system_state").fetchall())
         outbound_claims = restored_os.jobs.claim_outbox_events(
             "org_private_host_smoke",
@@ -124,6 +125,7 @@ def run_smoke(work_dir: Path) -> dict[str, Any]:
         "restore_outbound_disabled": restored.get("outbound_dispatch") == "disabled"
         and state.get("outbound_dispatch") == "disabled"
         and outbound_claims == [],
+        "restore_projection_healthy": restored_projection.get("status") == "healthy",
     }
     return {
         "status": "ok" if all(checks.values()) else "failed",
@@ -142,6 +144,7 @@ def run_smoke(work_dir: Path) -> dict[str, Any]:
             "recovery_mode": restored["recovery_mode"],
             "outbound_dispatch": restored["outbound_dispatch"],
             "startup_warnings": restored_warnings,
+            "projection": restored_projection,
         },
     }
 

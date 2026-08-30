@@ -16,6 +16,18 @@ class IntelligenceEvaluationTests(unittest.TestCase):
         self.assertEqual(result["summary"]["passed"], result["summary"]["total"])
         self.assertGreaterEqual(result["summary"]["total"], 7)
 
+    def test_v1_goldens_assert_semantic_evidence_contracts(self):
+        result = run_intelligence_evaluations()
+        checks = {item["name"]: item for item in result["checks"]}
+        for name in (
+            "evidence_citations", "acl_evidence_scope", "stale_evidence_degraded",
+            "decision_outcome_learning_chain", "assumptions_visible",
+            "orchestrator_profile_fanout", "runbook_evaluation_no_canonical_writes",
+        ):
+            self.assertIn(name, checks)
+            self.assertTrue(checks[name]["passed"], checks[name]["detail"])
+        self.assertGreaterEqual(sum(name.startswith("runbook_") for name in checks), 12)
+
     def test_cli_returns_json_and_success(self):
         output = io.StringIO()
         with redirect_stdout(output):
@@ -28,4 +40,3 @@ class IntelligenceEvaluationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

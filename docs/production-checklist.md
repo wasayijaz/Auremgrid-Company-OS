@@ -44,8 +44,8 @@ Auremgrid runs as a local-first Python process with SQLite. This checklist cover
 ## Monitoring
 
 - [ ] Poll `/health` from an external monitor (uptime check)
-- [ ] Check that `/health` or `/health/detailed` reports schema version 58 for this release line, or the later schema version shipped by the artifact being deployed
-- [ ] Before production cutover, run a forward-migration rehearsal on a copy of the database and verify `/health/detailed` reports schema version 58 for this release line
+- [ ] Check that `/health` or `/health/detailed` reports schema version 59 for this release line, or the later schema version shipped by the artifact being deployed
+- [ ] Before production cutover, run a forward-migration rehearsal on a copy of the database and verify `/health/detailed` reports schema version 59 for this release line
 - [ ] Alert on process crashes, backup failures, or recovery mode activation
 
 ## Secrets

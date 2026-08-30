@@ -18,6 +18,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -34,6 +36,8 @@ jobs:
         run: python -m auremgrid.cli evaluate-intelligence
       - name: Run Python private-host smoke rehearsal
         run: python scripts/private_host_smoke.py
+      - name: Rehearse forward schema migration
+        run: python scripts/forward_migration_rehearsal.py
       - name: Run single-host performance baseline
         run: python scripts/performance_baseline.py
       - name: Run attribution guard contract
@@ -41,8 +45,15 @@ jobs:
         run: ./scripts/test-git-guard.ps1
       - name: Run verification suite
         run: python -m unittest discover -s tests -v
-      - name: Check git diff
-        run: git diff --check
+      - name: Check changed files for whitespace errors
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --check "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            git diff-tree --check --no-commit-id -r "${{ github.sha }}"
+          else
+            git diff --check "${{ github.event.before }}" "${{ github.sha }}"
+          fi
   dashboard-browser:
     runs-on: ubuntu-latest
     timeout-minutes: 15
