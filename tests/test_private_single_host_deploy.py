@@ -108,6 +108,7 @@ class PrivateSingleHostDeployTests(unittest.TestCase):
             "auremgrid.cli",
             "evaluate-intelligence",
             "scripts/private_host_smoke.py",
+            "scripts/performance_baseline.py",
             "unittest",
             "git\", \"diff\", \"--check",
             "git\", \"status\", \"--porcelain",

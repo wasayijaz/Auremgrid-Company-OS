@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from auremgrid.connectors.clickup import ClickUpConnector
+from auremgrid.connectors.catalog import TARGET_CONNECTORS
 from auremgrid.connectors.gmail import GmailConnector, GmailMappingOverlap
 from auremgrid.connectors.google_auth import (
     ConnectorInboxRepository,
@@ -38,6 +39,9 @@ CONFIGURABLE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail", "
 # Google live synchronization is enabled only after the durable routing,
 # account, backfill, reconciliation, and quarantine gates in this branch.
 LIVE_SOURCES = frozenset({"slack", "clickup", "google_drive", "gmail", "figma", "fireflies"})
+# Keep provider capability truth in one place. Integration rows carry mutable
+# connection state; this immutable catalog map supplies the boundary label.
+BOUNDARY_STATUSES = {item.source: item.boundary_status for item in TARGET_CONNECTORS}
 
 
 def _now() -> str:
@@ -129,6 +133,7 @@ class IntegrationOperations:
         item["permissions"] = json.loads(item["permissions"])
         item["granted_permissions"] = json.loads(item.get("granted_permissions") or "[]")
         item["live_enabled"] = item["source"] in LIVE_SOURCES
+        item["boundary_status"] = BOUNDARY_STATUSES.get(item["source"], "NOT IMPLEMENTED")
         if identity.workspace_id is not None and set(item["workspace_mappings"].values()) != {identity.workspace_id}:
             raise AuthorizationError("integration is outside the credential workspace scope")
         item["credential"] = self._credential_metadata(integration_id)

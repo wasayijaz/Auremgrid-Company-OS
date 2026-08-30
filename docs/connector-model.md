@@ -19,9 +19,10 @@ record. Figma does not ingest comments, model review or approval workflows, or a
 deliverables, reviews, or tasks. Fireflies requires exactly one `account:<id>`
 mapping to one workspace and the `transcripts:read` scope; it polls transcripts
 by a durable date cursor and ingests one bounded, sanitized transcript event
-per meeting. GitHub, Meta Ads, Google Ads, and
-finance providers remain disabled catalog entries and have no live adapter or
-integration wiring. Connectors never own organization identity, permissions,
+per meeting. Meta Ads, Google Ads, Stripe/accounting, and CRM are cataloged as
+`IMPORT ONLY` read adapters, while GitHub is `DISABLED`; none are live
+connector installations. The catalog boundary is independent from an
+installation's operational connection status. Connectors never own organization identity, permissions,
 canonical work state, approvals, or financial truth.
 
 The repository includes local Markdown and simulated source connectors for

@@ -67,6 +67,21 @@ class GoogleIntegrationContractTests(unittest.TestCase):
         self.assertTrue(catalog["google_drive"]["live_enabled"])
         self.assertTrue(catalog["gmail"]["live_enabled"])
 
+    def test_integration_rows_expose_catalog_boundary_separately_from_connection_status(self) -> None:
+        live = self.os.integrations.configure(
+            self.identity, "gmail", "owner@example.test", {"label:INBOX": self.ws.id}, [GMAIL_READ_SCOPE]
+        )
+        self.assertEqual(live["status"], "not_connected")
+        self.assertEqual(live["boundary_status"], "LIVE READ")
+        self.os.store.conn.execute(
+            "INSERT INTO integrations(id,organization_id,source,status,workspace_mappings,permissions,object_count,health,created_at) VALUES(?,?,?,?,?,?,0,?,datetime('now'))",
+            ("legacy-import", self.org.id, "meta_ads", "not_connected", '{"acct":"%s"}' % self.ws.id, '["ads_read"]', "never_synced"),
+        )
+        self.os.store.conn.commit()
+        rows = {row["source"]: row for row in self.os.integrations.list(self.identity)}
+        self.assertEqual(rows["meta_ads"]["boundary_status"], "IMPORT ONLY")
+        self.assertFalse(rows["meta_ads"]["live_enabled"])
+
     def test_google_mapping_contract_rejects_unbounded_or_ambiguous_keys(self) -> None:
         with self.assertRaisesRegex(ValidationError, "folder:<id>"):
             self.os.integrations.configure(

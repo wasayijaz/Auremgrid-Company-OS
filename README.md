@@ -315,6 +315,18 @@ Implemented worker paths include connector sync, proactive Intelligence refresh,
 
 Auremgrid stores provider configuration, expected account identity, granted scopes, workspace mappings, cursor state, sync health, credential fingerprints, quarantine details, and ingest batches. Secrets are referenced externally, usually as `env:UPPER_CASE_NAME`, and resolved only inside authorized execution.
 
+The connector catalog exposes a separate `boundary_status` so an operational
+connection state (`not_connected`, `authorized`, or `connected`) cannot be
+mistaken for provider capability:
+
+| Boundary status | Providers |
+|---|---|
+| `LIVE READ` | Slack, ClickUp, Google Drive, Gmail, Figma (exact files), Fireflies (single account) |
+| `IMPORT ONLY` | Stripe Billing/accounting, Meta Ads, Google Ads, CRM |
+| `DISABLED` | GitHub and other catalog-only providers |
+| `WEBHOOK RECEIPT ONLY` | Public provider webhook endpoint (disabled until explicitly enabled) |
+| `WRITE CAPABLE` | None in the packaged repository |
+
 Implemented live read sync paths:
 
 | Provider | Supported read boundary |
