@@ -27,7 +27,7 @@ from typing import Any, Callable
 # the source tree wins for direct, copy-paste execution.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from auremgrid.domain.security import AuthenticatedIdentity, role_capabilities
+from auremgrid.domain.security import AuthenticatedIdentity
 from auremgrid.services.brain import CompanyOS
 from auremgrid.storage.backup import create_backup, verify_backup
 
