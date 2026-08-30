@@ -476,9 +476,9 @@ The browser harness starts an isolated local server, seeds realistic agency work
 
 The authoritative implementation-evidence matrix is [Release verification](docs/release-verification.md). It maps requirements to tests, migrations, dashboard gates, connector safety checks, recovery checks, and release discipline.
 
-## What Is Implemented Vs Optional Vs Planned
+## Capability Status
 
-Implemented locally:
+IMPLEMENTED:
 
 - Organization/workspace identity and capability checks.
 - Local sessions, API tokens, admin invites, revocation, and actor bindings.
@@ -494,7 +494,7 @@ Implemented locally:
 - Durable jobs, connector inbox/dedupe, cursor fencing, retries, dead letters, recovery mode.
 - Local dashboard, REST API, MCP-style router, CLI, tests, synthetic fixtures, and private-host templates.
 
-Provider-configured or optional:
+OPTIONAL:
 
 - Slack, ClickUp, Google Drive, Gmail, Figma exact-file, and Fireflies single-account read sync after operator-supplied secrets, mappings, verification, and worker execution.
 - Local SentenceTransformers semantic projection with an already-present model directory.
@@ -504,7 +504,7 @@ Provider-configured or optional:
 - Disabled webhook receipt boundary when explicitly enabled and configured.
 - Injected read-only Stripe Billing/accounting, Meta Ads, Google Ads, and CRM import adapters.
 
-External, not packaged, or planned:
+OUT OF SCOPE:
 
 - Hosted multi-tenant service.
 - Public signup, public invite acceptance, password reset, or email-based login recovery.
@@ -539,6 +539,7 @@ External, not packaged, or planned:
 - [Local deployment](docs/local-deployment.md)
 - [Production checklist](docs/production-checklist.md)
 - [Release verification](docs/release-verification.md)
+- [V1.x and V2 backlog](docs/v1x-v2-backlog.md)
 - [Upgrade guide](docs/upgrade-guide.md)
 - [AutoGPT adoption decision](docs/autogpt-adoption.md)
 

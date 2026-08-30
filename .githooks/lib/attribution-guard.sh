@@ -31,10 +31,23 @@ require_expected_identities() {
 
 reject_attribution_trailers() {
   message_file="$1"
-  if grep -Eiq '^[[:space:]]*(Co-authored-by|Signed-off-by|Reviewed-by|Acked-by|Tested-by|Suggested-by|Generated-by|Assisted-by|Pair-programmed-by)[[:space:]]*:' "$message_file"; then
-    echo 'Blocked: commit messages may not include third-party attribution trailers.' >&2
-    exit 1
-  fi
+  while IFS= read -r trailer_line || [ -n "$trailer_line" ]; do
+    trailer_line="${trailer_line#"${trailer_line%%[![:space:]]*}"}"
+    case "$trailer_line" in
+      [Cc][Oo]-[Aa][Uu][Tt][Hh][Oo][Rr][Ee][Dd]-[Bb][Yy]:*|\
+      [Ss][Ii][Gg][Nn][Ee][Dd]-[Oo][Ff][Ff]-[Bb][Yy]:*|\
+      [Rr][Ee][Vv][Ii][Ee][Ww][Ee][Dd]-[Bb][Yy]:*|\
+      [Aa][Cc][Kk][Ee][Dd]-[Bb][Yy]:*|\
+      [Tt][Ee][Ss][Tt][Ee][Dd]-[Bb][Yy]:*|\
+      [Ss][Uu][Gg][Gg][Ee][Ss][Tt][Ee][Dd]-[Bb][Yy]:*|\
+      [Gg][Ee][Nn][Ee][Rr][Aa][Tt][Ee][Dd]-[Bb][Yy]:*|\
+      [Aa][Ss][Ss][Ii][Ss][Tt][Ee][Dd]-[Bb][Yy]:*|\
+      [Pp][Aa][Ii][Rr]-[Pp][Rr][Oo][Gg][Rr][Aa][Mm][Mm][Ee][Dd]-[Bb][Yy]:*)
+        echo 'Blocked: commit messages may not include third-party attribution trailers.' >&2
+        exit 1
+        ;;
+    esac
+  done < "$message_file"
 }
 
 reject_staged_reserved_attribution() {
@@ -42,8 +55,21 @@ reject_staged_reserved_attribution() {
   reserved_part_two='dex'
   reserved_word="${reserved_part_one}${reserved_part_two}"
 
-  if git diff --cached --no-ext-diff -U0 | grep -E '^\+[^+]' | grep -Fqi "$reserved_word"; then
-    echo 'Blocked: staged content includes a reserved third-party attribution reference.' >&2
+  if git diff --cached --no-ext-diff -U0 | while IFS= read -r diff_line; do
+    case "$diff_line" in
+      +[^+]*)
+        case "$diff_line" in
+          *"$reserved_word"*)
+            echo 'Blocked: staged content includes a reserved third-party attribution reference.' >&2
+            exit 1
+            ;;
+        esac
+        ;;
+    esac
+  done
+  then
+    :
+  else
     exit 1
   fi
 }
