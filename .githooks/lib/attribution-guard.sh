@@ -5,7 +5,11 @@ expected_email='auremgrid@users.noreply.github.com'
 
 require_expected_identity() {
   identity_kind="$1"
-  identity_label="$(printf '%s' "$identity_kind" | tr '[:upper:]' '[:lower:]')"
+  case "$identity_kind" in
+    AUTHOR) identity_label='author' ;;
+    COMMITTER) identity_label='committer' ;;
+    *) identity_label="$identity_kind" ;;
+  esac
   identity_value="$(git var "GIT_${identity_kind}_IDENT" 2>/dev/null)" || {
     echo "Unable to read Git $identity_label identity." >&2
     exit 1

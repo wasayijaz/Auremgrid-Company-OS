@@ -140,6 +140,13 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM campaign_metric_snapshots WHERE campaign_id='c1'").fetchone()[0], 0)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM campaign_metric_snapshots WHERE organization_id=? AND workspace_id=?", (self.org, self.ws)).fetchone()[0], 0)
 
+    def test_creative_asset_deletion_removes_owned_performance(self):
+        self.conn.execute("INSERT INTO creative_assets VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("a1", self.org, self.ws, None, None, "A", "meta", "image", None, None, None, "draft", None, None, None, 0, "[]", "t"))
+        self.conn.execute("INSERT INTO creative_performance VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", ("perf1", "a1", None, "2026-08-31", None, None, None, None, None, None, None, None, "fixture"))
+        self.retention.execute_deletion(self.org, self.person, "creative_assets", ["a1"], "expired")
+        self.assertIsNone(self.conn.execute("SELECT * FROM creative_assets WHERE id='a1'").fetchone())
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM creative_performance WHERE asset_id='a1'").fetchone()[0], 0)
+
     def test_execute_deletion_rejects_invalid_table(self):
         with self.assertRaises(ValidationError): self.retention.execute_deletion(self.org, self.person, "organizations", ["x"], "x")
 

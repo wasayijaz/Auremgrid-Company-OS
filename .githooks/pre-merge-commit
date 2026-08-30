@@ -1,5 +1,10 @@
 #!/bin/sh
 set -eu
 
-. "$(dirname "$0")/lib/attribution-guard.sh"
+hook_dir=${0%/*}
+if [ "$hook_dir" = "$0" ]; then
+  hook_dir=.
+fi
+
+. "$hook_dir/lib/attribution-guard.sh"
 require_expected_identities

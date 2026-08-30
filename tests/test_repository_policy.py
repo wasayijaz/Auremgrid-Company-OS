@@ -43,6 +43,34 @@ def _repository_files() -> list[Path]:
 
 
 class RepositoryPolicyTests(unittest.TestCase):
+    def test_git_hooks_do_not_depend_on_nonportable_path_or_case_tools(self) -> None:
+        hook_paths = [
+            ROOT.joinpath(".githooks", "pre-commit"),
+            ROOT.joinpath(".githooks", "commit-msg"),
+            ROOT.joinpath(".githooks", "pre-merge-commit"),
+        ]
+        for path in hook_paths:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("${0%/*}", text, path.as_posix())
+            self.assertNotIn("dirname", text, path.as_posix())
+
+        library = ROOT.joinpath(".githooks", "lib", "attribution-guard.sh").read_text(encoding="utf-8")
+        self.assertIn('case "$identity_kind" in', library)
+        self.assertNotIn("| tr ", library)
+        self.assertNotIn(" tr '", library)
+
+    def test_ci_runs_deterministic_non_browser_contracts(self) -> None:
+        workflow = ROOT.joinpath(".github", "workflows", "ci.yml").read_text(encoding="utf-8")
+        for marker in (
+            "python -m auremgrid.cli evaluate-intelligence",
+            "python scripts/private_host_smoke.py",
+            "./scripts/test-git-guard.ps1",
+        ):
+            self.assertIn(marker, workflow)
+        self.assertIn("pip install -e .", workflow)
+        self.assertNotIn(".[browser]", workflow)
+        self.assertNotIn("playwright install", workflow.lower())
+
     def test_retired_source_labels_are_absent_from_current_tree(self) -> None:
         findings: list[str] = []
         labels = tuple(label.casefold().encode("utf-8") for label in _RETIRED_LABELS)

@@ -88,6 +88,13 @@ class RetentionOperations:
                     "DELETE FROM campaign_metric_snapshots WHERE organization_id=? AND campaign_id=?",
                     (organization_id, rid),
                 )
+            elif table_name == "creative_assets":
+                # Creative performance is asset-owned evidence. Remove it with the
+                # asset so lifecycle deletion cannot leave orphaned metrics behind.
+                self.conn.execute(
+                    "DELETE FROM creative_performance WHERE asset_id=?",
+                    (rid,),
+                )
             self.conn.execute(f"DELETE FROM {table_name} WHERE id=? AND organization_id=?", (rid, organization_id))
             deleted.append({"id": rid, "audit_id": audit_id})
         self.conn.commit()

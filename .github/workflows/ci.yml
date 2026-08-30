@@ -28,6 +28,13 @@ jobs:
         run: python -m compileall -q src tests
       - name: Validate import structure
         run: python -c "import auremgrid.storage; import auremgrid.domain; import auremgrid.services; import auremgrid.api; import auremgrid.connectors; import auremgrid.adapters"
+      - name: Run intelligence evaluation contract
+        run: python -m auremgrid.cli evaluate-intelligence
+      - name: Run Python private-host smoke rehearsal
+        run: python scripts/private_host_smoke.py
+      - name: Run attribution guard contract
+        shell: pwsh
+        run: ./scripts/test-git-guard.ps1
       - name: Run verification suite
         run: python -m unittest discover -s tests -v
       - name: Check git diff
