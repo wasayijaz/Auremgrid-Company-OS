@@ -18,11 +18,20 @@ CREATE TABLE performance_insights (id TEXT PRIMARY KEY, organization_id TEXT, wo
 CREATE TABLE forecasts (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, forecast_type TEXT, subject_id TEXT, period_start TEXT, period_end TEXT, predicted_value REAL, confidence REAL, basis TEXT, data_points INTEGER, status TEXT, created_at TEXT);
 CREATE TABLE retention_policies (id TEXT PRIMARY KEY, organization_id TEXT, scope TEXT, scope_id TEXT, data_category TEXT, max_age_days INTEGER, action TEXT, created_by_person_id TEXT, created_at TEXT);
 CREATE TABLE deletion_audit (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, table_name TEXT, record_id TEXT, reason TEXT, initiated_by TEXT, retention_policy_id TEXT, snapshot_json TEXT, deleted_at TEXT);
+CREATE TABLE sources (id TEXT PRIMARY KEY, workspace_id TEXT, source_key TEXT, locator TEXT, content_hash TEXT, media_type TEXT, trust_level TEXT, allowed_actor_ids TEXT, observed_at TEXT, recorded_at TEXT, version INTEGER);
 CREATE TABLE campaigns (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, name TEXT, objective TEXT, platform TEXT, budget REAL, currency TEXT, start_date TEXT, end_date TEXT, status TEXT, owner_person_id TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE creative_assets (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, project_id TEXT, campaign_id TEXT, title TEXT, platform TEXT, format TEXT, dimensions TEXT, creator_person_id TEXT, reviewer_person_id TEXT, approval_state TEXT, source_url TEXT, final_url TEXT, thumbnail_url TEXT, revision_count INTEGER, style_tags TEXT, created_at TEXT);
 CREATE TABLE creative_performance (id TEXT PRIMARY KEY, asset_id TEXT, campaign_id TEXT, captured_at TEXT, impressions REAL, clicks REAL, conversions REAL, spend REAL, revenue REAL, ctr REAL, cvr REAL, roas REAL, source TEXT);
 CREATE TABLE campaign_metric_snapshots (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, campaign_id TEXT, captured_at TEXT, metric_name TEXT, metric_value REAL, spend REAL, revenue REAL, leads REAL, impressions REAL, clicks REAL, cpl REAL, cac REAL, ctr REAL, cvr REAL, roas REAL, source TEXT);
 CREATE TABLE revenues (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, project_id TEXT, amount REAL, currency TEXT, kind TEXT, recognized_at TEXT, source TEXT);
+CREATE TABLE invoices (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, external_id TEXT, amount REAL, currency TEXT, status TEXT, issued_at TEXT, due_at TEXT, paid_at TEXT, source TEXT);
+CREATE TABLE payments (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, invoice_id TEXT, amount REAL, currency TEXT, received_at TEXT, source TEXT);
+CREATE TABLE costs (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, amount REAL, currency TEXT, category TEXT, incurred_at TEXT, source TEXT);
+CREATE TABLE budgets (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, project_id TEXT, amount REAL, currency TEXT, period_start TEXT, period_end TEXT);
+CREATE TABLE expenses (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, amount REAL, currency TEXT, category TEXT, incurred_at TEXT, description TEXT, source TEXT);
+CREATE TABLE software_costs (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, vendor TEXT, amount REAL, currency TEXT, period_start TEXT, source TEXT);
+CREATE TABLE ai_usage_costs (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, agent_id TEXT, provider TEXT, model TEXT, tokens INTEGER, amount REAL, currency TEXT, occurred_at TEXT, source TEXT);
+CREATE TABLE client_economics (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, period_start TEXT, revenue REAL, labor_cost REAL, software_cost REAL, ai_cost REAL, other_cost REAL, gross_contribution REAL, margin REAL, calculated_at TEXT);
 CREATE TABLE contracts (id TEXT PRIMARY KEY, organization_id TEXT, client_id TEXT, end_date TEXT, status TEXT);
 CREATE TABLE capacity_snapshots (id TEXT PRIMARY KEY, organization_id TEXT, person_id TEXT, week_start TEXT, available_hours REAL, estimated_assigned_hours REAL, booked_hours REAL, remaining_hours REAL, overloaded INTEGER, calculated_at TEXT, captured_at TEXT, utilized_hours REAL, utilization_pct REAL);
 CREATE TABLE projects (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, name TEXT);
@@ -30,7 +39,11 @@ CREATE TABLE deliverables (id TEXT PRIMARY KEY, organization_id TEXT, workspace_
 CREATE TABLE work_items (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, title TEXT);
 CREATE TABLE content_performance (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT);
 CREATE TABLE meetings (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT);
-CREATE TABLE documents (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT);
+CREATE TABLE documents (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, source_id TEXT, content_hash TEXT);
+CREATE TABLE reviews (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, deliverable_id TEXT, version INTEGER, kind TEXT, status TEXT, reviewer_person_id TEXT, opened_at TEXT, closed_at TEXT, decision TEXT);
+CREATE TABLE decisions (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, project_id TEXT, campaign_id TEXT, statement TEXT, rationale TEXT, decided_by_person_id TEXT, participant_person_ids TEXT, source_id TEXT, source_locator TEXT, evidence TEXT, created_at TEXT, effective_from TEXT, effective_until TEXT, superseded_by TEXT, tags TEXT, affected_entities TEXT);
+CREATE TABLE api_tokens (id TEXT PRIMARY KEY, principal_id TEXT, name TEXT, token_hash TEXT, scopes TEXT, created_at TEXT, expires_at TEXT, revoked_at TEXT, last_used_at TEXT);
+CREATE TABLE secret_bindings (id TEXT PRIMARY KEY, organization_id TEXT, workspace_id TEXT, integration_id TEXT, name TEXT, provider TEXT, reference TEXT, scopes TEXT, fingerprint TEXT, status TEXT, last_verified_at TEXT, created_at TEXT, updated_at TEXT, revoked_at TEXT, generation INTEGER);
 """
 
 
@@ -154,6 +167,45 @@ class ServiceTests(unittest.TestCase):
         self.conn.execute("INSERT INTO projects VALUES (?,?,?,?)", ("p", self.org, self.ws, "Project")); self.conn.commit()
         data = self.retention.export_workspace(self.org, self.ws, self.person)
         self.assertIn("projects", data); self.assertEqual(data["_meta"]["workspace_id"], self.ws)
+
+    def test_export_workspace_includes_direct_scoped_records_and_omits_sensitive_data(self):
+        other_ws = "ws2"
+        fixtures = (
+            ("sources", ("src1", self.ws, "brief", "memory://brief", "source-hash", "text/markdown", "high", "[]", "2026-08-31", "2026-08-31", 1)),
+            ("documents", ("doc1", self.org, self.ws, "src1", "document-hash")),
+            ("reviews", ("review1", self.org, self.ws, "d1", 1, "client", "open", self.person, "2026-08-31", None, None)),
+            ("decisions", ("decision1", self.org, self.ws, None, None, "Approved offer", "Evidence-backed", self.person, "[]", "src1", "L1", "quote", "2026-08-31", "2026-08-31", None, None, "[]", "[]")),
+            ("revenues", ("rev1", self.org, self.ws, None, 100.0, "USD", "retainer", "2026-08-31", "fixture")),
+            ("invoices", ("invoice1", self.org, self.ws, "ext-invoice", 100.0, "USD", "sent", "2026-08-31", "2026-09-30", None, "fixture")),
+            ("payments", ("payment1", self.org, self.ws, "invoice1", 100.0, "USD", "2026-09-01", "fixture")),
+            ("costs", ("cost1", self.org, self.ws, 15.0, "USD", "labor", "2026-08-31", "fixture")),
+            ("budgets", ("budget1", self.org, self.ws, None, 500.0, "USD", "2026-08-01", "2026-08-31")),
+            ("expenses", ("expense1", self.org, self.ws, 12.0, "USD", "media", "2026-08-31", "Ad spend", "fixture")),
+            ("software_costs", ("software1", self.org, self.ws, "Tool", 9.0, "USD", "2026-08-01", "fixture")),
+            ("ai_usage_costs", ("ai1", self.org, self.ws, "agent1", "provider", "model", 100, 1.0, "USD", "2026-08-31", "fixture")),
+            ("client_economics", ("economics1", self.org, self.ws, "2026-08-01", 100.0, 20.0, 9.0, 1.0, 5.0, 65.0, 0.65, "2026-08-31")),
+        )
+        for table, values in fixtures:
+            placeholders = ",".join("?" for _ in values)
+            self.conn.execute(f"INSERT INTO {table} VALUES ({placeholders})", values)
+        self.conn.execute("INSERT INTO projects VALUES (?,?,?,?)", ("other-project", self.org, other_ws, "Other"))
+        self.conn.execute("INSERT INTO sources VALUES (?,?,?,?,?,?,?,?,?,?,?)", ("other-source", other_ws, "brief", "memory://other", "other-hash", "text/markdown", "high", "[]", "2026-08-31", "2026-08-31", 1))
+        self.conn.execute("INSERT INTO api_tokens VALUES (?,?,?,?,?,?,?,?,?)", ("tok1", "principal1", "API", "raw-token-hash", "[]", "2026-08-31", None, None, None))
+        self.conn.execute("INSERT INTO secret_bindings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("sec1", self.org, self.ws, "int1", "oauth", "google", "vault-ref", "[]", "secret-fingerprint", "active", None, "2026-08-31", "2026-08-31", None, 1))
+        self.conn.commit()
+
+        data = self.retention.export_workspace(self.org, self.ws, self.person)
+
+        for table, values in fixtures:
+            self.assertEqual(data[table][0]["id"], values[0])
+        self.assertNotIn("other-project", str(data))
+        self.assertNotIn("other-source", str(data))
+        self.assertNotIn("api_tokens", data)
+        self.assertNotIn("secret_bindings", data)
+        self.assertNotIn("raw-token-hash", str(data))
+        self.assertNotIn("vault-ref", str(data))
+        self.assertEqual(data["sources"][0]["content_hash"], "[REDACTED]")
+        self.assertEqual(data["documents"][0]["content_hash"], "[REDACTED]")
 
 
 if __name__ == "__main__": unittest.main()

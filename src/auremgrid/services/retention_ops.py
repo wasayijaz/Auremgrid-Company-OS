@@ -31,6 +31,32 @@ DELETABLE_TABLES = frozenset({
     "documents",
 })
 
+SENSITIVE_EXPORT_TABLES = frozenset({
+    "api_tokens",
+    "auth_invites",
+    "auth_principals",
+    "auth_sessions",
+    "local_secret_vault",
+    "oauth_states",
+    "principal_actor_bindings",
+    "secret_bindings",
+    "system_state",
+})
+
+SENSITIVE_EXPORT_COLUMN_MARKERS = (
+    "ciphertext",
+    "credential",
+    "fingerprint",
+    "hash",
+    "idempotency_key",
+    "lease_owner",
+    "lease_token",
+    "reference",
+    "reservation_token",
+    "secret",
+    "token",
+)
+
 
 class RetentionOperations:
     def __init__(self, conn: Any, new_id: Callable[[str], str], authorize: Callable[..., Any]) -> None:
@@ -102,16 +128,49 @@ class RetentionOperations:
 
     def export_workspace(self, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any]:
         self.authorize(organization_id, workspace_id, person_id)
-        tables = ["projects", "deliverables", "work_items", "campaigns", "creative_assets",
-            "campaign_metric_snapshots", "creative_performance", "content_performance",
-            "feedback_patterns", "feedback_events", "performance_insights"]
         data: dict[str, list[dict[str, Any]]] = {}
-        for table in tables:
-            try:
-                rows = self.conn.execute(f"SELECT * FROM {table} WHERE workspace_id=?", (workspace_id,)).fetchall()
-                if rows:
-                    data[table] = [dict(r) for r in rows]
-            except Exception:
+        table_columns = self._table_columns()
+        for table, columns in table_columns.items():
+            if table in SENSITIVE_EXPORT_TABLES or "workspace_id" not in columns:
                 continue
-        data["_meta"] = {"organization_id": organization_id, "workspace_id": workspace_id, "exported_at": _now().isoformat()}
+            rows = self.conn.execute(
+                f"SELECT * FROM {table} WHERE workspace_id=? ORDER BY {self._order_by(table, columns)}",
+                (workspace_id,),
+            ).fetchall()
+            if rows:
+                data[table] = [self._export_row(row) for row in rows]
+        data["_meta"] = {
+            "organization_id": organization_id,
+            "workspace_id": workspace_id,
+            "exported_at": _now().isoformat(),
+            "redacted_columns": sorted(SENSITIVE_EXPORT_COLUMN_MARKERS),
+            "omitted_tables": sorted(SENSITIVE_EXPORT_TABLES),
+        }
         return data
+
+    def _table_columns(self) -> dict[str, set[str]]:
+        rows = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%'"
+        ).fetchall()
+        tables: dict[str, set[str]] = {}
+        for row in rows:
+            table = row["name"]
+            tables[table] = {column[1] for column in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        return tables
+
+    def _order_by(self, table: str, columns: set[str]) -> str:
+        if "created_at" in columns and "id" in columns:
+            return "created_at,id"
+        if "recorded_at" in columns and "id" in columns:
+            return "recorded_at,id"
+        if "id" in columns:
+            return "id"
+        return ",".join(sorted(columns))
+
+    def _export_row(self, row: Any) -> dict[str, Any]:
+        exported = dict(row)
+        for column in list(exported):
+            lowered = column.lower()
+            if any(marker in lowered for marker in SENSITIVE_EXPORT_COLUMN_MARKERS):
+                exported[column] = "[REDACTED]"
+        return exported
