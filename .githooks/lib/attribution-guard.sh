@@ -57,7 +57,7 @@ reject_staged_reserved_attribution() {
 
   if git diff --cached --no-ext-diff -U0 | while IFS= read -r diff_line; do
     case "$diff_line" in
-      +[^+]*)
+      +[!+]*)
         case "$diff_line" in
           *"$reserved_word"*)
             echo 'Blocked: staged content includes a reserved third-party attribution reference.' >&2
