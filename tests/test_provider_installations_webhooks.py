@@ -77,6 +77,8 @@ class ProviderInstallationWebhookTests(unittest.TestCase):
         with self.assertRaises(AuthorizationError):
             self.webhooks.receive(self.identity, install["id"], body, "sha256=bad", provider_event_id="evt-bad")
         status = McpToolRouter(self.os, self.identity).call("provider.webhooks.status", {"organization_id": self.org.id})
+        self.assertEqual(status["boundary_status"], "WEBHOOK RECEIPT ONLY")
+        self.assertFalse(status["enabled"])
         self.assertEqual(status["events"][0]["provider_event_id"], "evt-status")
         self.assertEqual(status["quarantines"][0]["reason"], "signature_rejected")
         self.assertNotIn("signature_digest", json.dumps(status))
