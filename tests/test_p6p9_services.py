@@ -136,6 +136,11 @@ class ServiceTests(unittest.TestCase):
         self.retention.create_policy(self.org, self.person, "workspace", "feedback", 30, "delete", self.ws)
         self.assertEqual(len(self.retention.list_policies(self.org, self.person, "workspace")), 1)
 
+    def test_create_policy_rejects_unsupported_archive_and_redact_actions(self):
+        for action in ("archive", "redact"):
+            with self.assertRaises(ValidationError):
+                self.retention.create_policy(self.org, self.person, "workspace", "feedback", 30, action, self.ws)
+
     def test_execute_deletion_scoped(self):
         self.conn.execute("INSERT INTO campaigns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("c1", self.org, self.ws, "N", "O", "x", 1, "USD", None, None, "active", None, "t", "t"))
         out = self.retention.execute_deletion(self.org, self.person, "campaigns", ["c1"], "expired")
@@ -159,6 +164,24 @@ class ServiceTests(unittest.TestCase):
         self.retention.execute_deletion(self.org, self.person, "creative_assets", ["a1"], "expired")
         self.assertIsNone(self.conn.execute("SELECT * FROM creative_assets WHERE id='a1'").fetchone())
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM creative_performance WHERE asset_id='a1'").fetchone()[0], 0)
+
+    def test_document_deletion_uses_workspace_scope_and_redacts_audit_snapshot(self):
+        self.conn.execute("CREATE TABLE workspace_organization (workspace_id TEXT PRIMARY KEY, organization_id TEXT, kind TEXT)")
+        self.conn.execute("CREATE VIRTUAL TABLE documents_fts USING fts5(document_id UNINDEXED, workspace_id UNINDEXED, content)")
+        self.conn.execute("INSERT INTO workspace_organization VALUES (?,?,?)", (self.ws, self.org, "client"))
+        self.conn.execute("INSERT INTO sources VALUES (?,?,?,?,?,?,?,?,?,?,?)", ("src1", self.ws, "brief", "memory://secret", "source-hash", "text/plain", "high", "[]", "2026-08-31", "2026-08-31", 1))
+        self.conn.execute("INSERT INTO documents VALUES (?,?,?,?,?)", ("doc1", self.org, self.ws, "src1", "document-hash"))
+        self.conn.execute("INSERT INTO documents_fts VALUES (?,?,?)", ("doc1", self.ws, "Sensitive deletion phrase"))
+
+        out = self.retention.execute_deletion(self.org, self.person, "documents", ["doc1"], "expired")
+
+        self.assertEqual(out["count"], 1)
+        self.assertIsNone(self.conn.execute("SELECT * FROM documents WHERE id='doc1'").fetchone())
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM documents_fts WHERE document_id='doc1'").fetchone()[0], 0)
+        audit = self.conn.execute("SELECT * FROM deletion_audit WHERE record_id='doc1'").fetchone()
+        self.assertEqual(audit["workspace_id"], self.ws)
+        self.assertNotIn("Sensitive deletion phrase", audit["snapshot_json"])
+        self.assertIn('"content_hash":"[REDACTED]"', audit["snapshot_json"])
 
     def test_execute_deletion_rejects_invalid_table(self):
         with self.assertRaises(ValidationError): self.retention.execute_deletion(self.org, self.person, "organizations", ["x"], "x")

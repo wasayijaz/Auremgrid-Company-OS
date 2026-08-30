@@ -320,6 +320,32 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
         self.assertEqual(result["context_budget"]["status"], "overflow")
         self.assertTrue(any(event["stage"] == "context_budget" for event in result["trace"]))
 
+    def test_per_run_token_cap_degrades_without_invoking_remaining_specialists(self):
+        calls = {"count": 0}
+        def counted(_ctx):
+            calls["count"] += 1
+            return _result()
+        limits = __import__("auremgrid.services.intelligence_orchestrator", fromlist=["OrchestrationLimits"]).OrchestrationLimits(max_tokens=1)
+        result = IntelligenceOrchestrator(
+            self.os, _Contracts(2), limits=limits,
+            specialist_handlers={"expert-0": counted, "expert-1": counted},
+        ).run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin")
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["evaluation_safety"]["cap_reason"], "token_cap")
+
+    def test_open_evaluation_circuit_skips_specialists(self):
+        self.os.intelligence_evaluation_safety.configure_policy(
+            "org_demo", "person_demo_owner", "reasoning", breaker_threshold=1,
+        )
+        safety = self.os.intelligence_evaluation_safety
+        run = safety.start("org_demo", "person_demo_owner", "reasoning", workspace_id="ws_alpha")
+        safety.complete("org_demo", "person_demo_owner", run["id"], workspace_id="ws_alpha", input_tokens=999999)
+        result = IntelligenceOrchestrator(self.os, _Contracts(1)).run(
+            "org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin"
+        )
+        self.assertEqual(result["evaluation_safety"]["status"], "circuit_open")
+        self.assertEqual(result["specialists"], [])
+
     def test_tiny_context_overflow_keeps_cited_anchor(self):
         contracts = _Contracts(1)
         contracts.profiles[0].update({"max_context": 1})

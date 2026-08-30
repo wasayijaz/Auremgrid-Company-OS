@@ -2090,7 +2090,7 @@ MIGRATIONS = (
             scope_id TEXT,
             data_category TEXT NOT NULL,
             max_age_days INTEGER NOT NULL,
-            action TEXT NOT NULL CHECK(action IN ('archive','delete','redact')),
+            action TEXT NOT NULL CHECK(action IN ('delete')),
             created_by_person_id TEXT NOT NULL,
             created_at TEXT NOT NULL,
             FOREIGN KEY(organization_id) REFERENCES organizations(id)

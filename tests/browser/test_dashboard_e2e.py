@@ -612,7 +612,7 @@ def test_feedback_and_retention_modules_execute_safe_backend_actions(owner_page:
     retention.locator("select[name=scope]").select_option("workspace")
     retention.locator("input[name=data_category]").fill("browser_retention")
     retention.locator("input[name=max_age_days]").fill("45")
-    retention.locator("select[name=action]").select_option("archive")
+    expect(retention.locator("input[name=action]")).to_have_value("delete")
     with page.expect_response(lambda response: response.url.endswith("/retention/policies") and response.request.method == "POST"):
         retention.get_by_role("button", name="Create policy").click()
     expect(page.locator("#toast")).to_contain_text("Retention policy created")

@@ -12,7 +12,7 @@ def _now() -> datetime:
 
 
 VALID_SCOPES = ("organization", "workspace", "connector")
-VALID_ACTIONS = ("archive", "delete", "redact")
+VALID_ACTIONS = ("delete",)
 DELETABLE_TABLES = frozenset({
     "projects",
     "deliverables",
@@ -29,6 +29,7 @@ DELETABLE_TABLES = frozenset({
     "contracts",
     "meetings",
     "documents",
+    "sources",
 })
 
 SENSITIVE_EXPORT_TABLES = frozenset({
@@ -97,16 +98,24 @@ class RetentionOperations:
             raise ValidationError("record_ids must not be empty")
         now = _now().isoformat()
         deleted = []
+        table_columns = self._table_columns()
+        columns = table_columns.get(table_name)
+        if columns is None:
+            raise ValidationError(f"deletion table is unavailable: {table_name}")
         for rid in record_ids:
-            row = self.conn.execute(f"SELECT * FROM {table_name} WHERE id=? AND organization_id=?", (rid, organization_id)).fetchone()
+            row = self._find_deletable_row(organization_id, table_name, columns, rid)
             if row is None:
                 continue
-            snapshot = json.dumps(dict(row))
+            row_data = dict(row)
+            workspace_id = row_data.get("workspace_id")
+            snapshot = json.dumps(self._audit_snapshot(table_name, row_data), sort_keys=True, separators=(",", ":"))
             audit_id = self.new_id("da")
-            self.conn.execute(
-                "INSERT INTO deletion_audit (id, organization_id, table_name, record_id, reason, initiated_by, retention_policy_id, snapshot_json, deleted_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                (audit_id, organization_id, table_name, rid, reason, person_id, policy_id, snapshot, now))
-            if table_name == "campaigns":
+            self._insert_audit(audit_id, organization_id, workspace_id, table_name, rid, reason, person_id, policy_id, snapshot, now)
+            if table_name == "documents":
+                self._delete_document_evidence(row_data)
+            elif table_name == "sources":
+                self._delete_source_evidence(row_data)
+            elif table_name == "campaigns":
                 # Metric snapshots are campaign-owned evidence. Retaining them after
                 # deleting their campaign would leave orphaned performance data that
                 # can survive lifecycle cleanup through direct metric reads/counts.
@@ -121,10 +130,157 @@ class RetentionOperations:
                     "DELETE FROM creative_performance WHERE asset_id=?",
                     (rid,),
                 )
-            self.conn.execute(f"DELETE FROM {table_name} WHERE id=? AND organization_id=?", (rid, organization_id))
+            if table_name not in {"documents", "sources"}:
+                self.conn.execute(f"DELETE FROM {table_name} WHERE id=?", (rid,))
             deleted.append({"id": rid, "audit_id": audit_id})
         self.conn.commit()
         return {"deleted": deleted, "count": len(deleted)}
+
+    def _find_deletable_row(self, organization_id: str, table_name: str, columns: set[str], record_id: str) -> Any | None:
+        if "id" not in columns:
+            raise ValidationError(f"deletion table has no id column: {table_name}")
+        if "organization_id" in columns:
+            return self.conn.execute(
+                f"SELECT * FROM {table_name} WHERE id=? AND organization_id=?",
+                (record_id, organization_id),
+            ).fetchone()
+        if "workspace_id" in columns:
+            return self.conn.execute(
+                f"""SELECT target.* FROM {table_name} target
+                    JOIN workspace_organization scope ON scope.workspace_id=target.workspace_id
+                    WHERE target.id=? AND scope.organization_id=?""",
+                (record_id, organization_id),
+            ).fetchone()
+        raise ValidationError(f"deletion table is not organization-scoped: {table_name}")
+
+    def _insert_audit(self, audit_id: str, organization_id: str, workspace_id: str | None, table_name: str,
+        record_id: str, reason: str, person_id: str, policy_id: str | None, snapshot: str, now: str) -> None:
+        columns = self._table_columns().get("deletion_audit", set())
+        if "workspace_id" in columns:
+            self.conn.execute(
+                "INSERT INTO deletion_audit (id, organization_id, workspace_id, table_name, record_id, reason, initiated_by, retention_policy_id, snapshot_json, deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (audit_id, organization_id, workspace_id, table_name, record_id, reason, person_id, policy_id, snapshot, now),
+            )
+            return
+        self.conn.execute(
+            "INSERT INTO deletion_audit (id, organization_id, table_name, record_id, reason, initiated_by, retention_policy_id, snapshot_json, deleted_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (audit_id, organization_id, table_name, record_id, reason, person_id, policy_id, snapshot, now),
+        )
+
+    def _audit_snapshot(self, table_name: str, row: dict[str, Any]) -> dict[str, Any]:
+        sensitive_fields = {
+            "content", "evidence", "evidence_span", "sample_evidence", "raw_feedback",
+            "locator", "source_locator", "source_url", "final_url", "thumbnail_url",
+            "subject", "predicate", "object", "from_entity", "relation", "to_entity",
+        }
+        snapshot = {"table_name": table_name}
+        for key, value in row.items():
+            lowered = key.lower()
+            if lowered in sensitive_fields or any(marker in lowered for marker in SENSITIVE_EXPORT_COLUMN_MARKERS):
+                snapshot[key] = "[REDACTED]"
+            else:
+                snapshot[key] = value
+        return snapshot
+
+    def _delete_document_evidence(self, document: dict[str, Any]) -> None:
+        workspace_id = document["workspace_id"]
+        document_id = document["id"]
+        source_id = document["source_id"]
+        self._delete_optional("facts", "workspace_id=? AND document_id=?", (workspace_id, document_id))
+        self._delete_optional("relations", "workspace_id=? AND document_id=?", (workspace_id, document_id))
+        self._delete_optional("document_embedding_projection", "workspace_id=? AND document_id=?", (workspace_id, document_id))
+        if self._table_exists("documents_fts"):
+            self.conn.execute("DELETE FROM documents_fts WHERE workspace_id=? AND document_id=?", (workspace_id, document_id))
+        self._delete_optional("brain_document_tags", "workspace_id=? AND document_id=?", (workspace_id, document_id))
+        self._delete_optional(
+            "brain_collection_items",
+            "workspace_id=? AND item_type='document' AND item_id=?",
+            (workspace_id, document_id),
+        )
+        self.conn.execute("DELETE FROM documents WHERE workspace_id=? AND id=?", (workspace_id, document_id))
+        remaining = self.conn.execute(
+            "SELECT 1 FROM documents WHERE workspace_id=? AND source_id=? LIMIT 1",
+            (workspace_id, source_id),
+        ).fetchone()
+        if remaining is None:
+            source = self.conn.execute(
+                "SELECT * FROM sources WHERE workspace_id=? AND id=?",
+                (workspace_id, source_id),
+            ).fetchone()
+            if source is not None:
+                self._delete_source_evidence(dict(source), delete_documents=False)
+
+    def _delete_source_evidence(self, source: dict[str, Any], *, delete_documents: bool = True) -> None:
+        workspace_id = source["workspace_id"]
+        source_id = source["id"]
+        if delete_documents:
+            documents = self.conn.execute(
+                "SELECT * FROM documents WHERE workspace_id=? AND source_id=?",
+                (workspace_id, source_id),
+            ).fetchall()
+            for document in documents:
+                self._delete_document_evidence(dict(document))
+        self._delete_optional("facts", "workspace_id=? AND source_id=?", (workspace_id, source_id))
+        self._delete_optional("relations", "workspace_id=? AND source_id=?", (workspace_id, source_id))
+        self._delete_optional("brain_source_tags", "workspace_id=? AND source_id=?", (workspace_id, source_id))
+        self._delete_optional(
+            "brain_collection_items",
+            "workspace_id=? AND item_type='source' AND item_id=?",
+            (workspace_id, source_id),
+        )
+        self._retire_source_lifecycle(workspace_id, source_id)
+        self._retire_provider_routes(workspace_id, source_id)
+        if self._source_can_be_deleted(workspace_id, source_id):
+            self.conn.execute("DELETE FROM sources WHERE workspace_id=? AND id=?", (workspace_id, source_id))
+
+    def _delete_optional(self, table_name: str, where_sql: str, params: tuple[Any, ...]) -> None:
+        if table_name in self._table_columns():
+            self.conn.execute(f"DELETE FROM {table_name} WHERE {where_sql}", params)
+
+    def _table_exists(self, table_name: str) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table','virtual table') AND name=?",
+            (table_name,),
+        ).fetchone() is not None
+
+    def _retire_source_lifecycle(self, workspace_id: str, source_id: str) -> None:
+        if "source_lifecycle_intervals" not in self._table_columns():
+            return
+        now = _now().isoformat()
+        self.conn.execute(
+            """UPDATE source_lifecycle_intervals
+               SET retired_at=?, retirement_reason='retention_delete', effective_until=?
+               WHERE workspace_id=? AND source_id=? AND retired_at IS NULL""",
+            (now, now, workspace_id, source_id),
+        )
+
+    def _retire_provider_routes(self, workspace_id: str, source_id: str) -> None:
+        if "provider_object_routes" not in self._table_columns():
+            return
+        now = _now().isoformat()
+        self.conn.execute(
+            """UPDATE provider_object_routes
+               SET active_source_id=NULL, status='retired', retired_at=?, updated_at=?
+               WHERE workspace_id=? AND active_source_id=? AND status='active'""",
+            (now, now, workspace_id, source_id),
+        )
+
+    def _source_can_be_deleted(self, workspace_id: str, source_id: str) -> bool:
+        for table_name in (
+            "source_lifecycle_intervals",
+            "provider_object_route_events",
+            "provider_route_mutation_staging",
+            "graphiti_episode_mappings",
+        ):
+            columns = self._table_columns().get(table_name)
+            if not columns or "source_id" not in columns:
+                continue
+            if self.conn.execute(
+                f"SELECT 1 FROM {table_name} WHERE workspace_id=? AND source_id=? LIMIT 1",
+                (workspace_id, source_id),
+            ).fetchone() is not None:
+                return False
+        return True
 
     def export_workspace(self, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any]:
         self.authorize(organization_id, workspace_id, person_id)

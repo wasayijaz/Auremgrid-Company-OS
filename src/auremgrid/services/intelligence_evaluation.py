@@ -9,6 +9,7 @@ contact a provider or mutate a durable database.
 """
 
 from pathlib import Path
+import json
 from typing import Any
 
 from auremgrid.services.brain import CompanyOS
@@ -198,6 +199,34 @@ def run_intelligence_evaluations() -> dict[str, Any]:
             "action_descriptors_fenced", descriptors_fenced,
             "orchestration action descriptors cannot bypass approval or execute writes",
         ))
+
+        # V1 golden questions: each product question must have a bounded,
+        # cited answer surface (or an explicit unknown/degraded state).  Keep
+        # these checks deliberately structural so they remain deterministic
+        # across fixture refreshes and provider versions.
+        question_checks = {
+            "attention": bool(owner.get("findings") or owner.get("status") in {"insufficient_evidence", "degraded"}),
+            "risk": bool(owner.get("domains", {}).get("risks", {}).get("items") is not None),
+            "change": isinstance(owner.get("context", {}).get("change_count"), int),
+            "overdue": any(term in json.dumps(owner.get("findings", [])).lower() for term in ("overdue", "past its expected date", "past due")),
+            "scope": isinstance(owner.get("domains", {}).get("scope"), dict),
+            "slip": any("slip" in json.dumps(f).lower() or "deadline" in json.dumps(f).lower() for f in owner.get("findings", [])),
+            "overload": isinstance(owner.get("domains", {}).get("capacity"), dict),
+            "campaign": isinstance(owner.get("domains", {}).get("campaign_metrics"), dict),
+            "creative_fatigue": "creative" in json.dumps(owner).lower() or "campaign" in json.dumps(owner).lower(),
+            "opportunity": bool(owner.get("recommendations") is not None),
+            "analogue": isinstance(owner.get("historical_analogues"), list),
+            "options": bool(owner.get("recommended_plan") is not None),
+            "scenario": isinstance(owner.get("findings", [{}])[0].get("scenarios", []), list) if owner.get("findings") else False,
+            "recommendation": isinstance(owner.get("recommendation_evaluation"), dict),
+            "opposing_evidence": bool(owner.get("opposing_evidence")) or any(f.get("opposing_evidence") for f in owner.get("findings", [])),
+            "confidence": all(0.0 <= float((f.get("confidence") or {}).get("score", 0.0)) <= 1.0 for f in owner.get("findings", [])),
+        }
+        for question, passed in question_checks.items():
+            checks.append(_case(
+                f"golden_{question}", passed,
+                f"{question.replace('_', ' ')} is represented by a bounded read-model field",
+            ))
 
         def specialist_result(_ctx: dict[str, Any]) -> dict[str, Any]:
             return {

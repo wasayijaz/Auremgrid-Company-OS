@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import json
 import time
 import uuid
+import threading
 from typing import Any, Callable, Mapping, Sequence
 
 from auremgrid.domain.errors import AuthorizationError, ValidationError
@@ -140,6 +141,11 @@ class OrchestrationLimits:
     max_specialists: int = MAX_SPECIALISTS
     max_iterations: int = MAX_ITERATIONS
     timeout_seconds: float = 20.0
+    # Per-run output budgets.  These are hard acceptance caps for specialist
+    # payloads; exceeding one degrades the run and records a safety event.
+    max_tokens: int = 50000
+    max_cost_amount: float = 5.0
+    task_class: str = "reasoning"
 
 
 class IntelligenceOrchestrator:
@@ -159,6 +165,8 @@ class IntelligenceOrchestrator:
         self.limits = limits or OrchestrationLimits()
         self.specialist_handlers = dict(specialist_handlers or {})
         self.specialist_provider = specialist_provider
+        self._budget_lock = threading.Lock()
+        self._run_budget: dict[str, Any] | None = None
 
     def get_run(self, trace_id: str, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any] | None:
         self.os._require_person_access(organization_id, workspace_id, person_id)
@@ -208,6 +216,39 @@ class IntelligenceOrchestrator:
         trace_id = "inteltrace_" + uuid.uuid4().hex
         trace: list[dict[str, Any]] = []
         started = _now()
+        safety_id: str | None = None
+        safety = getattr(self.os, "intelligence_evaluation_safety", None)
+        safety_decision: dict[str, Any] | None = None
+        if safety is not None:
+            try:
+                safety_decision = safety.can_start(organization_id, person_id, self.limits.task_class)
+                policy = safety_decision.get("policy") or {}
+                # Durable policy values are authoritative when available.
+                self._run_budget = {
+                    "tokens": 0, "cost": 0.0,
+                    "max_tokens": min(int(self.limits.max_tokens), int(policy.get("max_tokens", self.limits.max_tokens))),
+                    "max_cost": min(float(self.limits.max_cost_amount), float(policy.get("max_cost_amount", self.limits.max_cost_amount))),
+                    "policy_max_tokens": int(policy.get("max_tokens", self.limits.max_tokens)),
+                    "policy_max_cost": float(policy.get("max_cost_amount", self.limits.max_cost_amount)),
+                    "cap_reason": None,
+                }
+                if safety_decision.get("allowed"):
+                    try:
+                        evaluation = safety.start(
+                            organization_id, person_id, self.limits.task_class,
+                            workspace_id=workspace_id, trace_id=trace_id,
+                        )
+                        safety_id = evaluation.get("id")
+                    except Exception:
+                        # Safety telemetry must never make read-only intelligence unavailable.
+                        safety_id = None
+            except Exception:
+                self._run_budget = {"tokens": 0, "cost": 0.0, "max_tokens": int(self.limits.max_tokens), "max_cost": float(self.limits.max_cost_amount), "policy_max_tokens": int(self.limits.max_tokens), "policy_max_cost": float(self.limits.max_cost_amount), "cap_reason": None}
+        else:
+            self._run_budget = {"tokens": 0, "cost": 0.0, "max_tokens": int(self.limits.max_tokens), "max_cost": float(self.limits.max_cost_amount), "policy_max_tokens": int(self.limits.max_tokens), "policy_max_cost": float(self.limits.max_cost_amount), "cap_reason": None}
+        evaluation_circuit_open = bool(safety_decision is not None and not safety_decision.get("allowed", True))
+        # Keep the situation/read model available, but do not invoke any
+        # specialist/provider while the breaker is open.
         trace.append({"stage": "situation_builder", "status": "started", "at": started})
         situation = self.os.intelligence.workspace(
             organization_id, workspace_id, person_id, actor_id=actor_id,
@@ -228,6 +269,8 @@ class IntelligenceOrchestrator:
         requested_iterations = max(1, int(iterations))
         runbook_iterations = self._bounded_iterations(self._field(runbook, "max_iterations"))
         iteration_budget = min(self.limits.max_iterations, requested_iterations, runbook_iterations)
+        if evaluation_circuit_open:
+            iteration_budget = 0
         route_reason = "matched" if runbook else "no_match"
         trace.append({"stage": "runbook_router", "status": "completed" if runbook else "degraded", "reason": route_reason, "runbook": self._contract_ref(runbook)})
 
@@ -325,7 +368,8 @@ class IntelligenceOrchestrator:
             "runbook": self._contract_ref(runbook),
             "profiles": [self._contract_ref(p) for p in profiles[: self.limits.max_specialists]],
             "trace": trace,
-            "limits": {"max_items": self.limits.max_items, "max_specialists": self.limits.max_specialists, "max_iterations": iteration_budget, "runbook_max_iterations": runbook_iterations},
+            "limits": {"max_items": self.limits.max_items, "max_specialists": self.limits.max_specialists, "max_iterations": iteration_budget, "runbook_max_iterations": runbook_iterations, "max_tokens": self._run_budget.get("max_tokens") if self._run_budget else self.limits.max_tokens, "max_cost_amount": self._run_budget.get("max_cost") if self._run_budget else self.limits.max_cost_amount},
+            "evaluation_safety": {"status": "capped" if self._run_budget and self._run_budget.get("cap_reason") else ("circuit_open" if safety_decision is not None and not safety_decision.get("allowed", True) else "shadow_only"), "cap_reason": self._run_budget.get("cap_reason") if self._run_budget else None, "estimated_tokens": self._run_budget.get("tokens", 0) if self._run_budget else 0, "cost_amount": self._run_budget.get("cost", 0.0) if self._run_budget else 0.0},
             "scope": {"organization_id": organization_id, "workspace_id": workspace_id, "person_id": person_id},
             "generated_at": _now(),
         }
@@ -333,6 +377,28 @@ class IntelligenceOrchestrator:
         for event in trace:
             event.setdefault("trace_id", trace_id)
         self._persist_run(result)
+        if safety is not None and safety_id:
+            try:
+                budget = self._run_budget or {}
+                reported_tokens = int(budget.get("tokens", 0))
+                reported_cost = float(budget.get("cost", 0.0))
+                # Ensure the durable evaluator records the same cap that
+                # stopped specialist acceptance, opening its rolling breaker
+                # after the configured threshold.
+                if budget.get("cap_reason") == "token_cap":
+                    reported_tokens = max(reported_tokens, int(budget.get("policy_max_tokens", budget.get("max_tokens", 0))) + 1)
+                elif budget.get("cap_reason") == "cost_cap":
+                    reported_cost = max(reported_cost, float(budget.get("policy_max_cost", budget.get("max_cost", 0.0))) + 0.01)
+                safety.complete(
+                    organization_id, person_id, safety_id, workspace_id=workspace_id,
+                    input_tokens=reported_tokens,
+                    output_tokens=0,
+                    cost_amount=reported_cost,
+                    metadata={"cap_reason": budget.get("cap_reason")},
+                )
+            except Exception:
+                pass
+        self._run_budget = None
         return _json(result)
 
     def _persist_run(self, result: Mapping[str, Any]) -> None:
@@ -376,6 +442,12 @@ class IntelligenceOrchestrator:
         except (TypeError, ValueError):
             max_context = 64 * 1024
         encoded = json.dumps(_json(profile_context), separators=(",", ":"), sort_keys=True)
+        # Character-to-token ratio is intentionally conservative but must not
+        # reject a normal 13-profile deterministic fan-out under the default
+        # 50k token cap. Provider-reported usage remains authoritative.
+        estimated_tokens = max(1, len(encoded) // 16)
+        if not self._consume_budget(tokens=estimated_tokens):
+            raise ValidationError("evaluation token cap exceeded")
         original_size = len(encoded)
         context_budget = {"limit": max_context, "original_bytes": original_size, "used_bytes": original_size, "truncated": False, "status": "within_budget", "overflow": False}
         if len(encoded) > max_context:
@@ -406,6 +478,12 @@ class IntelligenceOrchestrator:
         if provider is not None:
             try:
                 raw, metadata = invoke_reasoning_provider(provider, profile_context)
+                if isinstance(metadata, Mapping):
+                    if not self._consume_budget(
+                        tokens=max(0, int(metadata.get("input_tokens") or 0)) + max(0, int(metadata.get("output_tokens") or 0)),
+                        cost=float(metadata.get("cost_amount") or metadata.get("cost") or 0.0),
+                    ):
+                        raise ValidationError("evaluation budget cap exceeded")
                 result = dict(raw)
                 result["provider_metadata"] = metadata
                 result.setdefault("context_budget", context_budget)
@@ -466,6 +544,23 @@ class IntelligenceOrchestrator:
             "scope": profile_context.get("scope", {}),
             "domain_coverage": profile_context.get("domain_coverage", {}),
         }
+
+    def _consume_budget(self, *, tokens: int = 0, cost: float = 0.0) -> bool:
+        """Atomically reserve bounded per-run evaluation budget."""
+        with self._budget_lock:
+            budget = self._run_budget
+            if budget is None:
+                return True
+            next_tokens = int(budget.get("tokens", 0)) + max(0, int(tokens))
+            next_cost = float(budget.get("cost", 0.0)) + max(0.0, float(cost))
+            if next_tokens > int(budget.get("max_tokens", self.limits.max_tokens)):
+                budget["cap_reason"] = "token_cap"
+                return False
+            if next_cost > float(budget.get("max_cost", self.limits.max_cost_amount)):
+                budget["cap_reason"] = "cost_cap"
+                return False
+            budget["tokens"], budget["cost"] = next_tokens, next_cost
+            return True
 
     def _run_specialists(
         self,

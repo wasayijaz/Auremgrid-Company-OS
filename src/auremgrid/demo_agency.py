@@ -256,7 +256,7 @@ def _ensure_operating_depth(
         conn.commit()
 
     if not _one(os, "SELECT id FROM retention_policies WHERE organization_id=? AND data_category='demo_fixture'", (org_id,)):
-        os.retention.create_policy(org_id, owner_id, "organization", "demo_fixture", 365, "archive")
+        os.retention.create_policy(org_id, owner_id, "organization", "demo_fixture", 365, "delete")
 
     # Integration configuration is deliberately not connected: no token, provider
     # identity, or object count is fabricated. The normal configure API stores only

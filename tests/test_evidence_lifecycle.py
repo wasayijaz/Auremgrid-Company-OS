@@ -8,7 +8,7 @@ from unittest.mock import patch
 from auremgrid.connectors.google_auth import ConnectorInboxRepository, ConnectorSourceEvent
 from auremgrid.domain.errors import ValidationError
 from auremgrid.services.brain import CompanyOS, new_id
-from tests.auth_support import LATEST_SCHEMA_VERSION
+from tests.auth_support import LATEST_SCHEMA_VERSION, issue_identity
 
 
 class EvidenceLifecycleTests(unittest.TestCase):
@@ -18,6 +18,7 @@ class EvidenceLifecycleTests(unittest.TestCase):
         self.ws = self.os.create_organization_workspace(self.org.id, "Client", "client")
         self.other_ws = self.os.create_organization_workspace(self.org.id, "Other", "client")
         self.person = self.os.create_person(self.org.id, "Owner", "owner@example.test", role="admin")
+        self.os.add_person_to_workspace(self.org.id, self.ws.id, self.person.id, "admin")
         self.actor = self.os.create_actor(self.ws.id, "Owner", "admin")
         self.other_actor = self.os.create_actor(self.other_ws.id, "Owner", "admin")
 
@@ -174,6 +175,55 @@ class EvidenceLifecycleTests(unittest.TestCase):
         # Historical as-of queries still need the retired document's durable
         # vector; current retrieval excludes it through lifecycle authorization.
         self.assertIn(retired_doc, self.os._embeddings)
+
+    def test_retention_document_delete_removes_current_search_projection_and_intelligence_evidence(self) -> None:
+        _, identity = issue_identity(self.os, self.org.id, self.person.id, self.ws.id, self.actor.id)
+        ingest = self.os.ingest_text(
+            self.ws.id,
+            self.actor.id,
+            "delete-me",
+            "FACT: Retention Probe | status | secret deletion phrase",
+            "memory://delete-me",
+        )
+        document_id = str(ingest.document_id)
+        tag = self.os.brain_ops.create_tag(identity, self.ws.id, "Retention")
+        self.os.brain_ops.tag_source(identity, self.ws.id, ingest.source.id, tag["id"])
+        self.os.brain_ops.tag_document(identity, self.ws.id, document_id, tag["id"])
+        collection = self.os.brain_ops.create_collection(identity, self.ws.id, "Retention Evidence", visibility="shared")
+        self.os.brain_ops.add_collection_item(identity, self.ws.id, collection["id"], "source", ingest.source.id)
+        self.os.brain_ops.add_collection_item(identity, self.ws.id, collection["id"], "document", document_id)
+        self.assertFalse(self.os.search(self.ws.id, self.actor.id, "secret deletion phrase").unknown)
+        self.assertIn(document_id, self.os._embeddings)
+        self.assertGreater(self.os.intelligence.workspace(
+            self.org.id, self.ws.id, self.person.id, actor_id=self.actor.id, query="secret deletion phrase"
+        )["context"]["evidence_count"], 0)
+
+        out = self.os.retention.execute_deletion(self.org.id, self.person.id, "documents", [document_id], "expired")
+        self.os._embeddings.pop(document_id, None)
+        result = self.os.rebuild_projections(self.ws.id)
+
+        self.assertEqual(out["count"], 1)
+        self.assertEqual(result["documents"], 0)
+        self.assertTrue(self.os.search(self.ws.id, self.actor.id, "secret deletion phrase").unknown)
+        self.assertIsNone(self.os.store.conn.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone())
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM documents_fts WHERE document_id=?", (document_id,)).fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM facts WHERE document_id=?", (document_id,)).fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM relations WHERE document_id=?", (document_id,)).fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM document_embedding_projection WHERE document_id=?", (document_id,)).fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM brain_document_tags WHERE document_id=?", (document_id,)).fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM brain_source_tags WHERE source_id=?", (ingest.source.id,)).fetchone()[0], 0)
+        self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM brain_collection_items WHERE item_id IN (?,?)", (ingest.source.id, document_id)).fetchone()[0], 0)
+        self.assertFalse(self.os.store.source_is_active(self.ws.id, ingest.source.id))
+        self.assertEqual(self.os.intelligence.workspace(
+            self.org.id, self.ws.id, self.person.id, actor_id=self.actor.id, query="secret deletion phrase"
+        )["context"]["evidence_count"], 0)
+        audit = self.os.store.conn.execute(
+            "SELECT * FROM deletion_audit WHERE table_name='documents' AND record_id=?",
+            (document_id,),
+        ).fetchone()
+        self.assertEqual(audit["workspace_id"], self.ws.id)
+        self.assertNotIn("secret deletion phrase", audit["snapshot_json"])
+        self.assertIn('"content":"[REDACTED]"', audit["snapshot_json"])
 
     def test_generation_seen_markers_retire_only_unseen_route_objects(self) -> None:
         first = self._ingest("drive/files/first", "First generation object")

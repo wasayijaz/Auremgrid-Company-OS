@@ -138,6 +138,7 @@ class DashboardSurfaceTests(unittest.TestCase):
             "retention-policy-dialog",
             "/retention/policies",
             "scope_id:values.scope==='workspace'?(values.scope_id||workspace)",
+            "Action: delete",
             "canonicalEvidenceRef407",
             "object_ref",
             "data-executive-evidence",
@@ -148,6 +149,8 @@ class DashboardSurfaceTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.html)
         self.assertNotIn("Action available after record selection", self.html[self.html.rfind("renderagencyModule=async function"):])
+        self.assertNotIn("option value=\"archive\"", self.html)
+        self.assertNotIn("option value=\"redact\"", self.html)
 
     def test_responsive_layout_and_read_only_controls(self) -> None:
         for width in ("max-width:1000px", "max-width:620px"):
