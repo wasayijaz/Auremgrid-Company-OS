@@ -55,3 +55,5 @@ finally {
     if ((Get-Location).Path -eq $testRoot) { Pop-Location }
     if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
 }
+
+exit 0
