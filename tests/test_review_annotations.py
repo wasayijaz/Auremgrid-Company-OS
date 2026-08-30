@@ -46,6 +46,16 @@ class ReviewAnnotationTests(unittest.TestCase):
         _, review = self._review("document", "https://assets.test/brief.pdf")
         page = self.os.create_review_annotation(self.org.id, self.ws.id, self.person.id, review.id, "document_page", "p2", page_number=2)
         self.assertEqual(page["page_number"], 2)
+        region = self.os.create_review_annotation(
+            self.org.id, self.ws.id, self.person.id, review.id, "document_region", "callout",
+            coordinates={"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4}, page_number=2,
+        )
+        self.assertEqual(region["coordinates"]["width"], 0.3)
+        with self.assertRaises(ValidationError):
+            self.os.create_review_annotation(
+                self.org.id, self.ws.id, self.person.id, review.id, "document_region", "overflow",
+                coordinates={"x": 0.8, "y": 0.2, "width": 0.4, "height": 0.2}, page_number=2,
+            )
         _, video_review = self._review("video", "https://assets.test/video.mp4")
         video = self.os.create_review_annotation(self.org.id, self.ws.id, self.person.id, video_review.id, "video_range", "trim", start_seconds=2, end_seconds=4)
         self.assertEqual(video["end_seconds"], 4)

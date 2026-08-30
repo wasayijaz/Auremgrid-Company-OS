@@ -750,6 +750,8 @@ class CompanyOS:
                 raise ValidationError("annotation coordinates are outside the source bounds")
             if annotation_type.startswith("image") and (any(value > 1 for value in values) or (annotation_type == "image_region" and (float(coords["x"])+float(coords["width"]) > 1 or float(coords["y"])+float(coords["height"]) > 1))):
                 raise ValidationError("image annotation coordinates are outside the source bounds")
+            if annotation_type == "document_region" and (any(value > 1 for value in values) or float(coords["x"])+float(coords["width"]) > 1 or float(coords["y"])+float(coords["height"]) > 1):
+                raise ValidationError("document annotation coordinates are outside the source bounds")
             if annotation_type in {"image_region", "document_region"} and (float(coords["width"]) <= 0 or float(coords["height"]) <= 0):
                 raise ValidationError("annotation regions require positive width and height")
         if annotation_type in {"document_page", "document_region"} and (page_number is None or int(page_number) < 1):

@@ -14,14 +14,14 @@ The core product idea is simple: keep authority in the local ledger; treat exter
 
 | Area | Status | What that means |
 |---|---|---|
-| Local Company OS | Implemented | Organization, workspaces, people, client records, projects, work, reviews, approvals, workflows, evidence, reports, finance records, agents, automations, jobs, and dashboard surfaces run against local SQLite. |
-| Company Brain | Implemented | Documents, facts, relations, citations, temporal history, conflict state, proposals, source ACLs, FTS5, deterministic semantic fallback, and local graph projection are implemented. |
-| Intelligence | Implemented as bounded read models | Dashboard, REST, and MCP surfaces can produce cited briefs, hypotheses, scenarios, recommendations, expert/runbook orchestration traces, learning records, evaluation telemetry, and proactive attention snapshots. They do not execute external actions or promote truth by themselves. |
-| Live read connectors | Provider-configured | Slack, ClickUp, Google Drive, Gmail, exact-file Figma polling, and one mapped Fireflies account have credential-backed read sync paths when the operator supplies secrets, mappings, verification, and workers. |
-| Provider imports | Injected/import-only | Stripe Billing/accounting, Meta Ads, Google Ads, and CRM pages can be normalized through injected read-only import adapters. They are not live registered connectors and never mutate providers. |
-| Finance | Implemented as sourced local ledger | Finance stays `not_connected` until an organization admin connects the finance state. Revenue, invoices, costs, budgets, software costs, AI usage, and economics require explicit source records. No values are fabricated. |
-| External sends | Not packaged | Email sends, provider writes, public webhook operation, outbound report delivery, content publishing, and connector mutations are outside the packaged local demo unless an operator builds and approves the missing infrastructure. |
-| Hosting | Local/private first | The included standard-library HTTP server, Dockerfile, Compose file, and Caddy config are private single-host templates, not managed production hosting. |
+| Local Company OS | IMPLEMENTED | Organization, workspaces, people, client records, projects, work, reviews, approvals, workflows, evidence, reports, finance records, agents, automations, jobs, and dashboard surfaces run against local SQLite. |
+| Company Brain | IMPLEMENTED | Documents, facts, relations, citations, temporal history, conflict state, proposals, source ACLs, FTS5, deterministic semantic fallback, and local graph projection are implemented. |
+| Intelligence | IMPLEMENTED | Dashboard, REST, and MCP surfaces can produce cited briefs, hypotheses, scenarios, recommendations, expert/runbook orchestration traces, learning records, evaluation telemetry, and proactive attention snapshots. They do not execute external actions or promote truth by themselves. |
+| Live read connectors | LIVE READ | Slack, ClickUp, Google Drive, Gmail, exact-file Figma polling, and one mapped Fireflies account have credential-backed read sync paths when the operator supplies secrets, mappings, verification, and workers. |
+| Provider imports | IMPORT-ONLY | Stripe Billing/accounting, Meta Ads, Google Ads, and CRM pages can be normalized through injected read-only import adapters. They are not live registered connectors and never mutate providers. |
+| Finance | IMPLEMENTED | Finance stays `not_connected` until an organization admin connects the finance state. Revenue, invoices, costs, budgets, software costs, AI usage, and economics require explicit source records. No values are fabricated. |
+| External sends | OUT OF SCOPE | Email sends, provider writes, public webhook operation, outbound report delivery, content publishing, and connector mutations are outside the packaged local demo unless an operator builds and approves the missing infrastructure. |
+| Hosting | IMPLEMENTED | The included standard-library HTTP server, Dockerfile, Compose file, and Caddy config are private single-host templates, not managed production hosting. |
 
 ## What Is In This Repository
 

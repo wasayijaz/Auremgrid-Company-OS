@@ -94,11 +94,22 @@ class JobOperationTests(unittest.TestCase):
             connection.execute("ALTER TABLE provider_route_mutation_staging DROP COLUMN event_dedupe_key")
             connection.execute("ALTER TABLE provider_sync_generations DROP COLUMN cancelled_at")
             connection.execute("DELETE FROM schema_migrations WHERE version>=11")
+            self.assertIn(
+                "metadata_json",
+                {row[1] for row in connection.execute("PRAGMA table_info(review_annotations)").fetchall()},
+            )
             connection.commit()
             connection.close()
 
             upgraded = CompanyOS(path)
             self.assertEqual(upgraded.store.schema_version, LATEST_SCHEMA_VERSION)
+            self.assertEqual(
+                1,
+                sum(
+                    row["name"] == "metadata_json"
+                    for row in upgraded.store.conn.execute("PRAGMA table_info(review_annotations)").fetchall()
+                ),
+            )
             restored = upgraded.workflow_ops.summary(org.id, ws.id, person.id, run["id"])
             self.assertEqual(restored["run"]["definition_key"], "client_request")
             upgraded.close()

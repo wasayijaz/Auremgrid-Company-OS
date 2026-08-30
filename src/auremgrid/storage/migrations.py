@@ -4229,6 +4229,13 @@ def migrate(conn: sqlite3.Connection) -> int:
                 statement = f"ALTER TABLE {table} ADD COLUMN {column} {definition};"
                 if column in table_columns[table]:
                     sql = sql.replace(statement, "")
+        if migration.version == 57:
+            review_annotation_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(review_annotations)").fetchall()
+            }
+            statement = "ALTER TABLE review_annotations ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';"
+            if "metadata_json" in review_annotation_columns:
+                sql = sql.replace(statement, "")
         with conn:
             conn.executescript(sql)
             if migration.version == 19:
