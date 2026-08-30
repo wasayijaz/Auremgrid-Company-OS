@@ -18,6 +18,11 @@ try {
     $env:GIT_CONFIG_GLOBAL = Join-Path $testRoot "global.gitconfig"
     Set-Content -Path $env:GIT_CONFIG_GLOBAL -Value ""
     Copy-Item -Recurse (Join-Path $repoRoot ".githooks") (Join-Path $testRoot ".githooks")
+    $chmod = Get-Command chmod -ErrorAction SilentlyContinue
+    if ($null -ne $chmod) {
+        & $chmod.Source +x ".githooks/pre-commit" ".githooks/commit-msg" ".githooks/pre-merge-commit"
+        if ($LASTEXITCODE -ne 0) { throw "Unable to make temporary Git hooks executable." }
+    }
     Push-Location $testRoot
     git init -q
     git config core.hooksPath .githooks
