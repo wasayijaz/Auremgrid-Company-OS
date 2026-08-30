@@ -167,6 +167,38 @@ def run_intelligence_evaluations() -> dict[str, Any]:
             "orchestrator trace is retrievable from the durable scoped store",
         ))
 
+        # Golden contract checks: every confidence value is bounded and the
+        # read-model sections required for scenario/historical reasoning are
+        # always present, while action descriptors stay fenced behind the
+        # approval boundary.
+        bounded_confidence = (
+            0.0 <= float(orchestrated.get("confidence", 0.0)) <= 1.0
+            and all(0.0 <= float(item.get("confidence", 0.0)) <= 1.0 for item in specialists)
+        )
+        checks.append(_case(
+            "bounded_confidence", bounded_confidence,
+            "final and specialist confidence values remain within [0, 1]",
+        ))
+        read_models_explicit = (
+            isinstance(orchestrated.get("scenario_analysis"), dict)
+            and isinstance(orchestrated.get("historical_learning"), dict)
+            and "status" in orchestrated["scenario_analysis"]
+            and "status" in orchestrated["historical_learning"]
+        )
+        checks.append(_case(
+            "scenario_historical_sections", read_models_explicit,
+            "scenario assumptions and historical analogue status remain explicit",
+        ))
+        descriptors_fenced = all(
+            item.get("disabled") is True and item.get("safe") is False
+            and item.get("executable") is not True
+            for item in orchestrated.get("action_descriptors", [])
+        )
+        checks.append(_case(
+            "action_descriptors_fenced", descriptors_fenced,
+            "orchestration action descriptors cannot bypass approval or execute writes",
+        ))
+
         def specialist_result(_ctx: dict[str, Any]) -> dict[str, Any]:
             return {
                 "finding": "bounded finding", "evidence_for": [], "evidence_against": [],

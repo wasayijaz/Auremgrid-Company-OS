@@ -128,6 +128,18 @@ class ServiceTests(unittest.TestCase):
         out = self.retention.execute_deletion(self.org, self.person, "campaigns", ["c1"], "expired")
         self.assertEqual(out["count"], 1); self.assertIsNone(self.conn.execute("SELECT * FROM campaigns WHERE id='c1'").fetchone()); self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM deletion_audit").fetchone()[0], 1)
 
+    def test_campaign_deletion_removes_owned_metric_snapshots(self):
+        self.conn.execute("INSERT INTO campaigns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("c1", self.org, self.ws, "N", "O", "x", 1, "USD", None, None, "active", None, "t", "t"))
+        self.conn.execute(
+            "INSERT INTO campaign_metric_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("metric1", self.org, self.ws, "c1", "2026-08-31", "roas", 1.5, None, None, None, None, None, None, None, None, None, None, "fixture"),
+        )
+
+        self.retention.execute_deletion(self.org, self.person, "campaigns", ["c1"], "expired")
+
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM campaign_metric_snapshots WHERE campaign_id='c1'").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM campaign_metric_snapshots WHERE organization_id=? AND workspace_id=?", (self.org, self.ws)).fetchone()[0], 0)
+
     def test_execute_deletion_rejects_invalid_table(self):
         with self.assertRaises(ValidationError): self.retention.execute_deletion(self.org, self.person, "organizations", ["x"], "x")
 

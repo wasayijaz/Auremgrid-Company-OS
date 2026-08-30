@@ -25,6 +25,24 @@ LEGACY_ACTOR_PATHS = {
 JOB_TYPES = {"report.generate", "projection.rebuild", "agent.run", "automation.execute", "outbox.dispatch", "backup.create", "proactive_intelligence.refresh"}
 
 
+def _provider_import_adapter(provider: str, transport: Any | None) -> Any | None:
+    if transport is None:
+        return None
+    from auremgrid.connectors.financial import (
+        CRMReadOnlyAdapter,
+        GoogleAdsReadOnlyAdapter,
+        MetaAdsReadOnlyAdapter,
+        StripeReadOnlyAdapter,
+    )
+
+    return {
+        "crm": CRMReadOnlyAdapter(transport),
+        "google_ads": GoogleAdsReadOnlyAdapter(transport),
+        "meta_ads": MetaAdsReadOnlyAdapter(transport),
+        "stripe_accounting": StripeReadOnlyAdapter(transport),
+    }.get(provider)
+
+
 def _route_capability(path: str, method: str) -> str:
     if method == "GET":
         if path.startswith("/sales/") or path in {"/campaigns/budget-pacing","/client-hq/retainer","/report-packs"}: return "workspace_read"
@@ -1292,12 +1310,9 @@ class CompanyOSRequestHandler(BaseHTTPRequestHandler):
                 self._json(200, item); return
             if parsed.path in {"/provider-imports/preview", "/provider-imports/sync"}:
                 mappings = payload.get("workspace_mappings") or {}
-                adapter = None
                 provider = _need(payload, "provider")
+                adapter = _provider_import_adapter(provider, payload.get("_transport"))
                 if parsed.path.endswith("preview"):
-                    from auremgrid.connectors.financial import MetaAdsReadOnlyAdapter, StripeReadOnlyAdapter
-                    transport = payload.get("_transport")
-                    adapter = {"stripe_accounting": StripeReadOnlyAdapter(transport), "meta_ads": MetaAdsReadOnlyAdapter(transport)}.get(provider)
                     result = self.os.provider_imports.preview(identity, provider, _need(payload,"account_id"), mappings,
                         _need(payload,"resource"), _optional_str(payload.get("cursor")), adapter)
                 else:

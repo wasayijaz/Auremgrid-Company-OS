@@ -100,6 +100,20 @@ class PrivateSingleHostDeployTests(unittest.TestCase):
         for forbidden in ("AUREMGRID_ACCESS_TOKEN", "CLIENT_SECRET", "API_KEY"):
             self.assertNotIn(forbidden, workflow)
 
+    def test_release_validate_runs_documented_non_browser_release_checks(self) -> None:
+        release = ROOT.joinpath("scripts", "release.py").read_text(encoding="utf-8")
+        for marker in (
+            "compileall",
+            "scripts/dashboard_showcase_svg.py",
+            "auremgrid.cli",
+            "evaluate-intelligence",
+            "scripts/private_host_smoke.py",
+            "unittest",
+            "git\", \"diff\", \"--check",
+            "git\", \"status\", \"--porcelain",
+        ):
+            self.assertIn(marker, release)
+
 
 if __name__ == "__main__":
     unittest.main()

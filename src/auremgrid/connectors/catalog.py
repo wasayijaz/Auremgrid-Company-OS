@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterable, Mapping, Protocol
+from typing import Callable, Mapping, Protocol
 
 from auremgrid.connectors.bus import ConnectorEvent
 
@@ -64,6 +64,3 @@ def connector_catalog() -> list[dict[str,object]]:
         "oauth_provider":item.oauth_provider,
         "oauth": {"provider": item.oauth_provider, "pkce": True, "revoke": True,
                    "health": True} if item.install_mode == "oauth" else None} for item in TARGET_CONNECTORS]
-
-
-    ConnectorDefinition("notion","Notion",("pages","databases","blocks"),("read_content",)),

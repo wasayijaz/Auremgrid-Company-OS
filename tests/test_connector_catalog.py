@@ -7,6 +7,7 @@ class ConnectorCatalogTests(unittest.TestCase):
     def test_every_target_connector_has_explicit_permissions_and_not_connected_truth(self):
         catalog=connector_catalog();names={item["source"] for item in catalog}
         self.assertTrue({"slack","google_drive","gmail","clickup","figma","github","fireflies","meta_ads","google_ads","stripe_accounting"}<=names)
+        self.assertNotIn("notion", names)
         self.assertTrue(all(item["status"]=="not_connected" and item["permission_scopes"] for item in catalog))
     def test_unconfigured_connector_returns_no_fabricated_events(self):
         connector=ConfiguredConnector(TARGET_CONNECTORS[0],{"ws_alpha":"C1"});self.assertEqual(connector.status,"not_connected");self.assertEqual(connector.pull(),[])

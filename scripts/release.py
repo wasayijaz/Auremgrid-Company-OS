@@ -1,7 +1,9 @@
 """Release validation and tagging tool.
 
-Validates the codebase is ready for release: compiled source,
-passing tests, clean working tree. Then creates an annotated git tag.
+Validates the codebase is ready for release: compiled source, generated
+dashboard evidence, offline Intelligence checks, private-host smoke, passing
+tests, whitespace checks, and clean working tree. Then creates an annotated
+git tag.
 """
 from __future__ import annotations
 
@@ -25,6 +27,9 @@ def validate(repo):
     print("Checking compiled source...")
     _run([sys.executable, "-m", "compileall", "-q", "src", "tests"], repo)
     print("  OK")
+    print("Checking dashboard evidence generation...")
+    _run([sys.executable, "scripts/dashboard_showcase_svg.py"], repo)
+    print("  OK")
     print("Checking import structure...")
     _run([
         sys.executable, "-c",
@@ -33,8 +38,17 @@ def validate(repo):
         "import auremgrid.connectors; import auremgrid.adapters",
     ], repo)
     print("  OK")
+    print("Running Intelligence release evaluations...")
+    _run([sys.executable, "-m", "auremgrid.cli", "evaluate-intelligence"], repo)
+    print("  OK")
+    print("Running private-host smoke rehearsal...")
+    _run([sys.executable, "scripts/private_host_smoke.py"], repo)
+    print("  OK")
     print("Running verification suite...")
     _run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], repo)
+    print("  OK")
+    print("Checking whitespace-safe diff...")
+    _run(["git", "diff", "--check"], repo)
     print("  OK")
     print("Checking working tree...")
     status = _run(["git", "status", "--porcelain"], repo)

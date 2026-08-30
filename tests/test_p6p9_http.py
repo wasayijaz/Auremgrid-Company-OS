@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection
 
 from auremgrid.api.http import serve
@@ -42,8 +43,10 @@ class P6P9HttpTests(unittest.TestCase):
         self.assertEqual(status, 200); self.assertEqual(len(result), 1)
 
     def test_forecast_generate(self):
-        for i, amount in enumerate((100, 120)):
-            self.os.store.conn.execute("INSERT INTO revenues (id,organization_id,workspace_id,amount,currency,kind,recognized_at,source) VALUES (?,?,?,?,?,?,?,?)", (f"r{i}", "org_p6p9", "ws_p6p9", amount, "USD", "subscription", f"2026-0{i+5}-01", "test"))
+        now = datetime.now(timezone.utc)
+        for i, (amount, days_ago) in enumerate(((100, 14), (120, 45))):
+            recognized_at = (now - timedelta(days=days_ago)).date().isoformat()
+            self.os.store.conn.execute("INSERT INTO revenues (id,organization_id,workspace_id,amount,currency,kind,recognized_at,source) VALUES (?,?,?,?,?,?,?,?)", (f"r{i}", "org_p6p9", "ws_p6p9", amount, "USD", "subscription", recognized_at, "test"))
         self.os.store.conn.commit()
         status, result = self.request("POST", "/forecasts/generate", {"forecast_type": "revenue"})
         self.assertEqual(status, 200); self.assertEqual(len(result), 3)

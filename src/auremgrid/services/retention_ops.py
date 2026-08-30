@@ -80,6 +80,14 @@ class RetentionOperations:
             self.conn.execute(
                 "INSERT INTO deletion_audit (id, organization_id, table_name, record_id, reason, initiated_by, retention_policy_id, snapshot_json, deleted_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (audit_id, organization_id, table_name, rid, reason, person_id, policy_id, snapshot, now))
+            if table_name == "campaigns":
+                # Metric snapshots are campaign-owned evidence. Retaining them after
+                # deleting their campaign would leave orphaned performance data that
+                # can survive lifecycle cleanup through direct metric reads/counts.
+                self.conn.execute(
+                    "DELETE FROM campaign_metric_snapshots WHERE organization_id=? AND campaign_id=?",
+                    (organization_id, rid),
+                )
             self.conn.execute(f"DELETE FROM {table_name} WHERE id=? AND organization_id=?", (rid, organization_id))
             deleted.append({"id": rid, "audit_id": audit_id})
         self.conn.commit()

@@ -44,7 +44,7 @@ retention_policies, CSV-first onboarding imports, brain customizations,
 portal-only report publication, durable scheduler health, scoped scheduler
 controls/heartbeats, Intelligence contracts/orchestration/learning/evaluation
 safety/proactive lifecycle/durable orchestration/action descriptors/approved action execution ledger, and injected read-only Stripe Billing/accounting
-and Meta Ads provider import ledgers are guarded as newer authenticated
+and Meta Ads/Google Ads/CRM provider import ledgers are guarded as newer authenticated
 service/route surfaces outside the P6-P15 release matrix. Provider import
 receipts are append-only and retain cursor and quarantine state. A successful,
 validated import may also create sourced local canonical finance or campaign
@@ -58,9 +58,10 @@ Release checks:
 - python scripts/dashboard_showcase_svg.py
 - git diff --check
 - `python -m auremgrid.cli evaluate-intelligence`
+- `python scripts/private_host_smoke.py`
+- `python scripts/performance_baseline.py` (10/25/50-client single-host service baseline; record the JSON artifact for the release)
 - `python -m unittest tests.test_intelligence_contracts tests.test_intelligence_contract_surfaces tests.test_intelligence_orchestrator tests.test_intelligence_learning tests.test_intelligence_learning_surfaces tests.test_intelligence_evaluation_safety tests.test_proactive_attention_lifecycle tests.test_proactive_orchestrator_refresh`
 - `python -m unittest tests.test_agent_level_routing tests.test_agent_run_observability tests.test_semantic_retrieval tests.test_private_single_host_deploy`
-- `python scripts/private_host_smoke.py`
 - `tools/run-dashboard-browser.ps1` (deterministic Playwright/Chromium gate)
 - on-disk schema and projection rebuild inspection
 

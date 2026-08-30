@@ -8,7 +8,7 @@ import unittest
 from http.client import HTTPConnection
 from pathlib import Path
 
-from auremgrid.api.http import serve
+from auremgrid.api.http import _provider_import_adapter, serve
 from auremgrid.connectors.financial import CRMReadOnlyAdapter, GoogleAdsReadOnlyAdapter, MetaAdsReadOnlyAdapter, StripeReadOnlyAdapter
 from auremgrid.domain.errors import AuthorizationError
 from auremgrid.domain.security import AuthenticatedIdentity
@@ -102,6 +102,24 @@ class ProviderImportsTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(body["status"], "preview_not_connected")
         self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM provider_import_cursors").fetchone()[0], 0)
+
+    def test_http_provider_import_adapter_hook_covers_all_documented_import_providers(self) -> None:
+        def transport(**_: object) -> dict[str, object]:
+            return {"data": []}
+
+        expected = {
+            "crm": CRMReadOnlyAdapter,
+            "google_ads": GoogleAdsReadOnlyAdapter,
+            "meta_ads": MetaAdsReadOnlyAdapter,
+            "stripe_accounting": StripeReadOnlyAdapter,
+        }
+        for provider, adapter_type in expected.items():
+            with self.subTest(provider=provider):
+                adapter = _provider_import_adapter(provider, transport)
+                self.assertIsInstance(adapter, adapter_type)
+                self.assertEqual(adapter.status, "configured")
+        self.assertIsNone(_provider_import_adapter("unsupported", transport))
+        self.assertIsNone(_provider_import_adapter("crm", None))
 
     def test_import_replay_and_conflict_quarantine(self) -> None:
         pages = [{"data": [{"id": "in_1", "amount": 100, "currency": "usd", "created": 1700000000, "due_at": "2023-11-20T22:13:20+00:00"}]}]
