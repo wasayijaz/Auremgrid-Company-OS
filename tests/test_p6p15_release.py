@@ -16,7 +16,7 @@ class P6P15ReleaseEvidenceTests(unittest.TestCase):
         self.http = ROOT.joinpath("src", "auremgrid", "api", "http.py").read_text(encoding="utf-8")
         self.dashboard = read_dashboard_bundle(ROOT)
         self.readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
-        self.preview = ROOT.joinpath("docs", "assets", "dashboard-showcase.svg").read_text(encoding="utf-8")
+        self.preview = ROOT.joinpath("docs", "assets", "dashboard-realistic-agency.jpg")
 
     def test_release_matrix_contains_rows_6_through_15(self) -> None:
         for requirement in range(6, 16):
@@ -115,14 +115,12 @@ class P6P15ReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(0, self.dashboard.count('name==="Settings"){target.innerHTML=['), "static Settings branch")
 
     def test_github_dashboard_showcase_is_sample_labeled_and_reproducible(self) -> None:
-        self.assertIn("docs/assets/dashboard-showcase.svg", self.readme)
+        self.assertIn("docs/assets/dashboard-realistic-agency.jpg", self.readme)
         self.assertIn("python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791", self.readme)
         self.assertIn("SAMPLE DATA", self.readme)
-        self.assertIn("SAMPLE DATA", self.preview)
-        self.assertIn("sample.invalid", self.preview)
-        for retired_marker in ("org_demo", "person_demo_owner", "ws_alpha", "act_alpha_admin", "Auremgrid Demo", "Demo Owner"):
-            self.assertNotIn(retired_marker, self.preview)
-        self.assertIn("python scripts/dashboard_showcase_svg.py", self.doc)
+        self.assertTrue(self.preview.is_file())
+        self.assertGreater(self.preview.stat().st_size, 10_000)
+        self.assertIn("python scripts/dashboard_showcase_image.py", self.doc)
 
 
 if __name__ == "__main__":

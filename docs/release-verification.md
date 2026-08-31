@@ -61,7 +61,7 @@ Release checks:
 
 - tools/test.ps1
 - Python compileall over src and tests
-- python scripts/dashboard_showcase_svg.py
+- python scripts/dashboard_showcase_image.py
 - git diff --check
 - `python -m auremgrid.cli evaluate-intelligence`
 - `python scripts/private_host_smoke.py`

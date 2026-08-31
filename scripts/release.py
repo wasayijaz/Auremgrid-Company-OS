@@ -28,7 +28,7 @@ def validate(repo):
     _run([sys.executable, "-m", "compileall", "-q", "src", "tests"], repo)
     print("  OK")
     print("Checking dashboard evidence generation...")
-    _run([sys.executable, "scripts/dashboard_showcase_svg.py"], repo)
+    _run([sys.executable, "scripts/dashboard_showcase_image.py"], repo)
     print("  OK")
     print("Checking import structure...")
     _run([

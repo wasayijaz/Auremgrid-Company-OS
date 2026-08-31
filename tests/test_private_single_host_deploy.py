@@ -105,7 +105,7 @@ class PrivateSingleHostDeployTests(unittest.TestCase):
         release = ROOT.joinpath("scripts", "release.py").read_text(encoding="utf-8")
         for marker in (
             "compileall",
-            "scripts/dashboard_showcase_svg.py",
+            "scripts/dashboard_showcase_image.py",
             "auremgrid.cli",
             "evaluate-intelligence",
             "scripts/private_host_smoke.py",

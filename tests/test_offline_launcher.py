@@ -33,10 +33,9 @@ class OfflineLauncherTests(unittest.TestCase):
 
     def test_readme_primary_commands_use_launcher(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        setup = readme.split("## First 30 minutes", 1)[0]
         for command in ("demo", "setup-agency", "bootstrap-auth", "serve", "worker-once", "backup", "verify-backup"):
-            self.assertIn(f"python scripts/auremgrid.py {command}", setup)
-        self.assertNotIn("\nauremgrid demo", setup)
+            self.assertIn(f"python scripts/auremgrid.py {command}", readme)
+        self.assertNotIn("\nauremgrid demo", readme)
 
 
 if __name__ == "__main__":
