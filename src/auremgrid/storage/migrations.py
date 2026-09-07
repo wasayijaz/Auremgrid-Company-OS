@@ -4441,6 +4441,67 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        64,
+        "agency_asset_layer",
+        """
+        CREATE TABLE IF NOT EXISTS agency_assets (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            title TEXT NOT NULL,
+            asset_kind TEXT NOT NULL CHECK(asset_kind IN ('image','video','document','deck','file','link')),
+            storage_provider TEXT NOT NULL DEFAULT 'local',
+            locator TEXT NOT NULL,
+            mime_type TEXT,
+            checksum_sha256 TEXT,
+            project_id TEXT,
+            campaign_id TEXT,
+            deliverable_id TEXT,
+            approval_state TEXT NOT NULL DEFAULT 'draft' CHECK(approval_state IN ('draft','in_review','approved','revision_requested','rejected')),
+            creator_person_id TEXT,
+            reviewer_person_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agency_assets_scope
+            ON agency_assets(organization_id, workspace_id, asset_kind, approval_state);
+        CREATE TABLE IF NOT EXISTS agency_asset_versions (
+            id TEXT PRIMARY KEY,
+            asset_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            storage_provider TEXT NOT NULL DEFAULT 'local',
+            locator TEXT NOT NULL,
+            mime_type TEXT,
+            checksum_sha256 TEXT,
+            dimensions TEXT,
+            duration_seconds REAL,
+            preview_url TEXT,
+            notes TEXT NOT NULL DEFAULT '',
+            created_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(asset_id, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agency_asset_versions
+            ON agency_asset_versions(asset_id, version);
+        CREATE TABLE IF NOT EXISTS asset_review_threads (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            asset_id TEXT NOT NULL,
+            version_id TEXT,
+            kind TEXT NOT NULL CHECK(kind IN ('region','timestamp','page','general')),
+            anchor_json TEXT NOT NULL DEFAULT '{}',
+            body TEXT NOT NULL,
+            author_person_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','reopened')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_asset_review_threads
+            ON asset_review_threads(asset_id, status);
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
