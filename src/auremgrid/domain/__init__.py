@@ -20,6 +20,7 @@ from auremgrid.domain.models import (
     SourceArtifact,
     Workspace,
 )
+from auremgrid.domain.knowledge_state import KnowledgeState, KNOWLEDGE_STATES
 
 __all__ = [
     "Actor",
@@ -38,4 +39,6 @@ __all__ = [
     "SourceArtifact",
     "ValidationError",
     "Workspace",
+    "KnowledgeState",
+    "KNOWLEDGE_STATES",
 ]

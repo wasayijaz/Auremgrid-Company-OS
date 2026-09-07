@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
+from auremgrid.domain.knowledge_state import validate_knowledge_transition
 from auremgrid.domain.models import Citation, Fact
 
 
@@ -377,12 +378,13 @@ class BrainOperations:
         result=dict(row); result["status"]="approved" if action=="approve" else "rejected"; result["reviewed_by_person_id"]=person_id; result["reviewed_at"]=now; return result
 
     def _state_event(self, organization_id: str, workspace_id: str | None, subject_type: str, subject_id: str, state: str, reason: str, evidence_source_id: str | None, actor_id: str, effective_from: datetime | None = None, effective_until: datetime | None = None) -> str:
-        now=effective_from or datetime.now(timezone.utc); event_id=self._id("kstate")
         prior=self.conn.execute(
-            "SELECT id,event_sequence FROM knowledge_state_events WHERE organization_id=? AND workspace_id IS ? "
+            "SELECT id,event_sequence,state FROM knowledge_state_events WHERE organization_id=? AND workspace_id IS ? "
             "AND subject_type=? AND subject_id=? ORDER BY event_sequence DESC LIMIT 1",
             (organization_id,workspace_id,subject_type,subject_id),
         ).fetchone()
+        state = validate_knowledge_transition(None if prior is None else prior["state"], state)
+        now=effective_from or datetime.now(timezone.utc); event_id=self._id("kstate")
         sequence=1 if prior is None else int(prior["event_sequence"])+1
         self.conn.execute("""INSERT INTO knowledge_state_events(
             id,organization_id,workspace_id,subject_type,subject_id,state,reason,evidence_source_id,actor_id,
@@ -401,10 +403,67 @@ class BrainOperations:
             event_id=self._state_event(organization_id,workspace_id,subject_type,subject_id,state,reason,evidence_source_id,actor_id,effective_from,effective_until)
         return dict(self.conn.execute("SELECT * FROM knowledge_state_events WHERE id=?",(event_id,)).fetchone())
 
+    def derive_stale_states(self, organization_id: str, workspace_id: str, identity: Any,
+        max_age_seconds: float, as_of: datetime | None = None,
+        subject_type: str | None = None) -> list[dict[str, Any]]:
+        """Append stale events for active states older than the deterministic cutoff."""
+        actor_id = self._identity_person(organization_id, workspace_id, identity, "brain_promote")
+        if max_age_seconds < 0:
+            raise ValidationError("max_age_seconds must be non-negative")
+        moment = as_of or datetime.now(timezone.utc)
+        cutoff = moment.timestamp() - max_age_seconds
+        rows = self.conn.execute(
+            "SELECT e.* FROM knowledge_state_events e JOIN ("
+            "SELECT subject_type,subject_id,MAX(event_sequence) AS sequence "
+            "FROM knowledge_state_events WHERE organization_id=? AND workspace_id=? "
+            "GROUP BY subject_type,subject_id) current "
+            "ON current.subject_type=e.subject_type AND current.subject_id=e.subject_id "
+            "AND current.sequence=e.event_sequence "
+            "WHERE e.organization_id=? AND e.workspace_id=? AND e.state IN ('verified','high_confidence','inferred','proposed') "
+            "AND e.effective_from<=? ORDER BY e.subject_type,e.subject_id",
+            (organization_id, workspace_id, organization_id, workspace_id, moment.isoformat()),
+        ).fetchall()
+        if subject_type is not None:
+            rows = [row for row in rows if row["subject_type"] == subject_type]
+        stale: list[dict[str, Any]] = []
+        with self.os.store.atomic(immediate=True):
+            for row in rows:
+                effective = datetime.fromisoformat(row["effective_from"])
+                if effective.timestamp() > cutoff:
+                    continue
+                event_id = self._state_event(
+                    organization_id, workspace_id, row["subject_type"], row["subject_id"],
+                    "stale", "deterministic freshness threshold exceeded", row["evidence_source_id"],
+                    actor_id, effective_from=moment,
+                )
+                stale.append(dict(self.conn.execute("SELECT * FROM knowledge_state_events WHERE id=?", (event_id,)).fetchone()))
+        return stale
+
+    def mark_stale_if_older_than(self, organization_id: str, workspace_id: str, identity: Any,
+        max_age_seconds: float, as_of: datetime | None = None,
+        subject_type: str | None = None) -> list[dict[str, Any]]:
+        """Compatibility name for callers that treat stale derivation as a write."""
+        return self.derive_stale_states(
+            organization_id, workspace_id, identity, max_age_seconds, as_of, subject_type,
+        )
+
     def knowledge_state(self, organization_id: str, workspace_id: str, person_id: str, subject_type: str, subject_id: str, as_of: datetime | None = None) -> dict[str, Any]:
         self._authorize(organization_id,workspace_id,person_id,False)
         row=self._knowledge_state_row(workspace_id,subject_type,subject_id,as_of,organization_id)
         return dict(row) if row is not None else {"state":"unknown","subject_id":subject_id}
+
+    def query_knowledge_state(self, organization_id: str, workspace_id: str, person_id: str,
+        subject_type: str, subject_id: str, as_of: datetime | None = None) -> dict[str, Any]:
+        return self.knowledge_state(organization_id, workspace_id, person_id, subject_type, subject_id, as_of)
+
+    def transition_knowledge_state(self, organization_id: str, workspace_id: str | None,
+        subject_type: str, subject_id: str, state: str, reason: str, actor_id: Any,
+        evidence_source_id: str | None = None, effective_from: datetime | None = None,
+        effective_until: datetime | None = None) -> dict[str, Any]:
+        return self.record_knowledge_state(
+            organization_id, workspace_id, subject_type, subject_id, state, reason,
+            actor_id, evidence_source_id, effective_from, effective_until,
+        )
 
     def _knowledge_state_row(self, workspace_id: str, subject_type: str, subject_id: str,
         as_of: datetime | None = None, organization_id: str | None = None) -> Any:
