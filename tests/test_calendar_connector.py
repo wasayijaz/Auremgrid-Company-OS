@@ -311,6 +311,41 @@ class CalendarConnectorLifecycleTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.service.sync(self.org_a, "acc-agency-1", "primary", bad_scopes)
 
+    def test_shared_calendar_across_workspaces_does_not_suppress_sync(self) -> None:
+        feed = {
+            "provider": "google_calendar",
+            "account_id": "acc-shared",
+            "calendar_id": "cal-shared-board",
+            "scopes": sorted(REQUIRED_SCOPES),
+            "provider_version": "rev-201",
+            "data": [
+                {
+                    "id": "event-1",
+                    "title": "Strategy Alignment",
+                    "scheduled_at": "2026-09-15T10:00:00Z",
+                    "attendees": [{"name": "Lead", "agency_role": "facilitator"}],
+                }
+            ],
+        }
+
+        res_ws1 = self.service.sync(
+            self.org_a, "acc-shared", "cal-shared-board", feed, workspace_id="ws-alpha"
+        )
+        self.assertEqual(res_ws1["imported"], 1)
+        self.assertEqual(res_ws1["duplicates"], 0)
+
+        res_ws2 = self.service.sync(
+            self.org_a, "acc-shared", "cal-shared-board", feed, workspace_id="ws-beta"
+        )
+        self.assertEqual(res_ws2["imported"], 1)
+        self.assertEqual(res_ws2["duplicates"], 0)
+
+        meetings_alpha = self.service.list_meetings(self.org_a, workspace_id="ws-alpha")
+        meetings_beta = self.service.list_meetings(self.org_a, workspace_id="ws-beta")
+        self.assertEqual(len(meetings_alpha), 1)
+        self.assertEqual(len(meetings_beta), 1)
+        self.assertEqual(meetings_alpha[0]["workspace_id"], "ws-alpha")
+        self.assertEqual(meetings_beta[0]["workspace_id"], "ws-beta")
 
 if __name__ == "__main__":
     unittest.main()

@@ -119,7 +119,7 @@ class CalendarConnectorService:
 
         # In-memory tracking for external simulated syncs (mirroring substance services)
         self.records: dict[tuple[str, str], dict[str, Any]] = {}
-        self.cursors: dict[tuple[str, str], str | None] = {}
+        self.cursors: dict[tuple[str, str | None, str], str | None] = {}
         self.quarantines: list[dict[str, Any]] = []
 
     def close(self) -> None:
@@ -730,7 +730,7 @@ class CalendarConnectorService:
         if not provider_version:
             raise ValidationError("calendar provider version is required")
 
-        cursor_key = (organization_id, calendar_id)
+        cursor_key = (organization_id, workspace_id, calendar_id)
         cursor_before = cursor if cursor is not None else self.cursors.get(cursor_key)
         if cursor_before and cursor_before == provider_version:
             return {
@@ -769,7 +769,7 @@ class CalendarConnectorService:
                 continue
 
             external_id = str(item.get("id") or item.get("external_id") or "")
-            dedupe_key = f"{calendar_id}:{external_id}:{provider_version}"
+            dedupe_key = f"{calendar_id}:{workspace_id}:{external_id}"
             rec_key = (organization_id, dedupe_key)
 
             if rec_key in self.records:
@@ -810,4 +810,3 @@ class CalendarConnectorService:
             "quarantined": quarantined,
             "records": imported_records,
         }
-
