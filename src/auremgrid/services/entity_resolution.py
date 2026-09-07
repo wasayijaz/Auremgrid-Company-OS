@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
-from auremgrid.services.brain_ops import _forms, _norm, _variant_score
+from auremgrid.services.brain_ops_shared import _forms, _norm, _variant_score
 
 
 class EntityResolutionService:
