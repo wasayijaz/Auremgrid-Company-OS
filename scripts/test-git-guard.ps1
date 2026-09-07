@@ -40,10 +40,16 @@ try {
     git reset -q HEAD trailer.txt
 
     $reserved = "co" + "dex"
-    Set-Content -Path "reserved.txt" -Value $reserved
+    Set-Content -Path "reserved.txt" -Value "review notes about $reserved tooling"
     git add reserved.txt
-    Assert-Fails { git commit -qm "Reserved word rejection" } "Reserved attribution reference was accepted."
+    git commit -qm "Plain reserved-word content"
+    if ($LASTEXITCODE -ne 0) { throw "Plain content mentioning the reserved word was rejected." }
     git reset -q HEAD reserved.txt
+
+    Set-Content -Path "reserved-trailer.txt" -Value "placeholder"
+    git add reserved-trailer.txt
+    Assert-Fails { git commit -qm "Reserved trailer rejection`n`nCo-authored-by: $reserved <bot@example.com>" } "Reserved attribution trailer was accepted."
+    git reset -q HEAD reserved-trailer.txt
 
     Set-Content -Path "identity.txt" -Value "identity check"
     git add identity.txt

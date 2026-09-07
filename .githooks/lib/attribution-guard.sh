@@ -59,9 +59,13 @@ reject_staged_reserved_attribution() {
     case "$diff_line" in
       +[!+]*)
         case "$diff_line" in
-          *"$reserved_word"*)
-            echo 'Blocked: staged content includes a reserved third-party attribution reference.' >&2
-            exit 1
+          *-[Bb][Yy]:*)
+            case "$diff_line" in
+              *"$reserved_word"*)
+                echo 'Blocked: staged attribution trailer includes a reserved third-party attribution reference.' >&2
+                exit 1
+                ;;
+            esac
             ;;
         esac
         ;;
