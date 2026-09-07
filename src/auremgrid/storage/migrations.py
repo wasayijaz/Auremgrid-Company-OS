@@ -4339,6 +4339,108 @@ MIGRATIONS = (
             ON agent_executor_actions(organization_id,run_id);
         """,
     ),
+    Migration(
+        62,
+        "automated_outcome_attribution",
+        """
+        CREATE TABLE IF NOT EXISTS outcome_attribution_plans (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            subject_kind TEXT NOT NULL CHECK(subject_kind IN ('campaign','decision')),
+            subject_id TEXT NOT NULL,
+            metric_names_json TEXT NOT NULL,
+            evaluation_window_days INTEGER NOT NULL CHECK(evaluation_window_days > 0),
+            evaluation_window_start TEXT NOT NULL,
+            evaluation_window_end TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('planned','evaluated')),
+            baseline_summary_json TEXT NOT NULL,
+            outcome_summary_json TEXT,
+            created_by_person_id TEXT NOT NULL,
+            evaluated_by_person_id TEXT,
+            created_at TEXT NOT NULL,
+            evaluated_at TEXT,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(created_by_person_id) REFERENCES people(id),
+            FOREIGN KEY(evaluated_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_outcome_attribution_scope
+            ON outcome_attribution_plans(organization_id, workspace_id, created_at DESC, id);
+        CREATE INDEX IF NOT EXISTS idx_outcome_attribution_subject
+            ON outcome_attribution_plans(organization_id, workspace_id, subject_kind, subject_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS outcome_attribution_snapshots (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            attribution_id TEXT NOT NULL,
+            snapshot_kind TEXT NOT NULL CHECK(snapshot_kind IN ('baseline','outcome')),
+            captured_at TEXT NOT NULL,
+            window_start TEXT,
+            window_end TEXT,
+            values_json TEXT NOT NULL,
+            deltas_json TEXT,
+            created_by_person_id TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(attribution_id) REFERENCES outcome_attribution_plans(id),
+            FOREIGN KEY(created_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_outcome_attribution_snapshots_plan
+            ON outcome_attribution_snapshots(organization_id, workspace_id, attribution_id, captured_at, id);
+        CREATE TRIGGER IF NOT EXISTS outcome_attribution_snapshots_no_update BEFORE UPDATE ON outcome_attribution_snapshots BEGIN
+            SELECT RAISE(ABORT, 'outcome attribution snapshots are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS outcome_attribution_snapshots_no_delete BEFORE DELETE ON outcome_attribution_snapshots BEGIN
+            SELECT RAISE(ABORT, 'outcome attribution snapshots are append-only');
+        END;
+        """,
+    ),
+    Migration(
+        63,
+        "analytics_provider_import_records",
+        """
+        DROP TRIGGER IF EXISTS provider_import_records_no_update;
+        DROP TRIGGER IF EXISTS provider_import_records_no_delete;
+        DROP TABLE IF EXISTS provider_import_records_v53;
+        ALTER TABLE provider_import_records RENAME TO provider_import_records_v53;
+        CREATE TABLE provider_import_records (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            provider TEXT NOT NULL CHECK(provider IN ('stripe_accounting','meta_ads','google_ads','crm','ga4_analytics','search_console')),
+            object_type TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            occurred_at TEXT,
+            amount REAL,
+            currency TEXT,
+            payload_hash TEXT NOT NULL,
+            source TEXT NOT NULL,
+            imported_at TEXT NOT NULL,
+            UNIQUE(organization_id, provider, object_type, external_id),
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        INSERT INTO provider_import_records(
+            id,organization_id,workspace_id,provider,object_type,external_id,account_id,
+            occurred_at,amount,currency,payload_hash,source,imported_at
+        )
+            SELECT id,organization_id,workspace_id,provider,object_type,external_id,account_id,
+                   occurred_at,amount,currency,payload_hash,source,imported_at
+            FROM provider_import_records_v53;
+        DROP TABLE provider_import_records_v53;
+        CREATE INDEX IF NOT EXISTS idx_provider_import_records_scope
+            ON provider_import_records(organization_id, workspace_id, provider, object_type, imported_at);
+        CREATE TRIGGER IF NOT EXISTS provider_import_records_no_update BEFORE UPDATE ON provider_import_records BEGIN
+            SELECT RAISE(ABORT, 'provider import records are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS provider_import_records_no_delete BEFORE DELETE ON provider_import_records BEGIN
+            SELECT RAISE(ABORT, 'provider import records are append-only');
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

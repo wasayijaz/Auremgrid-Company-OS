@@ -66,6 +66,7 @@ from auremgrid.services.integration_ops import IntegrationOperations
 from auremgrid.services.client_portal import ClientPortalOperations
 from auremgrid.services.feedback_ops import FeedbackOperations
 from auremgrid.services.understanding_ops import UnderstandingService
+from auremgrid.services.attribution_ops import AttributionService
 from auremgrid.services.performance_ops import PerformanceOperations
 from auremgrid.services.forecast_ops import ForecastOperations
 from auremgrid.services.revenue_ops import RevenueOperations
@@ -230,6 +231,7 @@ class CompanyOS:
         self.intelligence_contracts = IntelligenceContractService(self)
         self.intelligence_contracts.seed_defaults()
         self.intelligence_learning = IntelligenceLearningService(self, new_id)
+        self.attribution = AttributionService(self.store.conn, new_id, self._require_person_access, self.intelligence_learning)
         self.intelligence_orchestrator = IntelligenceOrchestrator(self)
         self.agent_ops.intelligence_orchestrator = self.intelligence_orchestrator
         self.agent_ops.os = self

@@ -8,10 +8,12 @@ from typing import Any
 
 from auremgrid.connectors.financial import (
     CRMReadOnlyAdapter,
+    GA4AnalyticsReadOnlyAdapter,
     GoogleAdsReadOnlyAdapter,
     ImportPage,
     MetaAdsReadOnlyAdapter,
     ProviderRecord,
+    SearchConsoleReadOnlyAdapter,
     StripeReadOnlyAdapter,
 )
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
@@ -29,9 +31,11 @@ class ProviderImportService:
             raise AuthorizationError("provider import mapping is outside workspace scope")
         adapter = adapter or {
             "crm": CRMReadOnlyAdapter(),
+            "ga4_analytics": GA4AnalyticsReadOnlyAdapter(),
             "stripe_accounting": StripeReadOnlyAdapter(),
             "meta_ads": MetaAdsReadOnlyAdapter(),
             "google_ads": GoogleAdsReadOnlyAdapter(),
+            "search_console": SearchConsoleReadOnlyAdapter(),
         }.get(provider)
         if adapter is None:
             raise ValidationError("unsupported provider import")
@@ -47,8 +51,13 @@ class ProviderImportService:
         if getattr(adapter, "transport", None) is None or getattr(adapter, "status", "not_connected") != "configured":
             return result
         page: ImportPage = adapter.pull(resource, cursor, account_id, workspace_mappings)
+        self._verify_page(page, provider, account_id, workspace_id, resource)
         result["status"] = "preview_degraded" if page.quarantined else "preview_valid"
         result["cursor_after"] = page.next_cursor
+        result["verification"] = _plain(page.verification)
+        result["baseline"] = _plain(page.baseline)
+        result["reconcile"] = _plain(page.reconcile)
+        result["fence"] = _plain(page.fence)
         result["quarantine_details"] = list(page.quarantined)
         result["quarantined"] = len(page.quarantined)
         for record in page.records:
@@ -85,9 +94,11 @@ class ProviderImportService:
             raise AuthorizationError("provider import mapping is outside workspace scope")
         adapter = adapter or {
             "crm": CRMReadOnlyAdapter(),
+            "ga4_analytics": GA4AnalyticsReadOnlyAdapter(),
             "stripe_accounting": StripeReadOnlyAdapter(),
             "meta_ads": MetaAdsReadOnlyAdapter(),
             "google_ads": GoogleAdsReadOnlyAdapter(),
+            "search_console": SearchConsoleReadOnlyAdapter(),
         }.get(provider)
         if adapter is None:
             raise ValidationError("unsupported provider import")
@@ -102,11 +113,16 @@ class ProviderImportService:
                     "imported": 0, "duplicates": 0, "quarantined": 0, "canonical_written": 0,
                     "unsupported": 0, "quarantine_details": []}
         page: ImportPage = adapter.pull(resource, cursor, account_id, workspace_mappings)
+        self._verify_page(page, provider, account_id, workspace_id, resource)
         result = {"provider": provider, "resource": resource, "account_id": account_id,
                   "cursor_before": cursor, "cursor_after": page.next_cursor,
                   "imported": 0, "duplicates": 0, "quarantined": len(page.quarantined),
                   "canonical_written": 0, "unsupported": 0,
-                  "quarantine_details": list(page.quarantined)}
+                  "quarantine_details": list(page.quarantined),
+                  "verification": _plain(page.verification),
+                  "baseline": _plain(page.baseline),
+                  "reconcile": _plain(page.reconcile),
+                  "fence": _plain(page.fence)}
         for detail in page.quarantined:
             self._quarantine(identity.organization_id, provider, resource, str(detail.get("external_id") or ""),
                              str(detail.get("reason") or "invalid_record"), detail)
@@ -116,10 +132,34 @@ class ProviderImportService:
             if action == "imported":
                 canonical = self._apply_canonical(identity, record)
                 result[canonical] += 1
+        if isinstance(result["reconcile"], dict):
+            result["reconcile"].update({
+                "imported": result["imported"],
+                "duplicates": result["duplicates"],
+                "canonical_written": result["canonical_written"],
+                "unsupported": result["unsupported"],
+                "quarantined_total": result["quarantined"],
+            })
         status = "degraded" if result["quarantined"] else "configured"
         self._cursor(identity.organization_id, workspace_id, provider, account_id, resource, page.next_cursor,
                      status, "conflicting_update" if result["quarantined"] else None)
         return result
+
+    def _verify_page(self, page: ImportPage, provider: str, account_id: str, workspace_id: str, resource: str) -> None:
+        verification = page.verification or {}
+        if verification.get("provider") not in {None, provider}:
+            raise ValidationError("provider identity verification failed")
+        if verification.get("account_id") not in {None, account_id}:
+            raise ValidationError("provider account fence verification failed")
+        if verification and not verification.get("read_scope_verified"):
+            raise ValidationError("provider read scope verification failed")
+        fence = page.fence or {}
+        if fence.get("account_id") not in {None, account_id}:
+            raise ValidationError("provider account fence verification failed")
+        if fence.get("workspace_id") not in {None, workspace_id}:
+            raise ValidationError("provider workspace fence verification failed")
+        if fence.get("resource") not in {None, resource}:
+            raise ValidationError("provider resource fence verification failed")
 
     def _cursor(self, organization_id: str, workspace_id: str, provider: str, account_id: str,
                 resource: str, cursor: str | None, status: str, last_error: str | None) -> None:
@@ -135,10 +175,26 @@ class ProviderImportService:
     def _apply(self, organization_id: str, record: ProviderRecord) -> str:
         digest = record.payload_hash
         existing = self.conn.execute(
-            "SELECT payload_hash FROM provider_import_records WHERE organization_id=? AND provider=? AND object_type=? AND external_id=?",
+            "SELECT workspace_id,account_id,payload_hash FROM provider_import_records WHERE organization_id=? AND provider=? AND object_type=? AND external_id=?",
             (organization_id, record.provider, record.object_type, record.external_id),
         ).fetchone()
         if existing is not None:
+            if existing["workspace_id"] != record.workspace_id or existing["account_id"] != record.account_id:
+                self.conn.execute(
+                    "INSERT INTO provider_import_quarantines (id,organization_id,provider,object_type,external_id,reason,evidence_digest,quarantine_details,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (self.os.jobs.new_id("import_q"), organization_id, record.provider, record.object_type,
+                     record.external_id, "fence_violation", digest,
+                     json.dumps({
+                         "account_id": record.account_id,
+                         "workspace_id": record.workspace_id,
+                         "existing_account_id": existing["account_id"],
+                         "existing_workspace_id": existing["workspace_id"],
+                         "dedupe_key": record.dedupe_key,
+                     }, sort_keys=True),
+                     datetime.now(timezone.utc).replace(microsecond=0).isoformat()),
+                )
+                self.conn.commit()
+                return "quarantined"
             if existing["payload_hash"] != digest:
                 self.conn.execute(
                     "INSERT INTO provider_import_quarantines (id,organization_id,provider,object_type,external_id,reason,evidence_digest,quarantine_details,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -180,6 +236,8 @@ class ProviderImportService:
                 return self._apply_meta(identity, record)
             if record.provider == "google_ads":
                 return self._apply_google_ads(identity, record)
+            if record.provider in {"ga4_analytics", "search_console"}:
+                return self._apply_analytics(identity, record)
             if record.provider == "crm":
                 return self._apply_crm(identity, record)
         except (AuthorizationError, NotFoundError, ValidationError, TypeError, ValueError) as exc:
@@ -215,6 +273,13 @@ class ProviderImportService:
                     return {"action": "quarantined", "reason": "canonical_write_rejected", "error": "google ads campaign requires name", "external_id": record.external_id}
                 return {"action": "canonical_would_write"}
             if record.object_type == "metrics":
+                campaign_id = str(record.payload.get("canonical_campaign_id") or "").strip()
+                if not campaign_id:
+                    return {"action": "unsupported", "reason": "unsupported_without_campaign_mapping", "external_id": record.external_id}
+                return {"action": "canonical_would_write"}
+            return {"action": "unsupported", "reason": "unsupported_resource", "external_id": record.external_id}
+        if record.provider in {"ga4_analytics", "search_console"}:
+            if record.object_type in {"metrics", "events", "queries"}:
                 campaign_id = str(record.payload.get("canonical_campaign_id") or "").strip()
                 if not campaign_id:
                     return {"action": "unsupported", "reason": "unsupported_without_campaign_mapping", "external_id": record.external_id}
@@ -323,6 +388,30 @@ class ProviderImportService:
         return "unsupported"
 
 
+    def _apply_analytics(self, identity: Any, record: ProviderRecord) -> str:
+        if record.object_type not in {"metrics", "events", "queries"}:
+            return "unsupported"
+        campaign_id = str(record.payload.get("canonical_campaign_id") or "").strip()
+        if not campaign_id:
+            self._quarantine(identity.organization_id, record.provider, record.object_type, record.external_id,
+                             "unsupported_without_campaign_mapping", {"payload": dict(record.payload)})
+            return "unsupported"
+        source = f"{record.provider}:{record.object_type}:{record.external_id}"
+        self.os.agency_ops.record_campaign_metrics(
+            identity.organization_id,
+            record.workspace_id,
+            identity.person_id,
+            campaign_id,
+            source,
+            _num(record.payload.get("spend")),
+            _num(_nested(record.payload, "revenue", "purchase_revenue", "totalRevenue", "metrics.totalRevenue")),
+            _num(_nested(record.payload, "leads", "conversions", "event_count", "metrics.conversions", "metrics.eventCount")),
+            _num(_nested(record.payload, "impressions", "metrics.impressions")),
+            _num(_nested(record.payload, "clicks", "sessions", "metrics.clicks", "metrics.sessions")),
+        )
+        return "canonical_written"
+
+
     def _apply_crm(self, identity: Any, record: ProviderRecord) -> str:
         if record.object_type == "contacts":
             fields = _crm_contact_fields(record)
@@ -358,6 +447,10 @@ class ProviderImportService:
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _plain(value: Any) -> Any:
+    return json.loads(json.dumps(value, default=str)) if value is not None else None
 
 
 def _num(value: Any) -> float | None:

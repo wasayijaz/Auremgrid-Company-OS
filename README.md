@@ -27,8 +27,8 @@ flowchart LR
 | Keep the context | Documents, facts, relations, citations, history, conflicts, proposals, saved/customized views, FTS5 search, local graph projection, and optional local semantic projection. The understanding pipeline turns notes and meeting text into typed, evidence-anchored proposals with an audited human promotion workflow. |
 | Track money and capacity | Source-backed revenue, invoices, costs, budgets, software and AI-usage costs, client economics, skills, availability, leave, and capacity boards. Unknown or disconnected values remain unknown. |
 | Coordinate agents safely | Agent records, workspace/tool policies, queues, runs, traces, costs, task review, bounded delegation, training-mode automation, durable jobs, and approved reversible local actions. A durable cognitive executor separates model thinking from actions with provider fallback chains, budgets, and process-level cancellation. |
-| Connect deliberately | Read paths for selected providers, read-only import adapters, OAuth/PKCE and credential boundaries, sync state, quarantines, backups, restores, and an asset-recovery registry. |
-| Prove the intelligence | Deep specialist ReasoningProtocols with company lead/executive role tiers, a human-labelled benchmark measuring attention precision/recall, unsupported-claim rate, and calibration, plus release gates for citation, leakage, and usefulness. |
+| Connect deliberately | Read paths for selected providers, read-only import adapters (Stripe accounting, Meta Ads, Google Ads, CRM, GA4 analytics, Search Console), OAuth/PKCE and credential boundaries, sync state with reconcile totals, cross-account replay quarantines, backups, restores, and an asset-recovery registry. |
+| Prove the intelligence | Deep specialist ReasoningProtocols with company lead/executive role tiers, a human-labelled benchmark measuring attention precision/recall, unsupported-claim rate, and calibration, plus release gates for citation, leakage, and usefulness. Automated outcome attribution plans capture sourced baseline and outcome snapshots with explicit unknowns and feed verified learning records. |
 
 ## First 30 minutes
 

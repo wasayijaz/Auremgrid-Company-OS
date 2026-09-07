@@ -49,7 +49,7 @@ Schema 55 adds durable Hypothesis subjects and lifecycle timestamps. Schema 56
 adds principal-aware workflow roster ownership and append-only proposed meeting
 output routes.
 Schema 57 adds outbound-send attempt fencing, asset backup manifest links, and
-review-media contracts. Schema 58 adds digest-only webhook quarantine receipts. Schema 59 permits physical source-content deletion while preserving append-only lifecycle and provider-route metadata with source links cleared. Schema 60 adds the understanding pipeline's source, proposal, and append-only promotion-event records. Schema 61 adds durable agent thinking results, thinking attempts, and executor action state.
+review-media contracts. Schema 58 adds digest-only webhook quarantine receipts. Schema 59 permits physical source-content deletion while preserving append-only lifecycle and provider-route metadata with source links cleared. Schema 60 adds the understanding pipeline's source, proposal, and append-only promotion-event records. Schema 61 adds durable agent thinking results, thinking attempts, and executor action state. Schema 62 adds automated outcome attribution plans with append-only baseline and outcome snapshots. Schema 63 extends provider import records to GA4 analytics and Search Console feeds.
 
 Schema 11-era databases also need the authenticated identity bootstrap. After
 migration, use the local `bootstrap-auth` command for an existing organization
