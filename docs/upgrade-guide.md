@@ -2,7 +2,7 @@
 
 Opening a database runs ordered, append-only schema migrations recorded in
 `schema_migrations`. The current documented release-line schema version is
-**58** (`webhook_quarantine_receipts`); `/health` or `/health/detailed` is the
+**64** (`agency_asset_layer`); `/health` or `/health/detailed` is the
 authoritative runtime evidence for the exact artifact being upgraded.
 
 Before upgrading:
@@ -12,7 +12,7 @@ Before upgrading:
 3. Run the full test suite against a copy.
 4. Start Auremgrid; migrations apply in order.
 5. Check `/health` (or `/health/detailed`) for the schema version; a healthy
-   schema-58 release-line installation reports `58`, and later artifacts must
+   schema-64 release-line installation reports `64`, and later artifacts must
    report their shipped schema version.
 6. Rebuild local projections with CompanyOS.rebuild_projections when required.
 
@@ -50,6 +50,9 @@ adds principal-aware workflow roster ownership and append-only proposed meeting
 output routes.
 Schema 57 adds outbound-send attempt fencing, asset backup manifest links, and
 review-media contracts. Schema 58 adds digest-only webhook quarantine receipts. Schema 59 permits physical source-content deletion while preserving append-only lifecycle and provider-route metadata with source links cleared. Schema 60 adds the understanding pipeline's source, proposal, and append-only promotion-event records. Schema 61 adds durable agent thinking results, thinking attempts, and executor action state. Schema 62 adds automated outcome attribution plans with append-only baseline and outcome snapshots. Schema 63 extends provider import records to GA4 analytics and Search Console feeds.
+Schema 64 adds the agency asset layer: scoped agency assets with approval-state
+transitions, immutable version history, and region/timestamp/page/general review
+threads with anchored feedback.
 
 Schema 11-era databases also need the authenticated identity bootstrap. After
 migration, use the local `bootstrap-auth` command for an existing organization
