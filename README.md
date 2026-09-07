@@ -74,7 +74,22 @@ python scripts/auremgrid.py demo --db "C:\data\auremgrid-demo.sqlite"
 | Rehearse recovery | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restore_drill.ps1` runs backup, verification, restore, integrity, and recovery-mode checks against a scratch copy; no live database is touched. |
 | Inspect the system | The dashboard includes Command, Clients, Client Portal, Work, Projects, Review, Workflows, Campaigns, Content, Creative, Brain, Meetings, People, Finance, Agents, Automations, Reports, Integrations, Settings, Onboarding, Retention, and Operator health. |
 
-The API is implemented in [`src/auremgrid/api/http.py`](src/auremgrid/api/http.py), the tool router in [`src/auremgrid/api/mcp.py`](src/auremgrid/api/mcp.py), and the dashboard in [`src/auremgrid/api/dashboard`](src/auremgrid/api/dashboard). JSON/data routes require a bearer session or API token except `/health`, `/metrics`, and `/health/detailed`.
+The API handler is composed from [`src/auremgrid/api/http.py`](src/auremgrid/api/http.py), shared helpers in [`src/auremgrid/api/http_shared.py`](src/auremgrid/api/http_shared.py), and route-family mixins such as [`src/auremgrid/api/http_routes_public.py`](src/auremgrid/api/http_routes_public.py) and [`src/auremgrid/api/http_routes_auth_org.py`](src/auremgrid/api/http_routes_auth_org.py). The tool router lives in [`src/auremgrid/api/mcp.py`](src/auremgrid/api/mcp.py), and the dashboard lives in [`src/auremgrid/api/dashboard`](src/auremgrid/api/dashboard). JSON/data routes require a bearer session or API token except `/health`, `/metrics`, and `/health/detailed`.
+
+## Service architecture
+
+Auremgrid keeps the public import surface small while splitting large service coordinators into focused modules:
+
+| Service area | Layout |
+|---|---|
+| Company OS | [`src/auremgrid/services/brain.py`](src/auremgrid/services/brain.py) composes six mixins — annotations, company records, ingestion, operations, projection, and work — plus shared helpers in `brain_shared.py`. |
+| Agents | [`agent_ops.py`](src/auremgrid/services/agent_ops.py) composes config, execution, automations, and reporting mixins, with cross-cutting helpers in `agent_ops_shared.py`. |
+| Integrations | [`integration_ops.py`](src/auremgrid/services/integration_ops.py) composes connection, sync, and provider mixins, with connector constants and helpers in `integration_ops_shared.py`. |
+| Intelligence orchestration | [`intelligence_orchestrator.py`](src/auremgrid/services/intelligence_orchestrator.py) composes run management, specialist execution, synthesis, contracts, and retrieval mixins, with limits and validation in `intelligence_orchestrator_shared.py`. |
+| HTTP API | [`http.py`](src/auremgrid/api/http.py) remains the handler composer; common parsing/auth helpers moved to `http_shared.py`, and route families are landing as HTTP mixins. |
+| Read and connector services | Purpose-built services include `calendar_connector.py`, `external_actions.py`, `intelligence_benchmark.py`, `client_hq_read.py`, `report_packs_read.py`, `crm_read.py`, and `billing_read.py`. These keep read projections and connector boundaries explicit instead of folding them into the core coordinator. |
+
+Recent refactor wave: the core coordinators were split without changing the local-first product boundary. `brain.py`, `agent_ops.py`, `integration_ops.py`, `intelligence_orchestrator.py`, and `http.py` now act as composition points over smaller mixins/shared helpers, while newer read and connector services keep calendar lifecycle capture, controlled external actions, benchmark evaluation, client HQ projections, report packs, CRM reads, and billing reads isolated from mutation-heavy workflows.
 
 ## Boundaries that matter
 
