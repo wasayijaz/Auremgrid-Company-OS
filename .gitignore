@@ -20,3 +20,6 @@ build/
 .env
 .DS_Store
 debug.log
+full-test.log
+qa-*.log
+qa_pycache/
