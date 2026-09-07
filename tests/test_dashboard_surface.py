@@ -237,7 +237,7 @@ class DashboardSurfaceTests(unittest.TestCase):
         self.assertIn("button.onclick=()=>show(button.dataset.cosmoSurface)", self.html)
 
     def test_every_dashboard_backend_reference_has_a_real_http_handler(self) -> None:
-        http = Path(__file__).parents[1].joinpath("src", "auremgrid", "api", "http.py").read_text(encoding="utf-8")
+        http = "\n".join(path.read_text(encoding="utf-8") for path in sorted(self.root.glob("http*.py")))
         paths = (
             "/auth/me", "/health/detailed", "/dashboard/data", "/dashboard/client",
             "/dashboard/module", "/dashboard/settings", "/dashboard/review-center",
@@ -265,7 +265,7 @@ class DashboardSurfaceTests(unittest.TestCase):
     def test_scope_surface_exposes_contract_allowance_usage_and_history_actions(self) -> None:
         for marker in ("data-scope-contract", "data-scope-allowance", "data-scope-usage", "/contracts", "/scope/allowances", "/scope/usage", "period_history", "generated"):
             self.assertIn(marker, self.html)
-        http = self.root.joinpath("http.py").read_text(encoding="utf-8")
+        http = "\n".join(path.read_text(encoding="utf-8") for path in sorted(self.root.glob("http*.py")))
         for path in ("/contracts", "/scope/allowances", "/scope/usage", "/finance/connect", "/finance/revenue", "/finance/invoices"):
             self.assertIn(path, http)
 

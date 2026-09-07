@@ -490,7 +490,10 @@ class DashboardServiceTests(unittest.TestCase):
             empty_os.close()
 
     def test_release_route_surface_for_p6_p15_rows(self) -> None:
-        http = Path(__file__).parents[1].joinpath("src", "auremgrid", "api", "http.py").read_text(encoding="utf-8")
+        http = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(Path(__file__).parents[1].joinpath("src", "auremgrid", "api").glob("http*.py"))
+        )
         service_names = ("workflow_ops", "client_ops", "agency_ops", "agent_ops")
         for name in service_names:
             self.assertTrue(hasattr(self.os, name), name)
@@ -518,7 +521,10 @@ class DashboardServiceTests(unittest.TestCase):
             self.assertIn(route, http)
 
     def test_newer_feedback_performance_forecast_retention_batch_is_separately_guarded(self) -> None:
-        http = Path(__file__).parents[1].joinpath("src", "auremgrid", "api", "http.py").read_text(encoding="utf-8")
+        http = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(Path(__file__).parents[1].joinpath("src", "auremgrid", "api").glob("http*.py"))
+        )
         for name in ("feedback", "performance", "forecasts", "retention"):
             self.assertTrue(hasattr(self.os, name), name)
         for route in (

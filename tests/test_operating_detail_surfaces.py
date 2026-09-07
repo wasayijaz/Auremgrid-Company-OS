@@ -56,7 +56,7 @@ class OperatingDetailSurfaceTests(unittest.TestCase):
     def test_ui_and_http_contracts_expose_authenticated_detail_routes(self) -> None:
         root = Path(__file__).parents[1]
         js = "\n".join(path.read_text(encoding="utf-8") for path in (root / "src/auremgrid/api/dashboard/js").glob("*.js"))
-        http = (root / "src/auremgrid/api/http.py").read_text(encoding="utf-8")
+        http = "\n".join(path.read_text(encoding="utf-8") for path in sorted((root / "src/auremgrid/api").glob("http*.py")))
         for route in ("/people/detail", "/agents/detail", "/dashboard/performance"):
             self.assertIn(route, js)
             self.assertIn(route, http)

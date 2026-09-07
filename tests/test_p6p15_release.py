@@ -13,7 +13,9 @@ ROOT = Path(__file__).parents[1]
 class P6P15ReleaseEvidenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.doc = ROOT.joinpath("docs", "release-verification.md").read_text(encoding="utf-8")
-        self.http = ROOT.joinpath("src", "auremgrid", "api", "http.py").read_text(encoding="utf-8")
+        self.http = "\n".join(
+            path.read_text(encoding="utf-8") for path in sorted(ROOT.joinpath("src", "auremgrid", "api").glob("http*.py"))
+        )
         self.dashboard = read_dashboard_bundle(ROOT)
         self.readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
         self.preview = ROOT.joinpath("docs", "assets", "dashboard-realistic-agency.jpg")
