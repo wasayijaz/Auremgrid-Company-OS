@@ -36,8 +36,21 @@ class AssetLayerService:
             raise ValidationError("organization scope is required")
         return str(organization_id), scope.get("workspace_id"), scope.get("person_id")
 
-    def _authorize(self, organization_id: str, workspace_id: str | None, person_id: str | None) -> None:
-        self.os._require_person_access(organization_id, workspace_id, person_id)
+    def _authorize(self, organization_id: str, workspace_id: str | None, person_id: str | None,
+                   write: bool = False) -> None:
+        if not person_id:
+            raise ValidationError("person scope is required")
+        if workspace_id:
+            self.os._require_person_access(organization_id, workspace_id, person_id, write=write)
+        else:
+            self.os._require_scope_access(organization_id, person_id, write=write)
+
+    def _authorize_asset(self, organization_id: str, workspace_id: str | None, person_id: str | None,
+                         asset: dict[str, Any], write: bool = False) -> None:
+        asset_workspace = asset["workspace_id"]
+        if asset_workspace and workspace_id and asset_workspace != workspace_id:
+            raise AuthorizationError("asset belongs to a different workspace")
+        self._authorize(organization_id, workspace_id or asset_workspace, person_id, write=write)
 
     def _asset(self, organization_id: str, asset_id: str) -> dict[str, Any]:
         row = self.conn.execute(
@@ -53,7 +66,7 @@ class AssetLayerService:
                        project_id: str | None = None, campaign_id: str | None = None,
                        deliverable_id: str | None = None) -> dict[str, Any]:
         organization_id, workspace_id, person_id = self._scope(os_scope)
-        self._authorize(organization_id, workspace_id, person_id)
+        self._authorize(organization_id, workspace_id, person_id, write=True)
         if asset_kind not in self.ASSET_KINDS:
             raise ValidationError("unknown asset kind")
         if not title or not locator:
@@ -83,10 +96,9 @@ class AssetLayerService:
                     checksum_sha256: str | None = None, dimensions: str | None = None,
                     duration_seconds: float | None = None, preview_url: str | None = None,
                     notes: str = "") -> dict[str, Any]:
-        organization_id, _, person_id = self._scope(os_scope)
+        organization_id, workspace_id, person_id = self._scope(os_scope)
         asset = self._asset(organization_id, asset_id)
-        if not person_id:
-            raise ValidationError("person scope is required to add versions")
+        self._authorize_asset(organization_id, workspace_id, person_id, asset, write=True)
         row = self.conn.execute(
             "SELECT COALESCE(MAX(version),0)+1 AS nxt FROM agency_asset_versions WHERE asset_id=?", (asset_id,)
         ).fetchone()
@@ -104,8 +116,9 @@ class AssetLayerService:
         return dict(self.conn.execute("SELECT * FROM agency_asset_versions WHERE id=?", (version_id,)).fetchone())
 
     def set_approval(self, os_scope: Any, asset_id: str, *, state: str) -> dict[str, Any]:
-        organization_id, _, person_id = self._scope(os_scope)
+        organization_id, workspace_id, person_id = self._scope(os_scope)
         asset = self._asset(organization_id, asset_id)
+        self._authorize_asset(organization_id, workspace_id, person_id, asset, write=True)
         if state not in self.APPROVAL_STATES:
             raise ValidationError("unknown approval state")
         if state not in self.APPROVAL_TRANSITIONS[asset["approval_state"]]:
@@ -119,8 +132,9 @@ class AssetLayerService:
         return self._asset(organization_id, asset_id)
 
     def versions(self, os_scope: Any, asset_id: str) -> list[dict[str, Any]]:
-        organization_id, _, _ = self._scope(os_scope)
-        self._asset(organization_id, asset_id)
+        organization_id, workspace_id, person_id = self._scope(os_scope)
+        asset = self._asset(organization_id, asset_id)
+        self._authorize_asset(organization_id, workspace_id, person_id, asset)
         rows = self.conn.execute(
             "SELECT * FROM agency_asset_versions WHERE asset_id=? ORDER BY version", (asset_id,)
         ).fetchall()
@@ -137,12 +151,11 @@ class AssetLayerService:
 
     def create_thread(self, os_scope: Any, asset_id: str, *, kind: str, body: str,
                       version_id: str | None = None, anchor: dict[str, Any] | None = None) -> dict[str, Any]:
-        organization_id, _, person_id = self._scope(os_scope)
-        self._asset(organization_id, asset_id)
+        organization_id, workspace_id, person_id = self._scope(os_scope)
+        asset = self._asset(organization_id, asset_id)
+        self._authorize_asset(organization_id, workspace_id, person_id, asset, write=True)
         if kind not in self.THREAD_KINDS:
             raise ValidationError("unknown thread kind")
-        if not person_id:
-            raise ValidationError("person scope is required to comment")
         if not body:
             raise ValidationError("comment body is required")
         thread_id = new_id("asset_thread")
@@ -157,12 +170,14 @@ class AssetLayerService:
         return dict(self.conn.execute("SELECT * FROM asset_review_threads WHERE id=?", (thread_id,)).fetchone())
 
     def set_thread_status(self, os_scope: Any, thread_id: str, *, status: str) -> dict[str, Any]:
-        organization_id, _, _ = self._scope(os_scope)
+        organization_id, workspace_id, person_id = self._scope(os_scope)
         row = self.conn.execute(
             "SELECT * FROM asset_review_threads WHERE id=? AND organization_id=?", (thread_id, organization_id)
         ).fetchone()
         if row is None:
             raise NotFoundError("thread not found")
+        asset = self._asset(organization_id, row["asset_id"])
+        self._authorize_asset(organization_id, workspace_id, person_id, asset, write=True)
         allowed = {"open": {"resolved"}, "resolved": {"reopened"}, "reopened": {"resolved"}}
         if status not in allowed[row["status"]]:
             raise ValidationError("invalid thread transition")

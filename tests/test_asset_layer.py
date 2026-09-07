@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import unittest
 
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
@@ -91,6 +92,38 @@ class AssetLayerServiceTests(unittest.TestCase):
         outsider_no_member = {"organization_id": self.org.id, "person_id": outsider.id}
         with self.assertRaises(AuthorizationError):
             self.service.register_asset(outsider_no_member, title="Sneak", asset_kind="file", locator="x")
+
+    def test_workspace_fencing_within_organization(self) -> None:
+        ws_b = self.os.create_organization_workspace(self.org.id, "Prime B", "client", "ws-assets-b")
+        person2 = self.os.create_person(self.org.id, "Second Owner", role="owner", person_id="person-assets-b")
+        self.os.add_person_to_workspace(self.org.id, ws_b.id, person2.id, "admin")
+        scope_b = {"organization_id": self.org.id, "workspace_id": ws_b.id, "person_id": person2.id}
+        with self.assertRaises(AuthorizationError):
+            self.service.add_version(scope_b, self.asset["id"], locator="s3://bucket/other.png")
+        with self.assertRaises(AuthorizationError):
+            self.service.set_approval(scope_b, self.asset["id"], state="in_review")
+        with self.assertRaises(AuthorizationError):
+            self.service.versions(scope_b, self.asset["id"])
+        with self.assertRaises(AuthorizationError):
+            self.service.create_thread(scope_b, self.asset["id"], kind="region", body="No access")
+        thread = self.service.create_thread(self.scope, self.asset["id"], kind="region", body="Owner note")
+        with self.assertRaises(AuthorizationError):
+            self.service.set_thread_status(scope_b, thread["id"], status="resolved")
+
+    def test_version_history_is_append_only(self) -> None:
+        self.service.add_version(self.scope, self.asset["id"], locator="s3://bucket/hero-v2.png")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.os.store.conn.execute("UPDATE agency_asset_versions SET locator='tampered'")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.os.store.conn.execute("DELETE FROM agency_asset_versions")
+
+    def test_org_wide_registration_without_workspace(self) -> None:
+        scope = {"organization_id": self.org.id, "person_id": self.person.id}
+        asset = self.service.register_asset(scope, title="Org Guide", asset_kind="file", locator="s3://bucket/guide.pdf")
+        row = self.os.store.conn.execute(
+            "SELECT COUNT(*) FROM agency_asset_versions WHERE asset_id=?", (asset["id"],)
+        ).fetchone()
+        self.assertEqual(row[0], 1)
 
 
 if __name__ == "__main__":

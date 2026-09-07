@@ -4502,6 +4502,22 @@ MIGRATIONS = (
             ON asset_review_threads(asset_id, status);
         """,
     ),
+    Migration(
+        65,
+        "agency_asset_version_guard",
+        """
+        CREATE TRIGGER IF NOT EXISTS agency_asset_version_no_update
+        BEFORE UPDATE ON agency_asset_versions
+        BEGIN
+            SELECT RAISE(ABORT, 'agency asset versions are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS agency_asset_version_no_delete
+        BEFORE DELETE ON agency_asset_versions
+        BEGIN
+            SELECT RAISE(ABORT, 'agency asset versions are immutable');
+        END;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
