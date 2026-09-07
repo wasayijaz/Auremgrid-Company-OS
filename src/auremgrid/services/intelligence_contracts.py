@@ -445,6 +445,18 @@ def _native_profile(profile_id: str, name: str, specialty: str, domains: tuple[s
     tool_refs = ["dashboard.intelligence.read", "brain.search"]
     if profile_id == "finance_scope_analyst":
         tool_refs.extend(("finance.read", "reports.generate"))
+    role_tiers = {
+        "client_success_lead": ("account_strategist", 4),
+        "ads_lead": ("performance_analyst", 4),
+        "design_lead": ("brand_creative_analyst", 4),
+        "marketing_lead": ("research_analyst", 4),
+        "ads_executive": ("performance_analyst", 2),
+        "design_executive": ("brand_creative_analyst", 2),
+        "marketing_executive": ("research_analyst", 2),
+        "meeting_recorder": ("delivery_analyst", 1),
+    }
+    company_roles = [role for role, (mapped_profile, _tier) in role_tiers.items() if mapped_profile == profile_id]
+    tier = max((tier for role, (mapped_profile, tier) in role_tiers.items() if mapped_profile == profile_id), default=3)
     return _profile({
         "id": profile_id,
         "version": 1,
@@ -462,21 +474,35 @@ def _native_profile(profile_id: str, name: str, specialty: str, domains: tuple[s
         "handoff_targets": ["reality_checker", "executive_synthesizer"],
         "quality_gates": ["all claims cite permitted evidence", "unknowns remain explicit", "one-way actions require approval"],
         "evidence_requirements": ["ACL-visible canonical records", "current operating signals"],
-        "constraints": COMMON_CONSTRAINTS,
+        "constraints": COMMON_CONSTRAINTS + (f"intelligence_tier:{tier}",) + tuple(
+            f"company_role:{role}:tier{role_tiers[role][1]}" for role in company_roles
+        ),
+        # Role metadata is intentionally additive to the public profile payload;
+        # persistence continues to use the established contract columns.
+        "metadata": {
+            "intelligence_tier": tier,
+            "company_roles": company_roles,
+            "tier_definitions": {
+                "1": "fast low-cost execution",
+                "2": "standard execution",
+                "3": "deep specialist judgment",
+                "4": "strategic judgment",
+            },
+        },
     })
 
 
 DEFAULT_EXPERT_PROFILES: tuple[dict[str, Any], ...] = tuple(_native_profile(*spec) for spec in _PROFILE_SPECS)
 
 
-def _step(step_id: str, sequence: int, title: str, owner: str, method: str, gate: str, handoff_to: str | None = None) -> dict[str, Any]:
+def _step(step_id: str, sequence: int, title: str, owner: str, method: str, gate: str, handoff_to: str | None = None, evidence: tuple[str, ...] = ()) -> dict[str, Any]:
     return {
         "id": step_id,
         "sequence": sequence,
         "title": title,
         "owner_profile_id": owner,
         "method": method,
-        "required_inputs": ["scope contract", "visible evidence"] if sequence == 1 else ["prior step output"],
+        "required_inputs": list(evidence or (("scope contract", "visible evidence") if sequence == 1 else ("prior step output",))),
         "outputs": [title.lower()],
         "gate": gate,
         "handoff_to": handoff_to,
@@ -533,11 +559,58 @@ _RUNBOOK_SPECS = (
 
 
 def _native_runbook(runbook_id: str, name: str, domains: tuple[str, ...], profile_ids: tuple[str, ...]) -> dict[str, Any]:
-    steps = [
-        _step(f"{runbook_id}-situation", 1, "Build situation", profile_ids[0], "bounded evidence review", "scope", profile_ids[1]),
-        _step(f"{runbook_id}-challenge", 2, "Challenge explanation", profile_ids[1], "opposing-evidence pass", "quality", profile_ids[2]),
-        _step(f"{runbook_id}-recommend", 3, "Frame recommendation", profile_ids[2], "reversible option framing", "approval"),
+    protocols = {
+        "relationship_analyst": [
+            ("Stakeholder power-interest map", "stakeholder roster, meeting notes, decision rights", "every material stakeholder has influence and sentiment evidence"),
+            ("RACI responsibility trace", "account plan, owners, approval records", "no unresolved owner or approval ambiguity"),
+            ("Communication cadence analysis", "contact timestamps, response latency, channel logs", "cadence breach is quantified against baseline"),
+            ("Network centrality scan", "stakeholder graph, escalation paths", "single points of failure are identified with evidence"),
+            ("Sentiment trajectory coding", "verbatim feedback, renewal notes, survey signals", "coded sentiment has at least two independent anchors"),
+            ("Expectation-gap matrix", "scope commitments, status updates, change requests", "gap separates promise, perception, and delivered state"),
+            ("Repair intervention design", "precedent outcomes, available sponsors, constraints", "intervention is reversible and sponsor-owned"),
+            ("Executive handoff brief", "cited stakeholder map and unresolved risks", "handoff names owner, deadline, and escalation trigger"),
+        ],
+        "performance_analyst": [
+            ("Spend anomaly decomposition", "daily spend, budget, delivery logs", "anomalies exceed a stated threshold and exclude data gaps"),
+            ("CPA/ROAS delta bridge", "cost, conversion, revenue time series", "delta is decomposed into volume, rate, and mix effects"),
+            ("Creative fatigue cohort test", "creative-level frequency, CTR, CVR by age", "fatigue conclusion controls for audience and placement mix"),
+            ("Pacing burn-rate forecast", "planned budget, elapsed days, actual spend", "forecast error band and intervention point are explicit"),
+            ("Attribution caveat audit", "platform, analytics, CRM conversion records", "reported lift states attribution window and missing paths"),
+            ("Funnel conversion waterfall", "impression-to-revenue stage counts", "each stage reconciles to canonical totals"),
+            ("Segment variance test", "geo, audience, device, placement cuts", "material segments pass minimum sample-size gate"),
+            ("Counterfactual budget scenario", "historical response curves, constraints", "scenario labels assumptions and confidence bounds"),
+            ("Recommendation risk review", "evidence for/against, operational limits", "no one-way action is proposed without approval"),
+        ],
+        "finance_scope_analyst": [
+            ("Scope baseline reconstruction", "signed scope, change orders, delivery ledger", "baseline reconciles to approved commercial records"),
+            ("Earned-value schedule analysis", "planned value, earned value, actual cost", "CPI/SPI calculations are reproducible"),
+            ("Revenue recognition cut-off test", "invoices, milestones, acceptance evidence", "period attribution has documented acceptance anchor"),
+            ("Gross-margin bridge", "revenue, labor, vendor, overhead allocations", "variance explains rate, volume, and mix drivers"),
+            ("Change-order leakage scan", "requests, approvals, out-of-scope work log", "unbilled work has owner and recovery path"),
+            ("Cost-to-complete forecast", "remaining effort, rates, dependencies", "forecast includes base, downside, and confidence range"),
+            ("Capacity-to-margin sensitivity", "staffing plan, utilization, rate card", "sensitivity identifies break-even utilization"),
+            ("Client commercial health score", "payment aging, renewal value, margin trend", "score is traceable to weighted evidence"),
+            ("Scenario break-even analysis", "price, effort, timing, probability assumptions", "break-even point survives independent recalculation"),
+            ("Approval-boundary check", "delegation matrix, contract clauses", "one-way concessions are routed to authorized approver"),
+            ("Finance executive handoff", "reconciled bridge, options, unresolved unknowns", "handoff contains decision ask and escalation deadline"),
+        ],
+    }
+    default_protocol = [
+        ("Evidence ledger construction", "ACL-visible canonical records and timestamps", "every claim has a cited evidence anchor"),
+        ("Baseline variance analysis", "current and prior-period operating signals", "variance threshold and comparison period are explicit"),
+        ("Hypothesis tree test", "findings, counterexamples, domain constraints", "leading hypothesis has a falsifier and confidence"),
+        ("Opposing-evidence challenge", "negative signals and exception records", "material disagreement remains visible"),
+        ("Option scoring matrix", "impact, effort, reversibility, risk estimates", "scores use stated weights and evidence"),
+        ("Scenario sensitivity check", "retained inputs and bounded what-if ranges", "unknown inputs are not silently imputed"),
+        ("Quality and ACL gate", "scope authorization and access audit", "unauthorized or missing evidence stops progression"),
+        ("Decision handoff brief", "cited finding, recommendation, owners, deadlines", "handoff names escalation path and approval gate"),
     ]
+    protocol = protocols.get(profile_ids[0], default_protocol)
+    steps = []
+    for sequence, (title, evidence, gate) in enumerate(protocol, 1):
+        owner = profile_ids[min(sequence - 1, len(profile_ids) - 1)]
+        handoff = profile_ids[sequence] if sequence < len(profile_ids) else "executive_synthesizer"
+        steps.append(_step(f"{runbook_id}-s{sequence}", sequence, title, owner, title, gate, handoff, tuple(e.strip() for e in evidence.split(","))))
     return _runbook({
         "id": runbook_id,
         "version": 1,

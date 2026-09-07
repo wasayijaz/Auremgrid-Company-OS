@@ -65,6 +65,7 @@ from auremgrid.services.scheduler import DurableScheduler
 from auremgrid.services.integration_ops import IntegrationOperations
 from auremgrid.services.client_portal import ClientPortalOperations
 from auremgrid.services.feedback_ops import FeedbackOperations
+from auremgrid.services.understanding_ops import UnderstandingService
 from auremgrid.services.performance_ops import PerformanceOperations
 from auremgrid.services.forecast_ops import ForecastOperations
 from auremgrid.services.revenue_ops import RevenueOperations
@@ -215,6 +216,7 @@ class CompanyOS:
             self._require_person_access,
             self.embedding_provider,
         )
+        self.understanding = UnderstandingService(self.store.conn, new_id, self._require_scope_access)
         self.performance = PerformanceOperations(self.store.conn, new_id, self._require_person_access)
         self.forecasts = ForecastOperations(self.store.conn, new_id, self._require_scope_access)
         self.revenue = RevenueOperations(self.store.conn, new_id, self._require_person_access, self.company)

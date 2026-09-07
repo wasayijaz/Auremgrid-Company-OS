@@ -4203,6 +4203,142 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        60,
+        "understanding_pipeline",
+        """
+        CREATE TABLE IF NOT EXISTS understanding_sources (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            source_type TEXT NOT NULL,
+            text TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            created_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(created_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_understanding_sources_scope
+            ON understanding_sources(organization_id, workspace_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS understanding_proposals (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            source_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN (
+                'fact','decision','commitment','preference','request','metric',
+                'risk','opportunity','entity','relationship'
+            )),
+            subject TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+            extractor_version TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN ('proposed','confirmed','rejected')),
+            created_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(source_id) REFERENCES understanding_sources(id),
+            FOREIGN KEY(created_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_understanding_proposals_review
+            ON understanding_proposals(organization_id, status, kind, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_understanding_proposals_source
+            ON understanding_proposals(source_id, created_at, id);
+
+        CREATE TABLE IF NOT EXISTS understanding_proposal_events (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            proposal_id TEXT NOT NULL,
+            reviewer_person_id TEXT NOT NULL,
+            from_status TEXT NOT NULL,
+            to_status TEXT NOT NULL CHECK(to_status IN ('confirmed','rejected')),
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(proposal_id) REFERENCES understanding_proposals(id),
+            FOREIGN KEY(reviewer_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_understanding_proposal_events_proposal
+            ON understanding_proposal_events(proposal_id, created_at, id);
+        CREATE TRIGGER IF NOT EXISTS understanding_proposal_events_no_update BEFORE UPDATE ON understanding_proposal_events BEGIN
+            SELECT RAISE(ABORT, 'understanding proposal events are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS understanding_proposal_events_no_delete BEFORE DELETE ON understanding_proposal_events BEGIN
+            SELECT RAISE(ABORT, 'understanding proposal events are append-only');
+        END;
+        """,
+    ),
+    Migration(
+        61,
+        "agent_execution_thinking",
+        """
+        CREATE TABLE IF NOT EXISTS agent_thinking_results (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            agent_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            task_id TEXT,
+            model_id TEXT,
+            tier INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('succeeded','failed','cancelled')),
+            result_json TEXT,
+            error_json TEXT,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cost REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            UNIQUE(organization_id,run_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_thinking_results_run
+            ON agent_thinking_results(organization_id,run_id);
+
+        CREATE TABLE IF NOT EXISTS agent_thinking_attempts (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            run_id TEXT NOT NULL,
+            provider_name TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            tier INTEGER NOT NULL,
+            latency_ms INTEGER NOT NULL,
+            ok INTEGER NOT NULL CHECK(ok IN (0,1)),
+            error TEXT,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cost REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_thinking_attempts_run
+            ON agent_thinking_attempts(organization_id,run_id,created_at);
+
+        CREATE TABLE IF NOT EXISTS agent_executor_actions (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            agent_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            task_id TEXT,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','done','failed')),
+            result_json TEXT,
+            error_json TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            UNIQUE(organization_id,run_id),
+            UNIQUE(organization_id,idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_executor_actions_run
+            ON agent_executor_actions(organization_id,run_id);
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

@@ -1,0 +1,1286 @@
+[
+  {
+    "case_id": "case-001",
+    "domain": "performance_review",
+    "title": "Sudden ROAS drop on Meta prospecting campaigns",
+    "situation": "Client Acme Apparel experienced a 48% drop in blended Meta prospecting ROAS over the past 7 days following a broad audience expansion and launch of an unvetted lifestyle video creative batch.",
+    "allowed_evidence_refs": [
+      "ev-001-meta-roas-7d",
+      "ev-001-audience-expansion-log",
+      "ev-001-creative-performance",
+      "ev-001-shopify-blended-rev",
+      "ev-001-google-search-roas"
+    ],
+    "relevant_evidence_refs": [
+      "ev-001-meta-roas-7d",
+      "ev-001-audience-expansion-log",
+      "ev-001-creative-performance"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-001-1",
+        "statement": "Meta prospecting ROAS decreased from 3.2x to 1.66x over the last 7 days.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-001-meta-roas-7d"
+        ]
+      },
+      {
+        "claim_id": "c-001-2",
+        "statement": "The new lifestyle creative batch had a CTR of 0.52%, well below the 1.75% account benchmark.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-001-creative-performance"
+        ]
+      },
+      {
+        "claim_id": "c-001-3",
+        "statement": "The Shopify payment gateway was down during the entire week.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Revert audience targeting to proven lookalikes and pause the new lifestyle creative batch.",
+      "usefulness": 0.95,
+      "acceptable_directions": {
+        "act": 0.95,
+        "audit": 0.8,
+        "hold": 0.2
+      }
+    },
+    "expected_impact_tier": "high"
+  },
+  {
+    "case_id": "case-002",
+    "domain": "performance_review",
+    "title": "Shopify theme update breaking tracking pixels and CAPI",
+    "situation": "Following a theme update pushed by the client's web agency on Tuesday, Meta Conversions API and Google Tag Manager events dropped by 92%, causing automated bidding algorithms to crash while backend sales remained steady.",
+    "allowed_evidence_refs": [
+      "ev-002-capi-event-volume",
+      "ev-002-shopify-backend-orders",
+      "ev-002-theme-deploy-git-log",
+      "ev-002-meta-pixel-diagnostics",
+      "ev-002-email-newsletter-rev"
+    ],
+    "relevant_evidence_refs": [
+      "ev-002-capi-event-volume",
+      "ev-002-shopify-backend-orders",
+      "ev-002-theme-deploy-git-log",
+      "ev-002-meta-pixel-diagnostics"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-002-1",
+        "statement": "Meta purchase event signal dropped by 92% immediately following the theme deploy.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-002-capi-event-volume",
+          "ev-002-theme-deploy-git-log"
+        ]
+      },
+      {
+        "claim_id": "c-002-2",
+        "statement": "Shopify backend revenue is within 3% of the prior week average.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-002-shopify-backend-orders"
+        ]
+      },
+      {
+        "claim_id": "c-002-3",
+        "statement": "Client conversion drop was driven by ad fatigue across retargeting audiences.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Switch bidding strategies to manual or max clicks temporarily and roll back broken tracking code on the Shopify theme.",
+      "usefulness": 0.98,
+      "acceptable_directions": {
+        "act": 0.98,
+        "audit": 0.85,
+        "hold": 0.1
+      }
+    },
+    "expected_impact_tier": "critical"
+  },
+  {
+    "case_id": "case-003",
+    "domain": "performance_review",
+    "title": "TikTok Spark ads creative fatigue and audience saturation",
+    "situation": "A fast-fashion e-commerce brand saw TikTok CPA spike from $22 to $54 over 14 days as ad frequency reached 5.4 and video completion rate fell below 8%.",
+    "allowed_evidence_refs": [
+      "ev-003-tiktok-cpa-trend",
+      "ev-003-frequency-curve",
+      "ev-003-completion-rate",
+      "ev-003-inventory-levels",
+      "ev-003-klaviyo-open-rate"
+    ],
+    "relevant_evidence_refs": [
+      "ev-003-tiktok-cpa-trend",
+      "ev-003-frequency-curve",
+      "ev-003-completion-rate"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-003-1",
+        "statement": "TikTok ad frequency increased from 1.8 to 5.4 over 14 days.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-003-frequency-curve"
+        ]
+      },
+      {
+        "claim_id": "c-003-2",
+        "statement": "2-second video completion rate fell from 24% to 7.8%.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-003-completion-rate"
+        ]
+      },
+      {
+        "claim_id": "c-003-3",
+        "statement": "TikTok platform ad delivery was halted due to ad account suspension.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Rotate in 4 fresh creator UGC video variations and expand broad audience targeting.",
+      "usefulness": 0.92,
+      "acceptable_directions": {
+        "act": 0.92,
+        "audit": 0.75,
+        "hold": 0.25
+      }
+    },
+    "expected_impact_tier": "medium"
+  },
+  {
+    "case_id": "case-004",
+    "domain": "performance_review",
+    "title": "Landing page variant mobile bounce rate surge",
+    "situation": "Traffic sent to variant B of a new direct-to-consumer skincare landing page showed a 76% bounce rate on mobile devices due to uncompressed 4K video banners delaying interactive load to 6.8 seconds.",
+    "allowed_evidence_refs": [
+      "ev-004-ga4-bounce-by-device",
+      "ev-004-pagespeed-mobile-audit",
+      "ev-004-split-test-conversions",
+      "ev-004-meta-cpc-stats",
+      "ev-004-organic-traffic-trend"
+    ],
+    "relevant_evidence_refs": [
+      "ev-004-ga4-bounce-by-device",
+      "ev-004-pagespeed-mobile-audit",
+      "ev-004-split-test-conversions"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-004-1",
+        "statement": "Mobile interactive load time on landing page variant B is 6.8 seconds.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-004-pagespeed-mobile-audit"
+        ]
+      },
+      {
+        "claim_id": "c-004-2",
+        "statement": "Mobile bounce rate on variant B is 76%, compared to 38% on control variant A.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-004-ga4-bounce-by-device"
+        ]
+      },
+      {
+        "claim_id": "c-004-3",
+        "statement": "Desktop traffic to variant B also collapsed with a 90% bounce rate.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Route 100% of paid mobile traffic back to variant A while media assets on variant B are compressed.",
+      "usefulness": 0.94,
+      "acceptable_directions": {
+        "act": 0.94,
+        "audit": 0.8,
+        "hold": 0.15
+      }
+    },
+    "expected_impact_tier": "high"
+  },
+  {
+    "case_id": "case-005",
+    "domain": "performance_review",
+    "title": "B2B lead generation campaign low SQL conversion rate",
+    "situation": "A LinkedIn Ads campaign generated 220 form leads at a low CPL of $45, but sales operations reported that 88% of submissions contained personal email addresses or fake company names due to missing form verification rules.",
+    "allowed_evidence_refs": [
+      "ev-005-hubspot-sql-conversion",
+      "ev-005-linkedin-leadgen-cpl",
+      "ev-005-lead-domain-breakdown",
+      "ev-005-sales-meeting-notes",
+      "ev-005-brand-search-volume"
+    ],
+    "relevant_evidence_refs": [
+      "ev-005-hubspot-sql-conversion",
+      "ev-005-linkedin-leadgen-cpl",
+      "ev-005-lead-domain-breakdown"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-005-1",
+        "statement": "88% of form submissions used free webmail domains like gmail or yahoo.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-005-lead-domain-breakdown"
+        ]
+      },
+      {
+        "claim_id": "c-005-2",
+        "statement": "Lead-to-SQL qualification rate dropped from 22% to 3.5%.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-005-hubspot-sql-conversion"
+        ]
+      },
+      {
+        "claim_id": "c-005-3",
+        "statement": "The sales team rejected all leads because the LinkedIn campaign targeted the wrong industry.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Enable business-email-only validation on LinkedIn lead generation forms and add qualifying company size questions.",
+      "usefulness": 0.9,
+      "acceptable_directions": {
+        "act": 0.9,
+        "audit": 0.8,
+        "hold": 0.2
+      }
+    },
+    "expected_impact_tier": "medium"
+  },
+  {
+    "case_id": "case-006",
+    "domain": "performance_review",
+    "title": "Amazon Sponsored Products ACOS surge from lost Buy Box",
+    "situation": "Client supplements brand observed Amazon PPC ACOS rising from 28% to 84% on top ASINs because an unauthorized third-party reseller won the Buy Box with grey-market stock.",
+    "allowed_evidence_refs": [
+      "ev-006-amazon-buybox-pct",
+      "ev-006-sp-acos-trend",
+      "ev-006-reseller-pricing-feed",
+      "ev-006-fba-inventory-health",
+      "ev-006-dsp-ad-metrics"
+    ],
+    "relevant_evidence_refs": [
+      "ev-006-amazon-buybox-pct",
+      "ev-006-sp-acos-trend",
+      "ev-006-reseller-pricing-feed"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-006-1",
+        "statement": "Buy Box win percentage dropped from 98% to 14% on top 3 ASINs.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-006-amazon-buybox-pct"
+        ]
+      },
+      {
+        "claim_id": "c-006-2",
+        "statement": "Unauthorized reseller undercut MAP pricing by 18%.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-006-reseller-pricing-feed"
+        ]
+      },
+      {
+        "claim_id": "c-006-3",
+        "statement": "Amazon delisted the client ASINs for counterfeit complaints.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "hold",
+      "summary": "Pause non-brand Sponsored Products targeting these ASINs to prevent funding the reseller until Brand Registry enforcement removes unauthorized seller.",
+      "usefulness": 0.92,
+      "acceptable_directions": {
+        "hold": 0.92,
+        "audit": 0.85,
+        "act": 0.7
+      }
+    },
+    "expected_impact_tier": "high"
+  },
+  {
+    "case_id": "case-007",
+    "domain": "budget_decision",
+    "title": "Reallocating underperforming Display Network spend to high-MER Shopping",
+    "situation": "Google Display Network remarketing is operating at a 0.85x ROAS while Standard Shopping and Search brand campaigns are budget-constrained with 85% search impression share lost to budget and 4.2x ROAS.",
+    "allowed_evidence_refs": [
+      "ev-007-gdn-roas-30d",
+      "ev-007-shopping-impression-share",
+      "ev-007-shopping-roas-trend",
+      "ev-007-total-monthly-spend",
+      "ev-007-meta-retargeting-cpa"
+    ],
+    "relevant_evidence_refs": [
+      "ev-007-gdn-roas-30d",
+      "ev-007-shopping-impression-share",
+      "ev-007-shopping-roas-trend"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-007-1",
+        "statement": "Google Display Network generated $12,000 spend at 0.85x ROAS.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-007-gdn-roas-30d"
+        ]
+      },
+      {
+        "claim_id": "c-007-2",
+        "statement": "Google Shopping lost 45% impression share due to daily budget limits while maintaining 4.2x ROAS.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-007-shopping-impression-share",
+          "ev-007-shopping-roas-trend"
+        ]
+      },
+      {
+        "claim_id": "c-007-3",
+        "statement": "Google Ads policy suspended the shopping merchant center account.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Shift $10k monthly budget from Google Display Network to Google Shopping campaigns.",
+      "usefulness": 0.96,
+      "acceptable_directions": {
+        "act": 0.96,
+        "audit": 0.8,
+        "hold": 0.15
+      }
+    },
+    "expected_impact_tier": "high"
+  },
+  {
+    "case_id": "case-008",
+    "domain": "budget_decision",
+    "title": "Flagship SKU stockout requiring immediate campaign pause and budget reallocation",
+    "situation": "Warehouse management system confirms the client's hero product SKU (generating 65% of ad spend) is out of stock for 3 weeks; paid traffic is currently bouncing at 82% on the out-of-stock product page.",
+    "allowed_evidence_refs": [
+      "ev-008-wms-inventory-zero",
+      "ev-008-hero-sku-spend-share",
+      "ev-008-oos-page-bounce-rate",
+      "ev-008-secondary-sku-margin",
+      "ev-008-affiliate-rev"
+    ],
+    "relevant_evidence_refs": [
+      "ev-008-wms-inventory-zero",
+      "ev-008-hero-sku-spend-share",
+      "ev-008-oos-page-bounce-rate"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-008-1",
+        "statement": "Hero SKU inventory is at 0 units across all fulfillment centers for the next 21 days.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-008-wms-inventory-zero"
+        ]
+      },
+      {
+        "claim_id": "c-008-2",
+        "statement": "Out of stock landing page bounce rate reached 82%, wasting daily ad spend.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-008-oos-page-bounce-rate"
+        ]
+      },
+      {
+        "claim_id": "c-008-3",
+        "statement": "Backorders can be fulfilled within 2 days with zero customer impact.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Immediately pause campaigns directing traffic to the hero SKU and shift active budget to top secondary products.",
+      "usefulness": 0.98,
+      "acceptable_directions": {
+        "act": 0.98,
+        "audit": 0.85,
+        "hold": 0.1
+      }
+    },
+    "expected_impact_tier": "high"
+  },
+  {
+    "case_id": "case-009",
+    "domain": "budget_decision",
+    "title": "Emergency 50% budget cut request due to client cashflow constraints",
+    "situation": "Client CFO mandated an immediate 50% spend reduction across all paid acquisition channels effective tomorrow morning to preserve cash reserves through Q3.",
+    "allowed_evidence_refs": [
+      "ev-009-cfo-directive-memo",
+      "ev-009-channel-marginal-cac",
+      "ev-009-retention-vs-prospecting-roas",
+      "ev-009-contractual-minimum-spend",
+      "ev-009-seo-leads"
+    ],
+    "relevant_evidence_refs": [
+      "ev-009-cfo-directive-memo",
+      "ev-009-channel-marginal-cac",
+      "ev-009-retention-vs-prospecting-roas"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-009-1",
+        "statement": "Client requested an immediate 50% budget cut across all paid media channels.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-009-cfo-directive-memo"
+        ]
+      },
+      {
+        "claim_id": "c-009-2",
+        "statement": "Brand search and high-intent remarketing deliver 4.5x ROAS while top-of-funnel display operates at 0.9x ROAS.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-009-channel-marginal-cac",
+          "ev-009-retention-vs-prospecting-roas"
+        ]
+      },
+      {
+        "claim_id": "c-009-3",
+        "statement": "Ad platforms impose a $50,000 penalty fee for reducing daily campaign budgets.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Cut spend primarily from low-efficiency experimental and prospecting campaigns while shielding high-intent brand search and remarketing.",
+      "usefulness": 0.94,
+      "acceptable_directions": {
+        "act": 0.94,
+        "audit": 0.8,
+        "hold": 0.2
+      }
+    },
+    "expected_impact_tier": "high"
+  },
+  {
+    "case_id": "case-010",
+    "domain": "budget_decision",
+    "title": "Scaling spend proposal near breakeven marginal CAC boundary",
+    "situation": "Account executive proposed increasing daily Meta budget by $1,500/day, but marginal CAC analytics indicate that incremental conversions are costing $95 against a target customer contribution ceiling of $98.",
+    "allowed_evidence_refs": [
+      "ev-010-marginal-cac-analysis",
+      "ev-010-target-contribution-margin",
+      "ev-010-blended-cac-30d",
+      "ev-010-creative-pipeline-ready",
+      "ev-010-crm-retention-rate"
+    ],
+    "relevant_evidence_refs": [
+      "ev-010-marginal-cac-analysis",
+      "ev-010-target-contribution-margin",
+      "ev-010-blended-cac-30d"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-010-1",
+        "statement": "Marginal CAC on incremental spend is $95 against a $98 breakeven ceiling.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-010-marginal-cac-analysis",
+          "ev-010-target-contribution-margin"
+        ]
+      },
+      {
+        "claim_id": "c-010-2",
+        "statement": "Blended 30-day CAC is $64, masking diminishing returns at higher spend tiers.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-010-blended-cac-30d"
+        ]
+      },
+      {
+        "claim_id": "c-010-3",
+        "statement": "Increasing budget will automatically double organic search rankings.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "hold",
+      "summary": "Hold current spend level and focus on improving conversion rate and creative efficiency before attempting further scale.",
+      "usefulness": 0.91,
+      "acceptable_directions": {
+        "hold": 0.91,
+        "audit": 0.82,
+        "act": 0.35
+      }
+    },
+    "expected_impact_tier": "medium"
+  },
+  {
+    "case_id": "case-011",
+    "domain": "budget_decision",
+    "title": "Retainer scope creep on unbilled BI engineering requests",
+    "situation": "Client has submitted 18 Jira tickets requesting bespoke Snowflake data warehouse connectors and custom Executive Tableau dashboards, consuming 54 hours beyond the monthly 20-hour retainer cap.",
+    "allowed_evidence_refs": [
+      "ev-011-timesheet-audit",
+      "ev-011-sow-contract-terms",
+      "ev-011-jira-ticket-log",
+      "ev-011-client-nps-rating",
+      "ev-011-media-spend-overview"
+    ],
+    "relevant_evidence_refs": [
+      "ev-011-timesheet-audit",
+      "ev-011-sow-contract-terms",
+      "ev-011-jira-ticket-log"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-011-1",
+        "statement": "Team logged 74 hours of work against a contractual 20-hour monthly scope.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-011-timesheet-audit",
+          "ev-011-sow-contract-terms"
+        ]
+      },
+      {
+        "claim_id": "c-011-2",
+        "statement": "All 18 logged requests were out-of-scope BI and data engineering tasks.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-011-jira-ticket-log"
+        ]
+      },
+      {
+        "claim_id": "c-011-3",
+        "statement": "The client SOW includes unlimited engineering hours at no extra charge.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Issue a formal change order and scope addendum for the additional BI engineering hours while pausing unapproved tickets.",
+      "usefulness": 0.88,
+      "acceptable_directions": {
+        "act": 0.88,
+        "audit": 0.8,
+        "hold": 0.25
+      }
+    },
+    "expected_impact_tier": "medium"
+  },
+  {
+    "case_id": "case-012",
+    "domain": "budget_decision",
+    "title": "Evaluating channel diversification into Pinterest with empty creative pipeline",
+    "situation": "Client wants to allocate $10k/month to Pinterest Ads immediately, but creative audit reveals zero vertical 2:3 assets and zero lifestyle imagery suited for Pinterest intent.",
+    "allowed_evidence_refs": [
+      "ev-012-pinterest-client-request",
+      "ev-012-creative-asset-audit",
+      "ev-012-creative-production-timeline",
+      "ev-012-meta-ad-performance",
+      "ev-012-shopify-product-catalog"
+    ],
+    "relevant_evidence_refs": [
+      "ev-012-pinterest-client-request",
+      "ev-012-creative-asset-audit",
+      "ev-012-creative-production-timeline"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-012-1",
+        "statement": "Current creative repository contains zero 2:3 or 9:16 vertical assets required for Pinterest format.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-012-creative-asset-audit"
+        ]
+      },
+      {
+        "claim_id": "c-012-2",
+        "statement": "Creative studio lead time for compliant Pinterest assets is 14 days.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-012-creative-production-timeline"
+        ]
+      },
+      {
+        "claim_id": "c-012-3",
+        "statement": "Pinterest Ads allows running 16:9 landscape video with zero performance penalty.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "hold",
+      "summary": "Defer Pinterest ad spend launch until dedicated vertical creative assets are produced and approved.",
+      "usefulness": 0.9,
+      "acceptable_directions": {
+        "hold": 0.9,
+        "audit": 0.82,
+        "act": 0.3
+      }
+    },
+    "expected_impact_tier": "low"
+  },
+  {
+    "case_id": "case-013",
+    "domain": "churn_risk",
+    "title": "VP Growth departure and unread executive QBR presentation",
+    "situation": "The client's VP of Growth who championed the agency contract has resigned, the interim Head of Marketing canceled the last two bi-weekly syncs, and the QBR deck remains unopened in DocSend.",
+    "allowed_evidence_refs": [
+      "ev-013-executive-departure-notice",
+      "ev-013-meeting-cancellations",
+      "ev-013-docsend-analytics-zero-views",
+      "ev-013-ad-account-performance",
+      "ev-013-invoice-payment-history"
+    ],
+    "relevant_evidence_refs": [
+      "ev-013-executive-departure-notice",
+      "ev-013-meeting-cancellations",
+      "ev-013-docsend-analytics-zero-views"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-013-1",
+        "statement": "Primary client champion resigned and two consecutive sync meetings were canceled without reschedule.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-013-executive-departure-notice",
+          "ev-013-meeting-cancellations"
+        ]
+      },
+      {
+        "claim_id": "c-013-2",
+        "statement": "The QBR presentation link recorded zero views over 12 days.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-013-docsend-analytics-zero-views"
+        ]
+      },
+      {
+        "claim_id": "c-013-3",
+        "statement": "The client has already signed a 2-year contract extension with the agency.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Escalate to agency managing director to schedule an in-person executive briefing with the new stakeholder immediately.",
+      "usefulness": 0.96,
+      "acceptable_directions": {
+        "act": 0.96,
+        "audit": 0.8,
+        "hold": 0.1
+      }
+    },
+    "expected_impact_tier": "critical"
+  },
+  {
+    "case_id": "case-014",
+    "domain": "churn_risk",
+    "title": "Client leadership frustration over missed delivery deadlines and conflicting numbers",
+    "situation": "Client CMO expressed sharp dissatisfaction in Slack regarding 3 consecutive missed creative delivery milestones and an 18% discrepancy between agency reporting and internal finance data.",
+    "allowed_evidence_refs": [
+      "ev-014-slack-sentiment-alert",
+      "ev-014-jira-deadline-misses",
+      "ev-014-reporting-data-reconciliation",
+      "ev-014-blended-roas-log",
+      "ev-014-google-ads-spend"
+    ],
+    "relevant_evidence_refs": [
+      "ev-014-slack-sentiment-alert",
+      "ev-014-jira-deadline-misses",
+      "ev-014-reporting-data-reconciliation"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-014-1",
+        "statement": "Three creative sprint deliveries were delayed past contractual SLA dates.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-014-jira-deadline-misses"
+        ]
+      },
+      {
+        "claim_id": "c-014-2",
+        "statement": "Reporting tool showed $142k in revenue while client finance recognized $120k due to untracked refunds.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-014-reporting-data-reconciliation"
+        ]
+      },
+      {
+        "claim_id": "c-014-3",
+        "statement": "Client praised the agency creative team in the annual review.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Deliver a comprehensive SLA remediation plan and reconcile reporting metrics with client finance within 48 hours.",
+      "usefulness": 0.94,
+      "acceptable_directions": {
+        "act": 0.94,
+        "audit": 0.85,
+        "hold": 0.15
+      }
+    },
+    "expected_impact_tier": "high"
+  },
+  {
+    "case_id": "case-015",
+    "domain": "churn_risk",
+    "title": "Competitor agency audit pitched directly to client CEO",
+    "situation": "Client forwarded a competitor agency pitch deck claiming $40k/month in wasted spend on Google Search due to broad match keywords and proposing a 50% management fee discount upon contract switch.",
+    "allowed_evidence_refs": [
+      "ev-015-competitor-pitch-deck",
+      "ev-015-search-query-performance",
+      "ev-015-negative-keyword-coverage",
+      "ev-015-current-agency-contract-date",
+      "ev-015-client-ltv-retention"
+    ],
+    "relevant_evidence_refs": [
+      "ev-015-competitor-pitch-deck",
+      "ev-015-search-query-performance",
+      "ev-015-negative-keyword-coverage"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-015-1",
+        "statement": "Competitor deck claims $40k in wasted spend based on top 20 broad match queries.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-015-competitor-pitch-deck"
+        ]
+      },
+      {
+        "claim_id": "c-015-2",
+        "statement": "Search query reports demonstrate negative keyword coverage eliminates 96% of irrelevant terms, rendering competitor claim factually flawed.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-015-search-query-performance",
+          "ev-015-negative-keyword-coverage"
+        ]
+      },
+      {
+        "claim_id": "c-015-3",
+        "statement": "Client contract has already expired and account was closed.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Prepare a rigorous point-by-point rebuttal report with query logs demonstrating actual efficiency and negative keyword hygiene.",
+      "usefulness": 0.92,
+      "acceptable_directions": {
+        "act": 0.92,
+        "audit": 0.82,
+        "hold": 0.2
+      }
+    },
+    "expected_impact_tier": "high"
+  },
+  {
+    "case_id": "case-016",
+    "domain": "churn_risk",
+    "title": "Overdue invoices and silence preceding contract expiration",
+    "situation": "Agency billing system shows client has two overdue retainer invoices totaling $45,000 (60 days past due), contract renewal is in 25 days, and weekly operational emails have gone unanswered for 10 days.",
+    "allowed_evidence_refs": [
+      "ev-016-accounts-receivable-aging",
+      "ev-016-contract-renewal-date",
+      "ev-016-email-response-rate",
+      "ev-016-campaign-roas-current",
+      "ev-016-creative-inventory"
+    ],
+    "relevant_evidence_refs": [
+      "ev-016-accounts-receivable-aging",
+      "ev-016-contract-renewal-date",
+      "ev-016-email-response-rate"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-016-1",
+        "statement": "Outstanding accounts receivable stands at $45,000 across two invoices past due 60 days.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-016-accounts-receivable-aging"
+        ]
+      },
+      {
+        "claim_id": "c-016-2",
+        "statement": "Master services agreement renewal window closes in 25 days with no communication.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-016-contract-renewal-date",
+          "ev-016-email-response-rate"
+        ]
+      },
+      {
+        "claim_id": "c-016-3",
+        "statement": "Client wire transfer cleared yesterday in full.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Trigger finance freeze policy and arrange an urgent leadership-to-leadership call to resolve payment and renewal terms.",
+      "usefulness": 0.95,
+      "acceptable_directions": {
+        "act": 0.95,
+        "audit": 0.8,
+        "hold": 0.15
+      }
+    },
+    "expected_impact_tier": "critical"
+  },
+  {
+    "case_id": "case-017",
+    "domain": "churn_risk",
+    "title": "Attribution model confusion and post-iOS privacy complaints",
+    "situation": "Client e-commerce director doubts agency performance reports because Meta in-platform reported 320 conversions while Shopify GA4 attributed only 110 conversions to Meta.",
+    "allowed_evidence_refs": [
+      "ev-017-meta-vs-ga4-attribution-gap",
+      "ev-017-incrementality-lift-test",
+      "ev-017-first-party-pixel-status",
+      "ev-017-monthly-retainer-tier",
+      "ev-017-tiktok-ad-spend"
+    ],
+    "relevant_evidence_refs": [
+      "ev-017-meta-vs-ga4-attribution-gap",
+      "ev-017-incrementality-lift-test",
+      "ev-017-first-party-pixel-status"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-017-1",
+        "statement": "In-platform Meta reporting shows 320 purchases vs 110 last-click GA4 purchases.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-017-meta-vs-ga4-attribution-gap"
+        ]
+      },
+      {
+        "claim_id": "c-017-2",
+        "statement": "Geo-matched incrementality testing proved a 1.85x incremental lift over baseline.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-017-incrementality-lift-test"
+        ]
+      },
+      {
+        "claim_id": "c-017-3",
+        "statement": "Meta has completely disabled all conversion reporting for iOS users.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Implement a marketing mix modeling (MMM) and geo-lift readout session to walk the client through incremental vs last-click attribution.",
+      "usefulness": 0.88,
+      "acceptable_directions": {
+        "act": 0.88,
+        "audit": 0.82,
+        "hold": 0.25
+      }
+    },
+    "expected_impact_tier": "medium"
+  },
+  {
+    "case_id": "case-018",
+    "domain": "churn_risk",
+    "title": "Client in-house hiring signaling contract insourcing",
+    "situation": "Client announced hiring a Lead Growth Marketer and a Senior Media Buyer on LinkedIn and requested admin permissions and audit logs for all ad accounts.",
+    "allowed_evidence_refs": [
+      "ev-018-linkedin-inhouse-hires",
+      "ev-018-admin-permission-request",
+      "ev-018-contract-termination-clause",
+      "ev-018-monthly-media-spend",
+      "ev-018-client-satisfaction-score"
+    ],
+    "relevant_evidence_refs": [
+      "ev-018-linkedin-inhouse-hires",
+      "ev-018-admin-permission-request",
+      "ev-018-contract-termination-clause"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-018-1",
+        "statement": "Client hired two in-house media buyers covering agency scope.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-018-linkedin-inhouse-hires"
+        ]
+      },
+      {
+        "claim_id": "c-018-2",
+        "statement": "Client requested primary admin permissions to Meta and Google ad accounts.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-018-admin-permission-request"
+        ]
+      },
+      {
+        "claim_id": "c-018-3",
+        "statement": "Client submitted immediate 30-day contract termination notice in writing.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Proactively propose an agency co-management or strategic consultancy model to partner with the new in-house team.",
+      "usefulness": 0.9,
+      "acceptable_directions": {
+        "act": 0.9,
+        "audit": 0.8,
+        "hold": 0.25
+      }
+    },
+    "expected_impact_tier": "high"
+  },
+  {
+    "case_id": "case-019",
+    "domain": "campaign_pacing",
+    "title": "Google Performance Max under-pacing due to restrictive target ROAS",
+    "situation": "With 10 days remaining in the billing month, Google Performance Max campaign has spent only 58% of allocated budget because target ROAS was raised from 280% to 450% without sufficient conversion volume.",
+    "allowed_evidence_refs": [
+      "ev-019-pmax-daily-spend-tracker",
+      "ev-019-troas-bid-setting",
+      "ev-019-conversion-volume-30d",
+      "ev-019-search-impression-share",
+      "ev-019-meta-prospecting-cpa"
+    ],
+    "relevant_evidence_refs": [
+      "ev-019-pmax-daily-spend-tracker",
+      "ev-019-troas-bid-setting",
+      "ev-019-conversion-volume-30d"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-019-1",
+        "statement": "Campaign is under-pacing monthly budget by 42% with 10 days left in cycle.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-019-pmax-daily-spend-tracker"
+        ]
+      },
+      {
+        "claim_id": "c-019-2",
+        "statement": "Target ROAS was increased to 450%, throttling auction participation and impressions.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-019-troas-bid-setting"
+        ]
+      },
+      {
+        "claim_id": "c-019-3",
+        "statement": "Google Ads disabled the account billing profile.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Lower target ROAS to 320% to unlock auction entry and accelerate pacing to capture remaining monthly budget.",
+      "usefulness": 0.95,
+      "acceptable_directions": {
+        "act": 0.95,
+        "audit": 0.82,
+        "hold": 0.15
+      }
+    },
+    "expected_impact_tier": "high"
+  },
+  {
+    "case_id": "case-020",
+    "domain": "campaign_pacing",
+    "title": "Automated rule malfunction causing weekend budget over-spend",
+    "situation": "A flawed automated rule triggered repeatedly on Saturday, removing daily budget caps and causing Meta campaigns to burn $28,000 (35% of the entire monthly budget) in 36 hours on low-intent overnight traffic.",
+    "allowed_evidence_refs": [
+      "ev-020-automated-rule-audit-log",
+      "ev-020-hourly-spend-anomaly",
+      "ev-020-overnight-roas-collapse",
+      "ev-020-monthly-budget-balance",
+      "ev-020-shopify-order-stream"
+    ],
+    "relevant_evidence_refs": [
+      "ev-020-automated-rule-audit-log",
+      "ev-020-hourly-spend-anomaly",
+      "ev-020-monthly-budget-balance"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-020-1",
+        "statement": "Automated rule script executed 44 times in an unhandled loop, removing campaign spend limits.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-020-automated-rule-audit-log"
+        ]
+      },
+      {
+        "claim_id": "c-020-2",
+        "statement": "$28,000 was spent in 36 hours, consuming 35% of the monthly budget.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-020-hourly-spend-anomaly",
+          "ev-020-monthly-budget-balance"
+        ]
+      },
+      {
+        "claim_id": "c-020-3",
+        "statement": "The $28k spend surge generated record-high ROAS of 8.0x.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Immediately disable malfunctioning automated rule, reinstate hard daily caps, and throttle remaining monthly daily run rates.",
+      "usefulness": 0.98,
+      "acceptable_directions": {
+        "act": 0.98,
+        "audit": 0.85,
+        "hold": 0.1
+      }
+    },
+    "expected_impact_tier": "critical"
+  },
+  {
+    "case_id": "case-021",
+    "domain": "campaign_pacing",
+    "title": "Black Friday bid cap lockout causing zero impression delivery",
+    "situation": "During Black Friday peak auction hours, manual bid cap of $12 CPA on Meta catalog ads prevented entering auctions as market clearing CPA rose to $22, resulting in zero delivery during the highest conversion window of the year.",
+    "allowed_evidence_refs": [
+      "ev-021-auction-clearing-cpa-feed",
+      "ev-021-meta-impression-delivery-zero",
+      "ev-021-manual-bid-cap-setting",
+      "ev-021-historical-bfcm-conversion",
+      "ev-021-email-campaign-pacing"
+    ],
+    "relevant_evidence_refs": [
+      "ev-021-auction-clearing-cpa-feed",
+      "ev-021-meta-impression-delivery-zero",
+      "ev-021-manual-bid-cap-setting"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-021-1",
+        "statement": "Ad impressions dropped to zero between 08:00 and 16:00 on Black Friday.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-021-meta-impression-delivery-zero"
+        ]
+      },
+      {
+        "claim_id": "c-021-2",
+        "statement": "Auction clearing bids rose to $22 while campaign manual bid cap was locked at $12.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-021-auction-clearing-cpa-feed",
+          "ev-021-manual-bid-cap-setting"
+        ]
+      },
+      {
+        "claim_id": "c-021-3",
+        "statement": "Client website crashed completely during Black Friday morning.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Raise bid caps dynamically or switch to highest volume / lowest cost bidding immediately to restore impression delivery during BFCM peak.",
+      "usefulness": 0.97,
+      "acceptable_directions": {
+        "act": 0.97,
+        "audit": 0.8,
+        "hold": 0.1
+      }
+    },
+    "expected_impact_tier": "critical"
+  },
+  {
+    "case_id": "case-022",
+    "domain": "campaign_pacing",
+    "title": "App install campaign daily budget exhausted before afternoon peak",
+    "situation": "Google App Campaigns exhaust 100% of daily budget by 11:30 AM every day due to accelerated delivery settings, starving evening users who historically demonstrate 2.4x higher day-30 retention.",
+    "allowed_evidence_refs": [
+      "ev-022-hourly-spend-distribution",
+      "ev-022-d30-retention-by-hour",
+      "ev-022-delivery-method-setting",
+      "ev-022-organic-installs",
+      "ev-022-apple-search-ads-cpa"
+    ],
+    "relevant_evidence_refs": [
+      "ev-022-hourly-spend-distribution",
+      "ev-022-d30-retention-by-hour",
+      "ev-022-delivery-method-setting"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-022-1",
+        "statement": "Daily budget is fully consumed by 11:30 AM each morning.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-022-hourly-spend-distribution"
+        ]
+      },
+      {
+        "claim_id": "c-022-2",
+        "statement": "Evening install cohorts have 2.4x higher day-30 user retention than morning cohorts.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-022-d30-retention-by-hour"
+        ]
+      },
+      {
+        "claim_id": "c-022-3",
+        "statement": "Apple App Store removed the app listing.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Switch to standard delivery pacing and implement custom dayparting schedules to preserve budget for afternoon and evening hours.",
+      "usefulness": 0.92,
+      "acceptable_directions": {
+        "act": 0.92,
+        "audit": 0.82,
+        "hold": 0.2
+      }
+    },
+    "expected_impact_tier": "medium"
+  },
+  {
+    "case_id": "case-023",
+    "domain": "campaign_pacing",
+    "title": "Display Network placement fraud causing rapid ad spend burn",
+    "situation": "A new Google Display campaign burnt $8,500 over 4 days on low-quality mobile app placements (flashlight and puzzle apps), with 98% bounce rate and 0.02 second average session duration indicating bot clicks.",
+    "allowed_evidence_refs": [
+      "ev-023-placement-domain-report",
+      "ev-023-bounce-rate-anomaly",
+      "ev-023-session-duration-distribution",
+      "ev-023-google-search-spend",
+      "ev-023-target-cpa-setting"
+    ],
+    "relevant_evidence_refs": [
+      "ev-023-placement-domain-report",
+      "ev-023-bounce-rate-anomaly",
+      "ev-023-session-duration-distribution"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-023-1",
+        "statement": "Over 80% of campaign spend was directed to mobile app placements with 98% bounce rates.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-023-placement-domain-report",
+          "ev-023-bounce-rate-anomaly"
+        ]
+      },
+      {
+        "claim_id": "c-023-2",
+        "statement": "Average visitor session duration from mobile app placements was 0.02 seconds.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-023-session-duration-distribution"
+        ]
+      },
+      {
+        "claim_id": "c-023-3",
+        "statement": "Mobile app traffic resulted in 50 qualified phone inquiries.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "act",
+      "summary": "Exclude mobile app placement categories account-wide and request click fraud credit from Google Ads.",
+      "usefulness": 0.95,
+      "acceptable_directions": {
+        "act": 0.95,
+        "audit": 0.85,
+        "hold": 0.15
+      }
+    },
+    "expected_impact_tier": "high"
+  },
+  {
+    "case_id": "case-024",
+    "domain": "campaign_pacing",
+    "title": "Mid-month smart bidding transition learning phase pacing dip",
+    "situation": "Client switched target CPA strategy 3 days ago, and Google Ads entered Learning phase with daily spend dropping 25%; account manager is tempted to panic-edit bids, but conversion lag is 4 days.",
+    "allowed_evidence_refs": [
+      "ev-024-bid-strategy-learning-status",
+      "ev-024-conversion-lag-report",
+      "ev-024-historical-learning-curve",
+      "ev-024-search-impression-share",
+      "ev-024-account-budget-cap"
+    ],
+    "relevant_evidence_refs": [
+      "ev-024-bid-strategy-learning-status",
+      "ev-024-conversion-lag-report",
+      "ev-024-historical-learning-curve"
+    ],
+    "labelled_claims": [
+      {
+        "claim_id": "c-024-1",
+        "statement": "Bid strategy is in official Google Ads Learning phase with 4 days elapsed of typical 7-day calibration.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-024-bid-strategy-learning-status"
+        ]
+      },
+      {
+        "claim_id": "c-024-2",
+        "statement": "Account average conversion lag between click and purchase is 4.2 days.",
+        "supported": true,
+        "evidence_refs": [
+          "ev-024-conversion-lag-report"
+        ]
+      },
+      {
+        "claim_id": "c-024-3",
+        "statement": "The campaign has permanently lost all historical quality score data.",
+        "supported": false,
+        "evidence_refs": []
+      }
+    ],
+    "expected_recommendation": {
+      "direction": "hold",
+      "summary": "Hold bidding changes and refrain from editing targets for another 4 days to allow the smart bidding algorithm to complete learning calibration.",
+      "usefulness": 0.93,
+      "acceptable_directions": {
+        "hold": 0.93,
+        "audit": 0.85,
+        "act": 0.3
+      }
+    },
+    "expected_impact_tier": "medium"
+  }
+]

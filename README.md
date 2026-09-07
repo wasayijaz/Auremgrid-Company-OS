@@ -24,10 +24,11 @@ flowchart LR
 | Area | In the code |
 |---|---|
 | Run the agency | Organizations, workspaces, people, clients, projects, deliverables, work, dependencies, time, reviews, approvals, workflows, risks, opportunities, meetings, and reports. |
-| Keep the context | Documents, facts, relations, citations, history, conflicts, proposals, saved/customized views, FTS5 search, local graph projection, and optional local semantic projection. |
+| Keep the context | Documents, facts, relations, citations, history, conflicts, proposals, saved/customized views, FTS5 search, local graph projection, and optional local semantic projection. The understanding pipeline turns notes and meeting text into typed, evidence-anchored proposals with an audited human promotion workflow. |
 | Track money and capacity | Source-backed revenue, invoices, costs, budgets, software and AI-usage costs, client economics, skills, availability, leave, and capacity boards. Unknown or disconnected values remain unknown. |
-| Coordinate agents safely | Agent records, workspace/tool policies, queues, runs, traces, costs, task review, bounded delegation, training-mode automation, durable jobs, and approved reversible local actions. |
+| Coordinate agents safely | Agent records, workspace/tool policies, queues, runs, traces, costs, task review, bounded delegation, training-mode automation, durable jobs, and approved reversible local actions. A durable cognitive executor separates model thinking from actions with provider fallback chains, budgets, and process-level cancellation. |
 | Connect deliberately | Read paths for selected providers, read-only import adapters, OAuth/PKCE and credential boundaries, sync state, quarantines, backups, restores, and an asset-recovery registry. |
+| Prove the intelligence | Deep specialist ReasoningProtocols with company lead/executive role tiers, a human-labelled benchmark measuring attention precision/recall, unsupported-claim rate, and calibration, plus release gates for citation, leakage, and usefulness. |
 
 ## First 30 minutes
 

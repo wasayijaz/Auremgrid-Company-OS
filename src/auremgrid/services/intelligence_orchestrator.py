@@ -151,6 +151,22 @@ class OrchestrationLimits:
 class IntelligenceOrchestrator:
     """Compose native Intelligence and immutable expert/runbook contracts."""
 
+    _DOMAIN_EVIDENCE_KINDS = {
+        "performance": frozenset({"campaign_metric_snapshot", "campaign_metrics", "performance_insight"}),
+        "analytics": frozenset({"campaign_metric_snapshot", "campaign_metrics", "performance_insight"}),
+        "campaigns": frozenset({"campaign_metric_snapshot", "campaign_metrics"}),
+        "delivery": frozenset({"work_item", "work_event", "review"}),
+        "workflow": frozenset({"work_item", "work_event", "review"}),
+        "capacity": frozenset({"capacity_snapshot"}),
+        "finance": frozenset({"finance", "revenue", "invoice", "cost"}),
+        "scope": frozenset({"scope_usage", "contract", "scope_allowance"}),
+        "client_success": frozenset({"client_health_snapshot", "decision", "signal"}),
+        "relationships": frozenset({"client_health_snapshot", "touchpoint", "feedback_event"}),
+        "risk": frozenset({"risk", "signal"}),
+        "research": frozenset({"fact", "document", "source"}),
+        "brain": frozenset({"fact", "document", "source"}),
+    }
+
     def __init__(
         self,
         os: Any,
@@ -273,6 +289,13 @@ class IntelligenceOrchestrator:
             iteration_budget = 0
         route_reason = "matched" if runbook else "no_match"
         trace.append({"stage": "runbook_router", "status": "completed" if runbook else "degraded", "reason": route_reason, "runbook": self._contract_ref(runbook)})
+
+        if runbook is not None:
+            context["runbook"] = {
+                "id": self._contract_key(runbook),
+                "required_evidence": [str(item) for item in (self._field(runbook, "required_evidence") or [])],
+                "required_domains": [str(item) for item in (self._field(runbook, "required_domains") or self._field(runbook, "domains") or [])],
+            }
 
         specialists: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -425,12 +448,13 @@ class IntelligenceOrchestrator:
 
     @staticmethod
     def _profile_payload(profile: Any) -> dict[str, Any]:
-        keys = ("id", "version", "name", "specialty", "mission", "reasoning_method", "max_context", "max_iterations", "domains", "allowed_domains", "allowed_tools", "tools")
+        keys = ("id", "version", "name", "specialty", "mission", "reasoning_method", "max_context", "max_iterations", "domains", "allowed_domains", "allowed_tools", "tools", "required_evidence")
         return {key: IntelligenceOrchestrator._field(profile, key) for key in keys if IntelligenceOrchestrator._field(profile, key) is not None}
 
     def _invoke_specialist(self, key: str, profile: Any, context: Mapping[str, Any]) -> Mapping[str, Any]:
         profile_context = dict(context)
         profile_context["profile"] = self._profile_payload(profile)
+        profile_context["retrieval_plan"] = self._build_retrieval_plan(profile, profile_context)
         profile_context = self._restrict_profile_context(profile, profile_context)
         evidence_anchor = self._first_cited_finding_anchor(profile_context.get("findings", []))
         max_context = self._field(profile, "max_context")
@@ -619,10 +643,10 @@ class IntelligenceOrchestrator:
                 "expected_impact": {"level": "unknown"}, "needs_review": True, "dissent": [],
             }, allowed_refs=allowed_refs)
         def collect(field: str) -> list[Any]:
-            return [item for specialist in specialists for item in specialist.get(field, [])][: self.limits.max_items]
+            return [item for specialist in ordered for item in specialist.get(field, [])][: self.limits.max_items]
 
         def distinct_values(field: str) -> list[Any]:
-            values = [specialist.get(field) for specialist in specialists if specialist.get(field) not in (None, "", {}, [])]
+            values = [specialist.get(field) for specialist in ordered if specialist.get(field) not in (None, "", {}, [])]
             unique: list[Any] = []
             seen: set[str] = set()
             for value in values:
@@ -632,6 +656,13 @@ class IntelligenceOrchestrator:
                     unique.append(value)
             return unique
 
+        ranked = sorted(
+            enumerate(specialists),
+            key=lambda item: (-self._specialist_evidence_weight(item[1], situation, allowed_refs), item[0]),
+        )
+        ordered = [item for _, item in ranked]
+        weights = [self._specialist_evidence_weight(item, situation, allowed_refs) for item in ordered]
+        weight_total = sum(weights) or float(len(ordered))
         findings = distinct_values("finding")
         hypotheses = distinct_values("hypothesis")
         recommendations = distinct_values("recommendation")
@@ -640,16 +671,16 @@ class IntelligenceOrchestrator:
             "finding": " | ".join(str(value) for value in findings)[:MAX_TEXT] or "No finding returned.",
             "evidence_for": collect("evidence_for"),
             "evidence_against": collect("evidence_against"),
-            "assumptions": [item for specialist in specialists for item in specialist.get("assumptions", [])][: self.limits.max_items],
-            "unknowns": [item for specialist in specialists for item in specialist.get("unknowns", [])][: self.limits.max_items],
+            "assumptions": [item for specialist in ordered for item in specialist.get("assumptions", [])][: self.limits.max_items],
+            "unknowns": [item for specialist in ordered for item in specialist.get("unknowns", [])][: self.limits.max_items],
             "hypothesis": hypotheses[0] if len(hypotheses) == 1 else ("Competing specialist hypotheses: " + " | ".join(str(value) for value in hypotheses))[:MAX_TEXT],
-            "confidence": round(sum(float(item.get("confidence", 0.0)) for item in specialists) / len(specialists), 3),
+            "confidence": round(sum(float(item.get("confidence", 0.0)) * weight for item, weight in zip(ordered, weights)) / weight_total, 3),
             "analogues": collect("analogues"),
             "risks": collect("risks"),
             "options": collect("options"),
             "recommendation": recommendations[0] if len(recommendations) == 1 else {"summary": "Review the synthesized specialist perspectives before acting.", "alternatives": recommendations[: self.limits.max_items]},
             "expected_impact": impacts[0] if len(impacts) == 1 else {"perspectives": impacts[: self.limits.max_items]},
-            "needs_review": any(bool(item.get("needs_review")) for item in specialists) or bool(contradictions or errors),
+            "needs_review": any(bool(item.get("needs_review")) for item in ordered) or bool(contradictions or errors),
             "dissent": collect("dissent"),
         }
         if contradictions:
@@ -1016,29 +1047,222 @@ class IntelligenceOrchestrator:
         })
         return events, review
 
-    def _restrict_profile_context(self, profile: Any, context: Mapping[str, Any]) -> dict[str, Any]:
-        """Give each specialist only evidence in its declared domains."""
-        domains = {
+    def _build_retrieval_plan(
+        self,
+        profile: Any,
+        context: Mapping[str, Any],
+        domain: str | None = None,
+        runbook: Any | None = None,
+    ) -> dict[str, Any]:
+        """Build a specialist-specific evidence subset from domains and required types."""
+        domains = [
             str(item).strip().lower()
             for item in (self._field(profile, "domains") or self._field(profile, "allowed_domains") or ())
             if str(item).strip()
+        ]
+        requested = str(domain or "").strip().lower()
+        if requested:
+            domains = [requested] if (requested in domains or not domains) else domains
+        if runbook is None:
+            runbook = context.get("runbook")
+        declared_types: list[str] = []
+        for source in (profile, runbook):
+            if source is None:
+                continue
+            for key in ("required_evidence", "required_evidence_types", "evidence_requirements"):
+                for item in (self._field(source, key) or ()):
+                    token = str(item or "").strip().lower()
+                    if token and token not in declared_types:
+                        declared_types.append(token)
+        matchable_types = self._matchable_evidence_types(declared_types)
+        inferred_types: list[str] = []
+        for item in domains:
+            for kind in sorted(self._DOMAIN_EVIDENCE_KINDS.get(item, {item})):
+                if kind not in inferred_types:
+                    inferred_types.append(kind)
+        evidence_types = matchable_types or inferred_types or declared_types
+        selected_refs: list[str] = []
+        seen: set[str] = set()
+        for finding in context.get("findings", []) or []:
+            if not isinstance(finding, Mapping):
+                continue
+            finding_domain = str(finding.get("domain") or finding.get("type") or "").strip().lower()
+            for evidence in finding.get("evidence", []) or []:
+                if not self._evidence_matches_plan(evidence, domains, matchable_types, finding_domain):
+                    continue
+                ref = _ref_id(evidence)
+                if not ref or ref in seen:
+                    continue
+                seen.add(ref)
+                selected_refs.append(ref)
+        return {
+            "profile_id": self._profile_key(profile),
+            "domains": domains,
+            "evidence_types": evidence_types,
+            "evidence_refs": selected_refs[:MAX_ITEMS],
         }
-        if not domains:
-            result = dict(context)
-            tools = self._field(profile, "allowed_tools") or self._field(profile, "allowed_tool_refs") or ()
-            result["allowed_tools"] = [str(item) for item in tools][:MAX_ITEMS]
-            result["tools"] = list(result["allowed_tools"])
-            return result
+
+    @classmethod
+    def _matchable_evidence_types(cls, types: Sequence[str]) -> list[str]:
+        known: set[str] = set()
+        for kinds in cls._DOMAIN_EVIDENCE_KINDS.values():
+            known.update(kinds)
+        result: list[str] = []
+        for token in types:
+            item = str(token or "").strip().lower()
+            if not item:
+                continue
+            if " " in item and item not in known:
+                continue
+            if item not in result:
+                result.append(item)
+        return result
+
+    @classmethod
+    def _evidence_kind(cls, evidence: Any) -> str:
+        if not isinstance(evidence, Mapping):
+            return str(evidence or "").strip().lower()
+        for key in ("evidence_type", "type", "kind"):
+            value = evidence.get(key)
+            if value not in (None, "") and not isinstance(value, Mapping):
+                return str(value).strip().lower()
+        ref = evidence.get("object_ref") or evidence.get("ref") or {}
+        if isinstance(ref, Mapping):
+            return str(ref.get("type") or "").strip().lower()
+        return str(ref or "").strip().lower()
+
+    @classmethod
+    def _evidence_matches_plan(
+        cls,
+        evidence: Any,
+        domains: Sequence[str],
+        matchable_types: Sequence[str],
+        finding_domain: str = "",
+    ) -> bool:
+        domain_hit = (not domains) or finding_domain in {str(item).lower() for item in domains} or any(
+            cls._evidence_matches_domain(evidence, domain) for domain in domains
+        )
+        kind = cls._evidence_kind(evidence)
+        type_hit = (not matchable_types) or kind in set(matchable_types) or any(
+            token in kind for token in matchable_types if token
+        )
+        return domain_hit and type_hit
+
+    def _specialist_evidence_weight(
+        self,
+        specialist: Mapping[str, Any],
+        situation: Mapping[str, Any],
+        allowed_refs: set[str],
+    ) -> float:
+        """Weight a specialist by resolved citation quality, domain match, and recency."""
+        by_ref = self._situation_evidence_by_ref(situation)
+        resolved: list[Mapping[str, Any]] = []
+        for item in specialist.get("evidence_for", []) or []:
+            ref = _ref_id(item)
+            if not ref or ref not in allowed_refs:
+                continue
+            resolved.append(item if isinstance(item, Mapping) else {"ref": ref})
+        quality_sum = 0.0
+        recency_sum = 0.0
+        domain_hits = 0.0
+        profile_domains = self._specialist_domains(specialist)
+        for item in resolved:
+            ref = _ref_id(item)
+            source = by_ref.get(ref or "", item)
+            quality_sum += self._citation_quality(source)
+            recency_sum += self._citation_recency(source)
+            if profile_domains and any(self._evidence_matches_domain(source, domain) for domain in profile_domains):
+                domain_hits += 1.0
+        return 1.0 + quality_sum + recency_sum + domain_hits
+
+    @staticmethod
+    def _specialist_domains(specialist: Mapping[str, Any]) -> list[str]:
+        profile = specialist.get("profile") if isinstance(specialist.get("profile"), Mapping) else {}
+        coverage = specialist.get("domain_coverage") if isinstance(specialist.get("domain_coverage"), Mapping) else {}
+        values = list(profile.get("domains") or profile.get("allowed_domains") or coverage.keys() or ())
+        return [str(item).strip().lower() for item in values if str(item).strip()]
+
+    @staticmethod
+    def _situation_evidence_by_ref(situation: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+        found: dict[str, Mapping[str, Any]] = {}
+        for finding in situation.get("findings", []) or []:
+            if not isinstance(finding, Mapping):
+                continue
+            for evidence in finding.get("evidence", []) or []:
+                if not isinstance(evidence, Mapping):
+                    continue
+                ref = _ref_id(evidence)
+                if ref and ref not in found:
+                    found[ref] = evidence
+        return found
+
+    @staticmethod
+    def _citation_quality(item: Mapping[str, Any]) -> float:
+        for key in ("quality", "score", "weight"):
+            if item.get(key) not in (None, ""):
+                return _score(item.get(key), 1.0)
+        confidence = item.get("confidence")
+        if isinstance(confidence, Mapping):
+            return _score(confidence.get("score"), 1.0)
+        if confidence not in (None, ""):
+            return _score(confidence, 1.0)
+        return 1.0
+
+    @staticmethod
+    def _citation_recency(item: Mapping[str, Any]) -> float:
+        parsed = None
+        for key in ("timestamp", "as_of", "observed_at", "generated_at", "created_at"):
+            parsed = IntelligenceOrchestrator._parse_timestamp(item.get(key))
+            if parsed is not None:
+                break
+        if parsed is None:
+            return 0.0
+        age_days = max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds() / 86400.0)
+        return max(0.0, min(1.0, 1.0 - (age_days / 365.0)))
+
+    @staticmethod
+    def _parse_timestamp(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    def _restrict_profile_context(self, profile: Any, context: Mapping[str, Any]) -> dict[str, Any]:
+        """Give each specialist only evidence in its declared domains."""
+        plan = context.get("retrieval_plan") if isinstance(context.get("retrieval_plan"), Mapping) else None
+        if plan is None:
+            plan = self._build_retrieval_plan(profile, context)
+        domains = {
+            str(item).strip().lower()
+            for item in (plan.get("domains") or self._field(profile, "domains") or self._field(profile, "allowed_domains") or ())
+            if str(item).strip()
+        }
         result = dict(context)
+        result["retrieval_plan"] = plan
         tools = self._field(profile, "allowed_tools") or self._field(profile, "allowed_tool_refs") or ()
         result["allowed_tools"] = [str(item) for item in tools][:MAX_ITEMS]
         result["tools"] = list(result["allowed_tools"])
+        if not domains:
+            return result
+        planned_refs = {str(ref) for ref in (plan.get("evidence_refs") or []) if ref}
         findings = []
         for item in context.get("findings", []) or []:
             if not isinstance(item, Mapping):
                 continue
             marker = " ".join(str(item.get(key) or "").lower() for key in ("id", "type", "title", "domain"))
-            domain_evidence = self._domain_matched_evidence(item.get("evidence", []), domains)
+            raw_evidence = item.get("evidence", []) or []
+            if planned_refs:
+                domain_evidence = [entry for entry in raw_evidence if _ref_id(entry) in planned_refs]
+            else:
+                domain_evidence = self._domain_matched_evidence(raw_evidence, domains)
             if any(domain in marker for domain in domains) or domain_evidence:
                 scoped = dict(item)
                 if domain_evidence:
@@ -1046,6 +1270,8 @@ class IntelligenceOrchestrator:
                     scoped["evidence"] = domain_evidence[:4]
                     if matched:
                         scoped.setdefault("domain", matched)
+                elif planned_refs:
+                    continue
                 findings.append(scoped)
         # A workspace can legitimately have no finding whose title carries a
         # specialist's domain label. Preserve one ACL-visible anchor in that
@@ -1053,34 +1279,26 @@ class IntelligenceOrchestrator:
         # instead of an uncited generic fallback.
         if not findings:
             # A finding title is not guaranteed to carry its source domain.
-            # Recover a domain-specific anchor from canonical evidence refs so
+            # Recover a specialist-specific anchor from the retrieval plan so
             # deterministic specialists do not all inherit findings[0].
             domain_evidence: list[tuple[str, Mapping[str, Any]]] = []
             for item in context.get("findings", []) or []:
                 if not isinstance(item, Mapping):
                     continue
                 for evidence in item.get("evidence", []) or []:
+                    ref = _ref_id(evidence)
+                    if planned_refs and ref not in planned_refs:
+                        continue
                     matched = next((domain for domain in domains if self._evidence_matches_domain(evidence, domain)), None)
-                    if matched:
+                    if matched or (planned_refs and ref in planned_refs):
                         domain_evidence.append((matched, evidence))
             if domain_evidence:
-                chosen_domain = domain_evidence[0][0]
+                chosen_domain = domain_evidence[0][0] or next(iter(domains), "")
                 findings = [{
                     "summary": f"Visible {chosen_domain} evidence requiring a domain-specific review.",
                     "domain": chosen_domain,
-                    "evidence": [evidence for domain, evidence in domain_evidence if domain == chosen_domain][:4],
+                    "evidence": [evidence for domain, evidence in domain_evidence if not chosen_domain or domain == chosen_domain][:4],
                 }]
-            else:
-                first = next((item for item in context.get("findings", []) or [] if isinstance(item, Mapping)), None)
-                if first is not None and first.get("evidence"):
-                    findings = [{
-                        "summary": "Visible evidence requiring a domain-specific review.",
-                        "evidence": list(first.get("evidence", []))[:4],
-                        "confidence": first.get("confidence"),
-                        "opposing_evidence": first.get("opposing_evidence", []),
-                        "recommendation": first.get("recommendation", {}),
-                        "impact": first.get("impact", {}),
-                    }]
         result["findings"] = findings
         if isinstance(context.get("domains"), Mapping):
             result["domains"] = {
@@ -1162,24 +1380,9 @@ class IntelligenceOrchestrator:
         """Match canonical evidence kinds to a declared specialist domain."""
         if not isinstance(evidence, Mapping):
             return False
-        ref = evidence.get("object_ref") or evidence.get("ref") or {}
-        kind = str(ref.get("type") if isinstance(ref, Mapping) else ref).lower()
-        aliases = {
-            "performance": {"campaign_metric_snapshot", "campaign_metrics", "performance_insight"},
-            "analytics": {"campaign_metric_snapshot", "campaign_metrics", "performance_insight"},
-            "campaigns": {"campaign_metric_snapshot", "campaign_metrics"},
-            "delivery": {"work_item", "work_event", "review"},
-            "workflow": {"work_item", "work_event", "review"},
-            "capacity": {"capacity_snapshot"},
-            "finance": {"finance", "revenue", "invoice", "cost"},
-            "scope": {"scope_usage", "contract", "scope_allowance"},
-            "client_success": {"client_health_snapshot", "decision", "signal"},
-            "relationships": {"client_health_snapshot", "touchpoint", "feedback_event"},
-            "risk": {"risk", "signal"},
-            "research": {"fact", "document", "source"},
-            "brain": {"fact", "document", "source"},
-        }
-        return kind in aliases.get(domain, {domain}) or domain in kind
+        kind = IntelligenceOrchestrator._evidence_kind(evidence)
+        aliases = IntelligenceOrchestrator._DOMAIN_EVIDENCE_KINDS.get(domain, {domain})
+        return kind in aliases or domain in kind
 
     def _select_deterministic_finding(self, findings: Any, profile_domains: Sequence[str], key: str) -> Mapping[str, Any]:
         candidates = [item for item in (findings or []) if isinstance(item, Mapping)]
