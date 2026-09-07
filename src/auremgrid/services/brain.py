@@ -71,7 +71,7 @@ from auremgrid.services.performance_ops import PerformanceOperations
 from auremgrid.services.forecast_ops import ForecastOperations
 from auremgrid.services.revenue_ops import RevenueOperations
 from auremgrid.services.retention_ops import RetentionOperations
-from auremgrid.services.intelligence import IntelligenceService
+from auremgrid.services.intelligence_service import IntelligenceService
 from auremgrid.services.intelligence_contracts import IntelligenceContractService
 from auremgrid.services.intelligence_learning import IntelligenceLearningService
 from auremgrid.services.intelligence_orchestrator import IntelligenceOrchestrator
