@@ -71,6 +71,7 @@ python scripts/auremgrid.py demo --db "C:\data\auremgrid-demo.sqlite"
 | Run background work | `python scripts/auremgrid.py worker-once --db "C:\data\agency.sqlite" --organization <organization-id> --worker-id local-worker-1` |
 | Protect the ledger | `python scripts/auremgrid.py backup --db "C:\data\agency.sqlite" --output "C:\data\backups\agency.sqlite"` then `python scripts/auremgrid.py verify-backup --backup "C:\data\backups\agency.sqlite"` |
 | Recover intentionally | `restore` verifies the source, creates a safety backup before replacement, revokes sessions, recovers in-flight jobs, and keeps outbound dispatch disabled. |
+| Rehearse recovery | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restore_drill.ps1` runs backup, verification, restore, integrity, and recovery-mode checks against a scratch copy; no live database is touched. |
 | Inspect the system | The dashboard includes Command, Clients, Client Portal, Work, Projects, Review, Workflows, Campaigns, Content, Creative, Brain, Meetings, People, Finance, Agents, Automations, Reports, Integrations, Settings, Onboarding, Retention, and Operator health. |
 
 The API is implemented in [`src/auremgrid/api/http.py`](src/auremgrid/api/http.py), the tool router in [`src/auremgrid/api/mcp.py`](src/auremgrid/api/mcp.py), and the dashboard in [`src/auremgrid/api/dashboard`](src/auremgrid/api/dashboard). JSON/data routes require a bearer session or API token except `/health`, `/metrics`, and `/health/detailed`.
@@ -98,7 +99,7 @@ deploy/            private single-host Docker Compose and Caddy templates
 scripts/           launcher, release checks, smoke tests, and local utilities
 ```
 
-The Python package is `auremgrid-company-os`; the import surface exports `CompanyOS` from `auremgrid.services.brain`. Schema 59 is the current migration line; `/health/detailed` reports the version of the opened database.
+The Python package is `auremgrid-company-os`; the import surface exports `CompanyOS` from `auremgrid.services.brain`. Schema 63 is the current migration line; `/health/detailed` reports the version of the opened database.
 
 ## Verify a checkout
 
@@ -118,6 +119,14 @@ python -m pip install --no-build-isolation -e ".[browser]"
 .\tools\run-dashboard-browser.ps1 -InstallChromium
 ```
 
+Release tooling:
+
+```text
+python scripts/generate_sbom.py
+```
+
+Produces a CycloneDX 1.5 SBOM for the installed package and its dependencies.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) · [Domain model](docs/domain-model.md) · [Operating model](docs/operating-model.md)
@@ -126,6 +135,7 @@ python -m pip install --no-build-isolation -e ".[browser]"
 - [Connectors](docs/connector-model.md) · [Secure integrations](docs/secure-integrations.md) · [Jobs and recovery](docs/jobs-and-recovery.md)
 - [Finance](docs/finance-model.md) · [Asset and backup policy](docs/asset-backup-policy.md) · [Local deployment](docs/local-deployment.md)
 - [Production checklist](docs/production-checklist.md) · [Release verification](docs/release-verification.md) · [Upgrade guide](docs/upgrade-guide.md)
+- [Operations manual](docs/operations.md) · [Changelog](CHANGELOG.md)
 
 Fixtures are synthetic. Do not commit client, employee, credential, or financial data.
 
