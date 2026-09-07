@@ -44,6 +44,15 @@ SENSITIVE_EXPORT_TABLES = frozenset({
     "system_state",
 })
 
+_EVIDENCE_RESIDUE_TABLES = frozenset({
+    "facts",
+    "relations",
+    "document_embedding_projection",
+    "brain_document_tags",
+    "brain_source_tags",
+    "brain_collection_items",
+})
+
 SENSITIVE_EXPORT_COLUMN_MARKERS = (
     "ciphertext",
     "credential",
@@ -261,7 +270,7 @@ class RetentionOperations:
         return deleted_document_ids
 
     def _delete_optional(self, table_name: str, where_sql: str, params: tuple[Any, ...]) -> None:
-        if table_name in self._table_columns():
+        if table_name in _EVIDENCE_RESIDUE_TABLES and table_name in self._table_columns():
             self.conn.execute(f"DELETE FROM {table_name} WHERE {where_sql}", params)
 
     def _table_exists(self, table_name: str) -> bool:
