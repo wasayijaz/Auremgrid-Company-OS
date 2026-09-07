@@ -78,9 +78,12 @@ when it differs from the durable cursor. That fetched, version-fenced snapshot
 can retain bounded frame/section evidence. When `file_versions:read` is
 explicitly configured and proven, a changed file can also retain one bounded
 page of named-version evidence; the parent file is the sole lifecycle and
-object-count record. Figma does not synchronize comments, model review or
-approval workflows, or auto-create
-deliverables, reviews, or tasks. Inaccessible previously seen files produce
+object-count record. Figma does not synchronize model review or approval
+workflows, or auto-create deliverables, reviews, or tasks. Comments, when
+available, are synchronized
+only as bounded evidence references: quoted comment text linked to the
+specific file and provider version, never as full design content. Inaccessible
+previously seen files produce
 tombstones; malformed or failed responses do not advance the cursor.
 
 Fireflies synchronization requires exactly one `account:<id>` mapping to one

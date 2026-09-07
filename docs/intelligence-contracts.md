@@ -39,7 +39,7 @@ actions are never exposed by this layer.
 
 `CompanyOS.intelligence_orchestrator` is the bounded execution layer over those
 contracts. It builds an ACL-scoped situation from the native Intelligence
-projection, selects a matching runbook/profile set, runs at most eight
+projection, selects a matching runbook/profile set, runs at most 13
 specialists for a bounded number of iterations, validates every specialist
 result, drops uncited or unauthorized evidence refs, detects contradictions,
 and returns a `trace_id`, `runbook_route`, contributing profiles, trace stages,

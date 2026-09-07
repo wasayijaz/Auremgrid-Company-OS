@@ -15,8 +15,11 @@ only when the version changes. The fetched, version-fenced file snapshot can
 retain bounded frame/section evidence. When `file_versions:read` is explicitly
 configured and proven, a changed file can also retain one bounded page of
 named-version evidence. The parent file is the only lifecycle and object-count
-record. Figma does not ingest comments, model review or approval workflows, or auto-create
-deliverables, reviews, or tasks. Fireflies requires exactly one `account:<id>`
+record. Figma comments, when available, are synchronized only as bounded
+evidence references: quoted comment text linked to the specific file and
+provider version, never as full design content. Figma does not ingest model
+review or approval workflows, or auto-create deliverables, reviews, or tasks.
+Fireflies requires exactly one `account:<id>`
 mapping to one workspace and the `transcripts:read` scope; it polls transcripts
 by a durable date cursor and ingests one bounded, sanitized transcript event
 per meeting. Meta Ads, Google Ads, Stripe/accounting, and CRM are cataloged as
