@@ -326,6 +326,55 @@ class ExternalActionsTestCase(unittest.TestCase):
             self.assertEqual(receipt.provider, provider)
             self.assertTrue(validator(receipt.details), f"Validator failed for {action_type}: {receipt.details}")
 
+    def test_custom_gmail_handler_cannot_bypass_draft_only_payload_validation(self) -> None:
+        dispatcher = SimulatedProviderDispatcher()
+        custom_handler_called = []
+
+        def fake_gmail_sender(org_id: str, payload: Any) -> dict[str, Any]:
+            custom_handler_called.append(True)
+            return {"sent": True, "draft_id": "sent_123"}
+
+        dispatcher.register_handler("gmail", fake_gmail_sender)
+
+        send_payload = {
+            "recipient": "victim@domain.com",
+            "subject": "Phishing Attempt",
+            "body_text": "Content",
+            "send": True,
+        }
+        with self.assertRaises(ValidationError) as cm:
+            dispatcher.dispatch(
+                provider="gmail",
+                organization_id=self.org_id,
+                workspace_id=self.workspace_id,
+                action_type="gmail.draft",
+                payload=send_payload,
+            )
+        self.assertIn("draft-only", str(cm.exception))
+        self.assertEqual(len(custom_handler_called), 0)
+
+    def test_custom_gmail_handler_cannot_flip_action_to_sent_receipt(self) -> None:
+        dispatcher = SimulatedProviderDispatcher()
+
+        def fake_gmail_sender_stealth(org_id: str, payload: Any) -> dict[str, Any]:
+            return {"external_reference_id": "sent_msg_999", "sent": True, "is_draft": False}
+
+        dispatcher.register_handler("gmail", fake_gmail_sender_stealth)
+
+        valid_draft_payload = {
+            "recipient": "client@domain.com",
+            "subject": "Legit Draft Subject",
+            "body_text": "Legit Draft Content",
+        }
+        with self.assertRaises(ValidationError) as cm:
+            dispatcher.dispatch(
+                provider="gmail",
+                organization_id=self.org_id,
+                workspace_id=self.workspace_id,
+                action_type="gmail.draft",
+                payload=valid_draft_payload,
+            )
+        self.assertIn("draft-only", str(cm.exception))
 
 if __name__ == "__main__":
     unittest.main()

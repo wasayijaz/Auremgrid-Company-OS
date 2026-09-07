@@ -192,9 +192,16 @@ class SimulatedProviderDispatcher:
         if provider not in EXTERNAL_ACTION_PROVIDERS:
             raise AuthorizationError(f"provider '{provider}' is outside the authorized allowlist")
 
+        validate_action_payload(action_type, payload)
+
         # Check custom registered handler first
         if provider in self._custom_handlers:
             result = self._custom_handlers[provider](organization_id, payload)
+            if provider == "gmail" or action_type == "gmail.draft":
+                if bool(result.get("sent", False)) or not bool(result.get("is_draft", True)):
+                    raise ValidationError("Gmail action must be draft-only; sending is strictly prohibited")
+                result["is_draft"] = True
+                result["sent"] = False
             ref_id = str(result.get("external_reference_id", self._new_id("extref")))
             return ref_id, result
 
@@ -561,4 +568,3 @@ class ExternalActionService:
             return ExternalActionReceipt(**data)
         except Exception:
             return None
-
