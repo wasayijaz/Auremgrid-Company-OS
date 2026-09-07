@@ -1081,6 +1081,24 @@ class IntelligenceOrchestrator:
                 if kind not in inferred_types:
                     inferred_types.append(kind)
         evidence_types = matchable_types or inferred_types or declared_types
+        selected_refs = self._collect_plan_refs(context, domains, matchable_types)
+        if not selected_refs:
+            selected_refs = self._collect_plan_refs(context, domains, ())
+        if not selected_refs:
+            selected_refs = self._collect_plan_refs(context, (), ())
+        return {
+            "profile_id": self._profile_key(profile),
+            "domains": domains,
+            "evidence_types": evidence_types,
+            "evidence_refs": selected_refs[:MAX_ITEMS],
+        }
+
+    def _collect_plan_refs(
+        self,
+        context: Mapping[str, Any],
+        domains: Sequence[str],
+        matchable_types: Sequence[str],
+    ) -> list[str]:
         selected_refs: list[str] = []
         seen: set[str] = set()
         for finding in context.get("findings", []) or []:
@@ -1095,12 +1113,7 @@ class IntelligenceOrchestrator:
                     continue
                 seen.add(ref)
                 selected_refs.append(ref)
-        return {
-            "profile_id": self._profile_key(profile),
-            "domains": domains,
-            "evidence_types": evidence_types,
-            "evidence_refs": selected_refs[:MAX_ITEMS],
-        }
+        return selected_refs[:MAX_ITEMS]
 
     @classmethod
     def _matchable_evidence_types(cls, types: Sequence[str]) -> list[str]:
@@ -1281,7 +1294,7 @@ class IntelligenceOrchestrator:
             # A finding title is not guaranteed to carry its source domain.
             # Recover a specialist-specific anchor from the retrieval plan so
             # deterministic specialists do not all inherit findings[0].
-            domain_evidence: list[tuple[str, Mapping[str, Any]]] = []
+            domain_evidence: list[tuple[str | None, Mapping[str, Any], Mapping[str, Any]]] = []
             for item in context.get("findings", []) or []:
                 if not isinstance(item, Mapping):
                     continue
@@ -1291,14 +1304,30 @@ class IntelligenceOrchestrator:
                         continue
                     matched = next((domain for domain in domains if self._evidence_matches_domain(evidence, domain)), None)
                     if matched or (planned_refs and ref in planned_refs):
-                        domain_evidence.append((matched, evidence))
+                        domain_evidence.append((matched, evidence, item))
             if domain_evidence:
                 chosen_domain = domain_evidence[0][0] or next(iter(domains), "")
+                parent = domain_evidence[0][2]
                 findings = [{
                     "summary": f"Visible {chosen_domain} evidence requiring a domain-specific review.",
                     "domain": chosen_domain,
-                    "evidence": [evidence for domain, evidence in domain_evidence if not chosen_domain or domain == chosen_domain][:4],
+                    "evidence": [evidence for _domain, evidence, _parent in domain_evidence][:4],
+                    "confidence": parent.get("confidence"),
+                    "opposing_evidence": parent.get("opposing_evidence", []),
+                    "recommendation": parent.get("recommendation", {}),
+                    "impact": parent.get("impact", {}),
                 }]
+            else:
+                first = next((item for item in context.get("findings", []) or [] if isinstance(item, Mapping)), None)
+                if first is not None and first.get("evidence"):
+                    findings = [{
+                        "summary": "Visible evidence requiring a domain-specific review.",
+                        "evidence": list(first.get("evidence", []))[:4],
+                        "confidence": first.get("confidence"),
+                        "opposing_evidence": first.get("opposing_evidence", []),
+                        "recommendation": first.get("recommendation", {}),
+                        "impact": first.get("impact", {}),
+                    }]
         result["findings"] = findings
         if isinstance(context.get("domains"), Mapping):
             result["domains"] = {
