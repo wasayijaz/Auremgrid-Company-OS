@@ -114,7 +114,7 @@ deploy/            private single-host Docker Compose and Caddy templates
 scripts/           launcher, release checks, smoke tests, and local utilities
 ```
 
-The Python package is `auremgrid-company-os`; the import surface exports `CompanyOS` from `auremgrid.services.brain`. Schema 63 is the current migration line; `/health/detailed` reports the version of the opened database.
+The Python package is `auremgrid-company-os`; the import surface exports `CompanyOS` from `auremgrid.services.brain`. Schema 64 is the current migration line; `/health/detailed` reports the version of the opened database.
 
 ## Verify a checkout
 
