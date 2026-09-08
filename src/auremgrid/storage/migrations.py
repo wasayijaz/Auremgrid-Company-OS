@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import re
 from dataclasses import dataclass
 
 
@@ -4528,6 +4529,44 @@ MIGRATIONS = (
         ALTER TABLE agent_thinking_attempts ADD COLUMN citations_json TEXT;
         """,
     ),
+    Migration(
+        67,
+        "pilot_operator_verdicts",
+        """
+        CREATE TABLE IF NOT EXISTS pilot_operator_verdicts (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            scenario_id TEXT NOT NULL,
+            verdict TEXT NOT NULL CHECK(verdict IN ('positive','negative','mixed','unknown','not_applicable')),
+            notes TEXT,
+            recorded_by_person_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+            FOREIGN KEY(recorded_by_person_id) REFERENCES people(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pilot_operator_verdicts_scope
+            ON pilot_operator_verdicts(organization_id, workspace_id, scenario_id, created_at);
+        CREATE TRIGGER IF NOT EXISTS pilot_operator_verdicts_no_update
+        BEFORE UPDATE ON pilot_operator_verdicts
+        BEGIN
+            SELECT RAISE(ABORT, 'pilot operator verdicts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS pilot_operator_verdicts_no_delete
+        BEFORE DELETE ON pilot_operator_verdicts
+        BEGIN
+            SELECT RAISE(ABORT, 'pilot operator verdicts are append-only');
+        END;
+        """,
+    ),
+    Migration(
+        68,
+        "onboarding_receipt_simulation_marker",
+        """
+        ALTER TABLE onboarding_import_receipts ADD COLUMN simulated INTEGER;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {
@@ -4677,6 +4716,29 @@ def _durable_intelligence_hypothesis_subject_timestamps_sql(conn: sqlite3.Connec
     return "\n".join(statements)
 
 
+_ADD_COLUMN_RE = re.compile(
+    r"(?m)^[ \t]*ALTER[ \t]+TABLE[ \t]+(?P<table>[A-Za-z_][A-Za-z0-9_]*)[ \t]+"
+    r"ADD[ \t]+COLUMN[ \t]+(?P<column>[A-Za-z_][A-Za-z0-9_]*)[ \t]+[^;]+;[ \t]*(?:\r?\n)?"
+)
+
+
+def _strip_existing_add_column_statements(conn: sqlite3.Connection, sql: str) -> str:
+    columns_by_table: dict[str, set[str]] = {}
+
+    def replacement(match: re.Match[str]) -> str:
+        table = match.group("table")
+        column = match.group("column")
+        if table not in columns_by_table:
+            rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+            columns_by_table[table] = {str(row[1]) for row in rows}
+        columns = columns_by_table[table]
+        if columns and column in columns:
+            return ""
+        return match.group(0)
+
+    return _ADD_COLUMN_RE.sub(replacement, sql)
+
+
 def migrate(conn: sqlite3.Connection, *, target_version: int | None = None) -> int:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
@@ -4784,13 +4846,7 @@ def migrate(conn: sqlite3.Connection, *, target_version: int | None = None) -> i
                 statement = f"ALTER TABLE {table} ADD COLUMN {column} {definition};"
                 if column in table_columns[table]:
                     sql = sql.replace(statement, "")
-        if migration.version == 57:
-            review_annotation_columns = {
-                row[1] for row in conn.execute("PRAGMA table_info(review_annotations)").fetchall()
-            }
-            statement = "ALTER TABLE review_annotations ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';"
-            if "metadata_json" in review_annotation_columns:
-                sql = sql.replace(statement, "")
+        sql = _strip_existing_add_column_statements(conn, sql)
         with conn:
             conn.executescript(sql)
             if migration.version == 19:
