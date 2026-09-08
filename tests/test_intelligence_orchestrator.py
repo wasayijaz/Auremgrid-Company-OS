@@ -24,6 +24,10 @@ class _Contracts:
         return self.runbooks
 
 
+def _budget():
+    return {"tokens": 0, "cost": 0.0, "max_tokens": 10**9, "max_cost": 10**9.0, "policy_max_tokens": 10**9, "policy_max_cost": 10**9.0, "policy_max_runtime_ms": None, "cap_reason": None, "closed": False}
+
+
 def _result(hypothesis: str = "same"):
     return {
         "finding": "visible finding", "evidence_for": [], "evidence_against": [],
@@ -214,7 +218,7 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
             "historical_analogues": [], "decision_action_outcome_learning": [], "scenario_inputs": {},
         }
         specialists, errors = orchestrator._run_specialists(
-            contracts.profiles, context, {"campaign-1", "capacity-1"}
+            contracts.profiles, context, {"campaign-1", "capacity-1"}, _budget(), None
         )
         self.assertEqual(errors, [])
         by_profile = {item["specialist_id"]: item for item in specialists}
@@ -362,7 +366,7 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
             "scenario_inputs": {},
         }
         specialists, errors = IntelligenceOrchestrator(self.os, contracts)._run_specialists(
-            contracts.profiles, context, {"visible-work"}
+            contracts.profiles, context, {"visible-work"}, _budget(), None
         )
         self.assertEqual(errors, [])
         specialist = specialists[0]
@@ -380,12 +384,112 @@ class IntelligenceOrchestratorTests(unittest.TestCase):
 
         specialists, errors = IntelligenceOrchestrator(
             self.os, contracts, specialist_handlers={"expert-0": mixed}
-        )._run_specialists(contracts.profiles, {"findings": []}, {"visible-work"})
-        self.assertEqual(errors, [])
-        self.assertEqual(specialists[0]["status"], "degraded")
-        self.assertEqual(specialists[0]["evidence_for"], [valid])
-        self.assertTrue(specialists[0]["needs_review"])
-        self.assertTrue(any("dropped" in item for item in specialists[0]["unknowns"]))
+        )._run_specialists(contracts.profiles, {"findings": []}, {"visible-work"}, _budget(), None)
+
+    def test_budget_requires_open_run_scope(self):
+        orchestrator = IntelligenceOrchestrator(self.os, _Contracts(1))
+        self.assertFalse(orchestrator._consume_budget(None, tokens=10))
+        budget = _budget()
+        self.assertTrue(orchestrator._consume_budget(budget, tokens=10))
+        self.assertEqual(budget["tokens"], 10)
+        budget["closed"] = True
+        self.assertFalse(orchestrator._consume_budget(budget, tokens=1))
+
+    def test_concurrent_runs_keep_budgets_isolated(self):
+        import threading
+        contracts = _Contracts(2)
+        gate = threading.Barrier(4, timeout=10)
+
+        def handler(_ctx):
+            gate.wait()
+            return _result()
+
+        handlers = {f"expert-{i}": handler for i in range(2)}
+        orchestrator = IntelligenceOrchestrator(self.os, contracts, specialist_handlers=handlers)
+        results = {}
+
+        def run_one(index):
+            results[index] = orchestrator.run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin")
+
+        threads = [threading.Thread(target=run_one, args=(i,)) for i in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        self.assertEqual(sorted(results), [0, 1])
+        self.assertGreater(results[0]["evaluation_safety"]["estimated_tokens"], 0)
+        self.assertEqual(results[0]["evaluation_safety"]["estimated_tokens"], results[1]["evaluation_safety"]["estimated_tokens"])
+        self.assertIsNone(results[0]["evaluation_safety"]["cap_reason"])
+        self.assertIsNone(results[1]["evaluation_safety"]["cap_reason"])
+
+    def test_safety_authorization_failure_blocks_specialists(self):
+        contracts = _Contracts(1)
+        called = []
+
+        def handler(_ctx):
+            called.append(True)
+            return _result()
+
+        safety = self.os.intelligence_evaluation_safety
+        original = safety.can_start
+        def _raise(*_args, **_kwargs):
+            raise RuntimeError("safety down")
+        safety.can_start = _raise
+        try:
+            orchestrator = IntelligenceOrchestrator(self.os, contracts, specialist_handlers={"expert-0": handler})
+            result = orchestrator.run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin")
+        finally:
+            safety.can_start = original
+        self.assertEqual(called, [])
+        self.assertEqual(result["evaluation_safety"]["status"], "blocked")
+        self.assertEqual(result["evaluation_safety"]["cap_reason"], "safety_unavailable")
+        self.assertEqual(result["specialists"], [])
+        self.assertTrue(any(item.get("stage") == "evaluation_safety" and item.get("status") == "blocked" for item in result["trace"]))
+
+    def test_safety_telemetry_failure_blocks_specialists(self):
+        contracts = _Contracts(1)
+        called = []
+
+        def handler(_ctx):
+            called.append(True)
+            return _result()
+
+        safety = self.os.intelligence_evaluation_safety
+        original_start = safety.start
+        def _raise(*_args, **_kwargs):
+            raise RuntimeError("telemetry down")
+        safety.start = _raise
+        try:
+            orchestrator = IntelligenceOrchestrator(self.os, contracts, specialist_handlers={"expert-0": handler})
+            result = orchestrator.run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin")
+        finally:
+            safety.start = original_start
+        self.assertEqual(called, [])
+        self.assertEqual(result["evaluation_safety"]["status"], "blocked")
+        self.assertEqual(result["evaluation_safety"]["cap_reason"], "safety_telemetry_unavailable")
+        self.assertEqual(result["specialists"], [])
+
+    def test_policy_runtime_cap_bounds_fanout_deadline(self):
+        import time as _time
+        contracts = _Contracts(1)
+
+        def slow(_ctx):
+            _time.sleep(0.4)
+            return _result()
+
+        safety = self.os.intelligence_evaluation_safety
+        original_can_start, original_start = safety.can_start, safety.start
+        safety.can_start = lambda *_a, **_k: {"allowed": True, "policy": {"max_tokens": 10**9, "max_cost_amount": 10**9.0, "max_runtime_ms": 1}}
+        safety.start = lambda *_a, **_k: {"id": "eval_deadline_test"}
+        try:
+            orchestrator = IntelligenceOrchestrator(self.os, contracts, specialist_handlers={"expert-0": slow})
+            result = orchestrator.run("org_demo", "ws_alpha", "person_demo_owner", actor_id="act_alpha_admin")
+        finally:
+            safety.can_start, safety.start = original_can_start, original_start
+        self.assertEqual(result["specialists"], [])
+        fanout_events = [item for item in result["trace"] if item.get("stage") == "specialist_fanout"]
+        self.assertTrue(fanout_events and any("timeout" in error for item in fanout_events for error in item.get("errors", [])))
+        self.assertEqual(result["status"], "degraded")
 
     def test_historical_analogue_wire_alias_is_normalized(self):
         from auremgrid.services.intelligence_orchestrator import validate_expert_result

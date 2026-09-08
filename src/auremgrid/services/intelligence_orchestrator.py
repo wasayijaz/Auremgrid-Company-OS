@@ -39,4 +39,3 @@ class IntelligenceOrchestrator(
         self.specialist_handlers = dict(specialist_handlers or {})
         self.specialist_provider = specialist_provider
         self._budget_lock = threading.Lock()
-        self._run_budget: dict[str, Any] | None = None

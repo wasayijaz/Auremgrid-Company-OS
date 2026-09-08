@@ -231,7 +231,13 @@ class IntelligenceService(IntelligenceContextMixin, IntelligenceHistoryMixin, In
                 "context_hash": None,
                 "output_hash": None,
                 "fallback_reason": None,
+                "evaluation_safety": None,
             }
+        if reasoning_meta.get("fallback_reason"):
+            provider_reasons.append(f"reasoning_{reasoning_meta['fallback_reason']}")
+            if status in {"ready", "degraded"}:
+                status = "degraded"
+                degraded_reason = ";".join(provider_reasons)
         if model_reasoning is not None:
             deliberation.update(model_reasoning)
             deliberation["mode"] = "model_backed"

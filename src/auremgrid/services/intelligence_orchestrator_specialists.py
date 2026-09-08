@@ -17,7 +17,7 @@ class IntelligenceOrchestratorSpecialistsMixin:
         keys = ("id", "version", "name", "specialty", "mission", "reasoning_method", "max_context", "max_iterations", "domains", "allowed_domains", "allowed_tools", "tools", "required_evidence")
         return {key: self._field(profile, key) for key in keys if self._field(profile, key) is not None}
 
-    def _invoke_specialist(self, key: str, profile: Any, context: Mapping[str, Any]) -> Mapping[str, Any]:
+    def _invoke_specialist(self, key: str, profile: Any, context: Mapping[str, Any], budget: dict[str, Any] | None, deadline: float | None) -> Mapping[str, Any]:
         profile_context = dict(context)
         profile_context["profile"] = self._profile_payload(profile)
         profile_context["retrieval_plan"] = self._build_retrieval_plan(profile, profile_context)
@@ -36,7 +36,7 @@ class IntelligenceOrchestratorSpecialistsMixin:
         # reject a normal 13-profile deterministic fan-out under the default
         # 50k token cap. Provider-reported usage remains authoritative.
         estimated_tokens = max(1, len(encoded) // 16)
-        if not self._consume_budget(tokens=estimated_tokens):
+        if not self._consume_budget(budget, tokens=estimated_tokens):
             raise ValidationError("evaluation token cap exceeded")
         original_size = len(encoded)
         context_budget = {"limit": max_context, "original_bytes": original_size, "used_bytes": original_size, "truncated": False, "status": "within_budget", "overflow": False}
@@ -67,9 +67,12 @@ class IntelligenceOrchestratorSpecialistsMixin:
             provider = getattr(self.os, "strategic_reasoning_provider", None)
         if provider is not None:
             try:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError("specialist run deadline elapsed before provider invocation")
                 raw, metadata = invoke_reasoning_provider(provider, profile_context)
                 if isinstance(metadata, Mapping):
                     if not self._consume_budget(
+                        budget,
                         tokens=max(0, int(metadata.get("input_tokens") or 0)) + max(0, int(metadata.get("output_tokens") or 0)),
                         cost=float(metadata.get("cost_amount") or metadata.get("cost") or 0.0),
                     ):
@@ -135,12 +138,15 @@ class IntelligenceOrchestratorSpecialistsMixin:
             "domain_coverage": profile_context.get("domain_coverage", {}),
         }
 
-    def _consume_budget(self, *, tokens: int = 0, cost: float = 0.0) -> bool:
-        """Atomically reserve bounded per-run evaluation budget."""
+    def _consume_budget(self, budget: dict[str, Any] | None, *, tokens: int = 0, cost: float = 0.0) -> bool:
+        """Atomically reserve bounded evaluation budget owned by one run.
+
+        A missing or closed budget refuses consumption: no caller may spend
+        against shared state or after its run finished collecting results.
+        """
+        if budget is None or budget.get("closed"):
+            return False
         with self._budget_lock:
-            budget = self._run_budget
-            if budget is None:
-                return True
             next_tokens = int(budget.get("tokens", 0)) + max(0, int(tokens))
             next_cost = float(budget.get("cost", 0.0)) + max(0.0, float(cost))
             if next_tokens > int(budget.get("max_tokens", self.limits.max_tokens)):
@@ -157,6 +163,8 @@ class IntelligenceOrchestratorSpecialistsMixin:
         profiles: Sequence[Any],
         context: Mapping[str, Any],
         allowed_refs: set[str],
+        budget: dict[str, Any] | None,
+        deadline: float | None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Run specialists in parallel with one bounded wall-clock deadline.
 
@@ -170,14 +178,15 @@ class IntelligenceOrchestratorSpecialistsMixin:
             return results, errors
         executor = ThreadPoolExecutor(max_workers=len(selected), thread_name_prefix="intel-specialist")
         futures = [
-            (profile, self._profile_key(profile), executor.submit(self._invoke_specialist, self._profile_key(profile), profile, context))
+            (profile, self._profile_key(profile), executor.submit(self._invoke_specialist, self._profile_key(profile), profile, context, budget, deadline))
             for profile in selected
         ]
-        deadline = time.monotonic() + max(0.01, float(self.limits.timeout_seconds))
+        fanout_deadline = time.monotonic() + max(0.01, float(self.limits.timeout_seconds))
+        effective_deadline = min(fanout_deadline, deadline) if deadline is not None else fanout_deadline
         try:
             for profile, profile_key, future in futures:
                 try:
-                    remaining = max(0.0, deadline - time.monotonic())
+                    remaining = max(0.0, effective_deadline - time.monotonic())
                     raw = future.result(timeout=remaining)
                     raw = self._filter_raw_evidence_refs(raw, allowed_refs)
                     normalized = validate_expert_result(raw, allowed_refs=allowed_refs)

@@ -196,6 +196,33 @@ class IntelligenceEngineTests(unittest.TestCase):
         modeled_scenarios = {item["name"]: item for finding in modeled["findings"] for item in finding["scenarios"]}
         self.assertEqual(modeled_scenarios["option_a"]["sensitivity"]["status"], "bounded")
 
+    def test_connected_finance_query_failure_is_degraded_unknown_not_zero(self) -> None:
+        self.os.agency_ops.connect_finance("org_demo", "person_demo_owner", "fixture-ledger")
+        self.os.store.conn.execute("DROP TABLE revenues")
+        result = self.os.intelligence.workspace(
+            "org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin",
+            what_if={"finance_amount_delta": 1000},
+        )
+        finance = result["domains"]["finance"]
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["degraded_reason"], "finance_query_failed")
+        self.assertEqual(finance["status"], "degraded")
+        self.assertEqual(finance["degraded_reason"], "finance_query_failed")
+        self.assertIsNone(finance["recognized_revenue"])
+        self.assertIsNone(result["context"]["scenario_inputs"]["baseline"]["recognized_revenue"])
+        self.assertIsNone(result["context"]["scenario_inputs"]["projection"]["recognized_revenue"])
+
+    def test_connected_finance_empty_rows_still_return_zero_amounts(self) -> None:
+        self.os.agency_ops.connect_finance("org_demo", "person_demo_owner", "fixture-ledger")
+        result = self.os.intelligence.workspace(
+            "org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin",
+        )
+        finance = result["domains"]["finance"]
+        self.assertEqual(finance["status"], "connected")
+        self.assertEqual(finance["recognized_revenue"], 0.0)
+        self.assertEqual(finance["outstanding_revenue"], 0.0)
+        self.assertEqual(finance["costs"], 0.0)
+
     def test_analogue_metadata_is_explicit_and_workspace_scoped(self) -> None:
         result = self.os.intelligence.workspace("org_demo", "ws_alpha", "person_demo_owner", "act_alpha_admin")
         for analogue in result["historical_analogues"]:

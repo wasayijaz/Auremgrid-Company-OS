@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
 from auremgrid.services.brain import CompanyOS
@@ -20,6 +21,10 @@ class IntelligenceLearningTests(unittest.TestCase):
         self.org = "org_demo"
         self.ws = "ws_alpha"
         self.person = "person_demo_owner"
+        self.evaluator = self.os.create_person(
+            self.org, "Independent Evaluator", "learning-evaluator@test.invalid", person_id="person_learning_evaluator"
+        )
+        self.os.add_person_to_workspace(self.org, self.ws, self.evaluator.id, "admin")
         self.now = datetime.now(timezone.utc).replace(microsecond=0)
 
     def tearDown(self) -> None:
@@ -242,8 +247,58 @@ class IntelligenceLearningTests(unittest.TestCase):
                 chosen_option_id="unknown",
             )
 
+    def test_evaluation_requires_prior_decision_and_independent_attributor(self) -> None:
+        recommendation = self._recommendation()
+        with self.assertRaises(ValidationError):
+            self.os.intelligence_learning.append_recommendation_event(
+                self.org, self.ws, self.person, recommendation["id"], "evaluated",
+                measured_outcomes=[{"type": "source", "id": self._source_ref()["id"],
+                                   "occurred_at": self.now.isoformat()}],
+                evidence_refs=[self._source_ref()], score=1.0,
+            )
+        self.os.intelligence_learning.append_recommendation_event(
+            self.org, self.ws, self.person, recommendation["id"], "accepted"
+        )
+        with self.assertRaises(ValidationError):
+            self.os.intelligence_learning.append_recommendation_event(
+                self.org, self.ws, self.person, recommendation["id"], "evaluated",
+                measured_outcomes=[{"type": "source", "id": self._source_ref()["id"],
+                                   "occurred_at": self.now.isoformat()}],
+                evidence_refs=[self._source_ref()], score=1.0,
+            )
+
+    def test_fabricated_measurement_time_and_value_are_rejected(self) -> None:
+        recommendation = self._recommendation()
+        self.os.intelligence_learning.append_recommendation_event(
+            self.org, self.ws, self.person, recommendation["id"], "accepted"
+        )
+        work = self.os.work_ops.create(
+            self.org, self.ws, self.person, "Canonical outcome", "Measure canonical value.", self.person,
+            financial_value=5.0,
+        )
+        ref = {"type": "work_item", "id": work.id}
+        with self.assertRaises(ValidationError):
+            self.os.intelligence_learning.append_recommendation_event(
+                self.org, self.ws, self.evaluator.id, recommendation["id"], "evaluated",
+                measured_outcomes=[{"type": "work_item", "id": work.id,
+                                   "occurred_at": work.created_at.isoformat(),
+                                   "metric": "financial_value", "value": 50.0}],
+                evidence_refs=[ref], score=0.8,
+            )
+        with self.assertRaises(ValidationError):
+            self.os.intelligence_learning.append_recommendation_event(
+                self.org, self.ws, self.evaluator.id, recommendation["id"], "evaluated",
+                measured_outcomes=[{"type": "work_item", "id": work.id,
+                                   "occurred_at": (self.now + timedelta(days=1)).isoformat(),
+                                   "metric": "financial_value", "value": 5.0}],
+                evidence_refs=[ref], score=0.8,
+            )
+
     def test_evaluation_outcome_attribution_requires_scope_time_and_matching_evidence(self) -> None:
         recommendation = self._recommendation()
+        self.os.intelligence_learning.append_recommendation_event(
+            self.org, self.ws, self.person, recommendation["id"], "accepted"
+        )
         work = self.os.work_ops.create(
             self.org,
             self.ws,
@@ -255,7 +310,7 @@ class IntelligenceLearningTests(unittest.TestCase):
         outcome = {
             "type": "work_item",
             "id": work.id,
-            "occurred_at": (self.now + timedelta(days=1)).isoformat(),
+            "occurred_at": work.created_at.isoformat(),
             "metric": "completed_review",
             "value": 1,
         }
@@ -263,7 +318,7 @@ class IntelligenceLearningTests(unittest.TestCase):
             self.os.intelligence_learning.append_recommendation_event(
                 self.org,
                 self.ws,
-                self.person,
+                self.evaluator.id,
                 recommendation["id"],
                 "evaluated",
                 measured_outcomes=[outcome],
@@ -275,7 +330,7 @@ class IntelligenceLearningTests(unittest.TestCase):
         event = self.os.intelligence_learning.append_recommendation_event(
             self.org,
             self.ws,
-            self.person,
+            self.evaluator.id,
             recommendation["id"],
             "evaluated",
             measured_outcomes=[outcome],
@@ -310,13 +365,16 @@ class IntelligenceLearningTests(unittest.TestCase):
         work = self.os.work_ops.create(
             self.org, self.ws, self.person, "Quality outcome", "Confirm recommendation result.", self.person
         )
+        self.os.intelligence_learning.append_recommendation_event(
+            self.org, self.ws, self.person, first["id"], "accepted"
+        )
         outcome = {
             "type": "work_item", "id": work.id,
-            "occurred_at": (self.now + timedelta(days=1)).isoformat(),
+            "occurred_at": work.created_at.isoformat(),
             "metric": "completed_review", "value": 1,
         }
         self.os.intelligence_learning.append_recommendation_event(
-            self.org, self.ws, self.person, first["id"], "evaluated",
+            self.org, self.ws, self.evaluator.id, first["id"], "evaluated",
             measured_outcomes=[outcome], evidence_refs=[{"type": "work_item", "id": work.id}], score=0.8,
         )
         quality = self.os.intelligence_learning.recommendation_quality(self.org, self.ws, self.person)
@@ -335,13 +393,16 @@ class IntelligenceLearningTests(unittest.TestCase):
         work = self.os.work_ops.create(
             self.org, self.ws, self.person, "Calibration outcome", "Measure recommendation.", self.person
         )
+        self.os.intelligence_learning.append_recommendation_event(
+            self.org, self.ws, self.person, recommendation["id"], "chosen", chosen_option_id="review"
+        )
         outcome = {
             "type": "work_item", "id": work.id,
-            "occurred_at": (self.now + timedelta(days=1)).isoformat(),
+            "occurred_at": work.created_at.isoformat(),
             "metric": "completed_review", "value": 1,
         }
         self.os.intelligence_learning.append_recommendation_event(
-            self.org, self.ws, self.person, recommendation["id"], "evaluated",
+            self.org, self.ws, self.evaluator.id, recommendation["id"], "evaluated",
             measured_outcomes=[outcome], evidence_refs=[{"type": "work_item", "id": work.id}], score=0.2,
         )
         quality = self.os.intelligence_learning.recommendation_quality(self.org, self.ws, self.person)
@@ -381,6 +442,51 @@ class IntelligenceLearningTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM ledger_audit WHERE organization_id=? AND workspace_id=? AND entity_type='intelligence_recommendation_handoff'",
                 (self.org, self.ws),
             ).fetchone()[0], 1,
+        )
+
+    def test_handoff_trace_is_scoped_to_the_requesting_person(self) -> None:
+        recommendation = self._recommendation()
+        trace = self.os.intelligence_orchestrator.run(
+            self.org, self.ws, self.person, actor_id="act_alpha_admin", runbook_id="client_health_drop"
+        )
+        with self.assertRaises(NotFoundError):
+            self.os.intelligence_learning.handoff_recommendation(
+                self.org, self.ws, self.evaluator.id, trace["trace_id"],
+                recommendation_id=recommendation["id"], review_status="reviewed",
+                outcome_refs=[self._source_ref()],
+            )
+
+    def test_new_handoff_rolls_back_recommendation_when_link_write_fails(self) -> None:
+        trace = self.os.intelligence_orchestrator.run(
+            self.org, self.ws, self.person, actor_id="act_alpha_admin", runbook_id="client_health_drop"
+        )
+        before_recommendations = self.os.store.conn.execute(
+            "SELECT COUNT(*) FROM intelligence_recommendations WHERE organization_id=? AND workspace_id=?",
+            (self.org, self.ws),
+        ).fetchone()[0]
+        with patch.object(self.os.intelligence_learning, "_save_idempotency", side_effect=RuntimeError("write failed")):
+            with self.assertRaises(RuntimeError):
+                self.os.intelligence_learning.handoff_recommendation(
+                    self.org, self.ws, self.person, trace["trace_id"],
+                    summary="Atomic handoff recommendation.", runbook_id="client_health_drop", runbook_version=1,
+                    profile_contributors=[{"profile_id": "account_strategist", "version": 1}],
+                    options=[{"id": "review"}], recommended_option_id="review",
+                    evidence_refs=[self._source_ref()],
+                    evaluation_window_start=self.now.isoformat(),
+                    evaluation_window_end=(self.now + timedelta(days=7)).isoformat(),
+                    review_status="reviewed", idempotency_key="atomic-handoff",
+                )
+        self.assertEqual(
+            self.os.store.conn.execute(
+                "SELECT COUNT(*) FROM intelligence_recommendations WHERE organization_id=? AND workspace_id=?",
+                (self.org, self.ws),
+            ).fetchone()[0], before_recommendations,
+        )
+        self.assertEqual(
+            self.os.store.conn.execute(
+                "SELECT COUNT(*) FROM intelligence_recommendation_handoffs WHERE organization_id=? AND workspace_id=? AND trace_id=?",
+                (self.org, self.ws, trace["trace_id"]),
+            ).fetchone()[0], 0,
         )
 
     def test_learning_persists_across_restart(self) -> None:

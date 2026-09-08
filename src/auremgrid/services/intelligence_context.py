@@ -28,6 +28,12 @@ class IntelligenceContextMixin:
     def _optional_row(self, sql: str, args: tuple[Any, ...]) -> dict[str, Any] | None:
         rows = self._optional_rows(sql, args)
         return rows[0] if rows else None
+
+    def _finance_amount(self, sql: str, args: tuple[Any, ...]) -> float:
+        rows = self._rows(sql, args)
+        if not rows:
+            return 0.0
+        return float(rows[0].get("amount") or 0.0)
     
     def _domain_snapshot(
         self,
@@ -67,23 +73,31 @@ class IntelligenceContextMixin:
             "as_of": cutoff,
         }
         if finance["status"] == "connected":
-            revenue = self._optional_row(
-                "SELECT COALESCE(SUM(amount),0) AS amount FROM revenues WHERE organization_id=? AND workspace_id=? AND recognized_at<=?",
-                (organization_id, workspace_id, cutoff),
-            )
-            outstanding = self._optional_row(
-                "SELECT COALESCE(SUM(amount),0) AS amount FROM invoices WHERE organization_id=? AND workspace_id=? AND issued_at<=? AND status IN ('issued','overdue')",
-                (organization_id, workspace_id, cutoff),
-            )
-            costs = self._optional_row(
-                "SELECT COALESCE(SUM(amount),0) AS amount FROM costs WHERE organization_id=? AND workspace_id=? AND incurred_at<=?",
-                (organization_id, workspace_id, cutoff),
-            )
-            finance.update({
-                "recognized_revenue": float(revenue["amount"]) if revenue else 0.0,
-                "outstanding_revenue": float(outstanding["amount"]) if outstanding else 0.0,
-                "costs": float(costs["amount"]) if costs else 0.0,
-            })
+            try:
+                finance.update({
+                    "recognized_revenue": self._finance_amount(
+                        "SELECT COALESCE(SUM(amount),0) AS amount FROM revenues WHERE organization_id=? AND workspace_id=? AND recognized_at<=?",
+                        (organization_id, workspace_id, cutoff),
+                    ),
+                    "outstanding_revenue": self._finance_amount(
+                        "SELECT COALESCE(SUM(amount),0) AS amount FROM invoices WHERE organization_id=? AND workspace_id=? AND issued_at<=? AND status IN ('issued','overdue')",
+                        (organization_id, workspace_id, cutoff),
+                    ),
+                    "costs": self._finance_amount(
+                        "SELECT COALESCE(SUM(amount),0) AS amount FROM costs WHERE organization_id=? AND workspace_id=? AND incurred_at<=?",
+                        (organization_id, workspace_id, cutoff),
+                    ),
+                })
+            except Exception as error:
+                finance.update({
+                    "status": "degraded",
+                    "degraded_reason": "finance_query_failed",
+                    "last_error": str(error),
+                    "recognized_revenue": None,
+                    "outstanding_revenue": None,
+                    "costs": None,
+                })
+                self._evidence_issue = "finance_query_failed"
     
         health = self._optional_row(
             """SELECT * FROM client_health_snapshots
@@ -401,7 +415,7 @@ class IntelligenceContextMixin:
         for row in domains["reviews"]["stalled"]:
             evidence.append(self._canonical("reviews", str(row["id"]), f"Review has remained {row.get('status')} since {row.get('opened_at')}", 0.78))
         finance = domains["finance"]
-        if finance.get("status") == "connected":
+        if finance.get("status") == "connected" and finance.get("recognized_revenue") is not None:
             evidence.append(self._canonical("finance", "workspace", f"Recognized revenue {finance.get('recognized_revenue')}; outstanding {finance.get('outstanding_revenue')}", 0.7))
         return evidence
     
@@ -510,4 +524,3 @@ class IntelligenceContextMixin:
             "evidence": evidence,
             "confidence": _confidence(score),
         }
-

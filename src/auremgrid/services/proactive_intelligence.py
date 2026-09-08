@@ -238,6 +238,7 @@ class ProactiveIntelligenceService:
         person_id: str,
         snapshot_type: str = "executive",
         workspace_id: str | None = None,
+        identity: AuthenticatedIdentity | None = None,
     ) -> dict[str, Any] | None:
         snapshot_type = self._snapshot_type(snapshot_type)
         row = self.conn.execute(
@@ -248,7 +249,8 @@ class ProactiveIntelligenceService:
         ).fetchone()
         if row is None:
             return None
-        return self._decode_snapshot(row)
+        snapshot = self._decode_snapshot(row)
+        return self._filter_snapshot_for_read(snapshot, identity)
 
     def require_latest_snapshot(
         self,
@@ -256,8 +258,9 @@ class ProactiveIntelligenceService:
         person_id: str,
         snapshot_type: str = "executive",
         workspace_id: str | None = None,
+        identity: AuthenticatedIdentity | None = None,
     ) -> dict[str, Any]:
-        snapshot = self.latest_snapshot(organization_id, person_id, snapshot_type, workspace_id)
+        snapshot = self.latest_snapshot(organization_id, person_id, snapshot_type, workspace_id, identity=identity)
         if snapshot is None:
             raise NotFoundError("proactive intelligence snapshot not found")
         return snapshot
@@ -268,6 +271,7 @@ class ProactiveIntelligenceService:
         person_id: str,
         workspace_id: str | None = None,
         limit: int = 20,
+        identity: AuthenticatedIdentity | None = None,
     ) -> list[dict[str, Any]]:
         if limit < 1:
             raise ValidationError("limit must be positive")
@@ -281,7 +285,76 @@ class ProactiveIntelligenceService:
                ORDER BY rank ASC, id ASC LIMIT ?""",
             (organization_id, workspace_id, person_id, int(limit)),
         ).fetchall()
-        return [self._decode_attention(row) for row in rows]
+        decoded = [self._decode_attention(row) for row in rows]
+        candidate_ids = {
+            str(item["workspace_id"])
+            for item in decoded
+            if item.get("workspace_id") is not None
+        }
+        allowed = self._reauthorized_workspace_ids(
+            organization_id, person_id, workspace_id, identity, candidate_ids
+        )
+        return [
+            item for item in decoded
+            if item.get("workspace_id") in allowed
+            or item.get("workspace_id") is None
+        ]
+
+    def _filter_snapshot_for_read(
+        self,
+        snapshot: dict[str, Any],
+        identity: AuthenticatedIdentity | None = None,
+    ) -> dict[str, Any] | None:
+        """Re-check every workspace represented by a persisted projection.
+
+        Executive snapshots are organization-scoped durable caches, so their
+        original workspace membership cannot be trusted at read time.  Keep
+        the read deterministic and in-memory: revoked workspace rows and all
+        derived aggregates/citations are removed from the returned projection.
+        """
+        organization_id = str(snapshot.get("organization_id") or "")
+        person_id = str(snapshot.get("person_id") or "")
+        requested_workspace = snapshot.get("workspace_id")
+        if identity is not None:
+            if identity.organization_id != organization_id or identity.person_id != person_id:
+                raise AuthorizationError("identity scope mismatch")
+            identity.require("brain_read")
+        candidate_ids = {str(item.get("workspace_id")) for item in (snapshot.get("attention") or []) if item.get("workspace_id") is not None}
+        candidate_ids.update(str(item.get("workspace_id") or (item.get("scope") or {}).get("workspace_id")) for item in (snapshot.get("payload") or {}).get("workspaces", []) if isinstance(item, dict) and (item.get("workspace_id") or (item.get("scope") or {}).get("workspace_id")))
+        if requested_workspace is not None:
+            candidate_ids.add(str(requested_workspace))
+        allowed = self._reauthorized_workspace_ids(organization_id, person_id, requested_workspace, identity, candidate_ids)
+        if requested_workspace is not None and str(requested_workspace) not in allowed:
+            return None
+        if snapshot.get("snapshot_type") != "executive":
+            return snapshot
+        payload = snapshot.get("payload") or {}
+        visible = lambda item: str((item.get("scope") or {}).get("workspace_id") or item.get("workspace_id") or "") in allowed
+        workspaces = [item for item in payload.get("workspaces", []) if isinstance(item, dict) and visible(item)]
+        filtered_payload = dict(payload)
+        filtered_payload["workspaces"] = workspaces
+        portfolio = dict(payload.get("portfolio") or {})
+        portfolio["workspace_count"] = len(workspaces)
+        portfolio["client_count"] = sum(1 for item in workspaces if (item.get("scope") or {}).get("workspace_id") and (item.get("scope") or {}).get("workspace_name"))
+        portfolio["open_work"] = sum(int((item.get("domains") or {}).get("work", {}).get("open_count", 0) or 0) for item in workspaces)
+        portfolio["open_risks"] = sum(int((item.get("domains") or {}).get("risks", {}).get("open_count", 0) or 0) for item in workspaces)
+        portfolio["stalled_reviews"] = sum(int((item.get("domains") or {}).get("reviews", {}).get("stalled_count", 0) or 0) for item in workspaces)
+        portfolio["attention"] = [item for item in portfolio.get("attention", []) if str(item.get("workspace_id") or "") in allowed]
+        portfolio["client_health"] = [item for item in portfolio.get("client_health", []) if str(item.get("workspace_id") or "") in allowed]
+        portfolio["historical_analogues"] = [item for item in portfolio.get("historical_analogues", []) if str(item.get("workspace_id") or "") in allowed]
+        filtered_payload["portfolio"] = portfolio
+        sections = dict(payload.get("sections") or {})
+        for key in ("attention", "top_three", "conclusions", "client_health", "constraints"):
+            if isinstance(sections.get(key), list):
+                sections[key] = [item for item in sections[key] if not isinstance(item, dict) or str(item.get("workspace_id") or "") in allowed]
+        filtered_payload["sections"] = sections
+        filtered_payload["historical_analogues"] = [item for item in payload.get("historical_analogues", []) if not isinstance(item, dict) or str(item.get("workspace_id") or "") in allowed]
+        filtered_payload["proactive_detectors"] = [item for item in payload.get("proactive_detectors", []) if not isinstance(item, dict) or item.get("workspace_id") is None or str(item.get("workspace_id")) in allowed]
+        snapshot = dict(snapshot)
+        snapshot["payload"] = filtered_payload
+        snapshot["evidence_refs"] = self._evidence_refs(filtered_payload)
+        snapshot["attention"] = [item for item in snapshot.get("attention", []) if item.get("workspace_id") is None or str(item.get("workspace_id")) in allowed]
+        return snapshot
 
     def authorize_read(
         self,
@@ -314,7 +387,7 @@ class ProactiveIntelligenceService:
         scoped = identity if workspace_id is None else self.os.auth.scope_identity(identity, workspace_id)
         scoped.require("brain_read")
         snapshot = self.latest_snapshot(
-            scoped.organization_id, scoped.person_id, snapshot_type, workspace_id
+            scoped.organization_id, scoped.person_id, snapshot_type, workspace_id, identity=identity
         )
         jobs = [
             job for job in self.os.jobs.list_jobs(scoped.organization_id, workspace_id)
@@ -508,6 +581,35 @@ class ProactiveIntelligenceService:
             except Exception as exc:  # defensive: a broken source should degrade the detector, not the snapshot
                 items.append(self._degraded_detector(detector_type, workspace_id, str(exc)))
         return items
+
+    def _reauthorized_workspace_ids(self, organization_id: str, person_id: str, workspace_id: str | None, identity: AuthenticatedIdentity | None, candidates: set[str]) -> set[str]:
+        if identity is None:
+            return set(self._visible_workspace_ids(organization_id, person_id, workspace_id))
+        if identity.organization_id != organization_id or identity.person_id != person_id:
+            raise AuthorizationError("identity scope mismatch")
+        identity.require("brain_read")
+        allowed: set[str] = set()
+        for candidate in sorted(candidates):
+            try:
+                self.os.auth.scope_identity(identity, candidate).require("brain_read")
+            except AuthorizationError:
+                continue
+            allowed.add(candidate)
+        return allowed
+
+    @classmethod
+    def _filter_workspace_scoped_value(cls, value: Any, allowed: set[str]) -> Any:
+        if isinstance(value, list):
+            return [filtered for item in value if (filtered := cls._filter_workspace_scoped_value(item, allowed)) is not None]
+        if not isinstance(value, dict):
+            return value
+        direct_workspace = value.get("workspace_id")
+        scope = value.get("scope")
+        scoped_workspace = scope.get("workspace_id") if isinstance(scope, dict) else None
+        workspace = direct_workspace if direct_workspace is not None else scoped_workspace
+        if workspace is not None and str(workspace) not in allowed:
+            return None
+        return {key: filtered for key, child in value.items() if (filtered := cls._filter_workspace_scoped_value(child, allowed)) is not None}
 
     def _visible_workspace_ids(self, organization_id: str, person_id: str, workspace_id: str | None) -> list[str]:
         if workspace_id is not None:

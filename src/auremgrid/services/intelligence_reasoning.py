@@ -16,6 +16,48 @@ from auremgrid.services.intelligence_shared import _confidence, _iso, _now, _par
 
 class IntelligenceReasoningMixin:
     @staticmethod
+    def _estimated_tokens(value: Any) -> int:
+        try:
+            encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            encoded = str(value)
+        return max(1, (len(encoded) + 3) // 4)
+
+    @staticmethod
+    def _reference_key(value: Any) -> tuple[str, str] | None:
+        if not isinstance(value, dict) or value.get("type") in (None, "") or value.get("id") in (None, ""):
+            return None
+        return str(value["type"]), str(value["id"])
+
+    @classmethod
+    def _validate_evidence_references(cls, value: Any, evidence: list[dict[str, Any]]) -> None:
+        allowed = {
+            ref for item in evidence
+            if (ref := cls._reference_key(item.get("object_ref"))) is not None
+        }
+        allowed_ids = {item_id for _kind, item_id in allowed}
+
+        def visit(node: Any, key: str | None = None) -> None:
+            if isinstance(node, dict):
+                if "object_ref" in node:
+                    ref = cls._reference_key(node.get("object_ref"))
+                    if ref not in allowed:
+                        raise ValidationError("reasoning evidence reference outside scoped visible evidence")
+                if key == "evidence_refs":
+                    ref = cls._reference_key(node)
+                    if ref is None or ref not in allowed:
+                        raise ValidationError("reasoning evidence reference outside scoped visible evidence")
+                for child_key, child in node.items():
+                    visit(child, str(child_key))
+            elif isinstance(node, list):
+                for child in node:
+                    if key == "evidence_refs" and isinstance(child, str) and child not in allowed_ids:
+                        raise ValidationError("reasoning evidence reference outside scoped visible evidence")
+                    visit(child, key)
+
+        visit(value)
+
+    @staticmethod
     def _confidence_value(value: Any) -> dict[str, Any] | None:
         if isinstance(value, dict):
             value = value.get("score")
@@ -117,15 +159,69 @@ class IntelligenceReasoningMixin:
             "context_hash": context_hash,
             "output_hash": None,
             "fallback_reason": None,
+            "evaluation_safety": None,
         }
         if provider is None:
             # Offline deterministic mode is the normal path; do not create a
             # durable event for every dashboard read when no provider exists.
             return None, base_meta
+        safety = getattr(self.os, "intelligence_evaluation_safety", None)
+        safety_id: str | None = None
+        safety_completed = False
+        safety_policy: dict[str, Any] = {}
+        input_tokens = self._estimated_tokens(provider_context)
+        if safety is None:
+            base_meta.update({"status": "blocked", "fallback_reason": "safety_unavailable"})
+            return None, base_meta
+        try:
+            safety_decision = safety.can_start(organization_id, person_id, "reasoning")
+            safety_policy = dict(safety_decision.get("policy") or {})
+            base_meta["evaluation_safety"] = {
+                "status": "shadow_only" if safety_decision.get("allowed") else "circuit_open",
+                "reason": safety_decision.get("reason"),
+                "estimated_input_tokens": input_tokens,
+            }
+            if not safety_decision.get("allowed"):
+                base_meta.update({"status": "blocked", "fallback_reason": "circuit_open"})
+                return None, base_meta
+            if input_tokens > int(safety_policy.get("max_tokens", 50000)):
+                base_meta.update({"status": "blocked", "fallback_reason": "token_cap"})
+                base_meta["evaluation_safety"].update({"status": "blocked", "reason": "token_cap"})
+                return None, base_meta
+        except Exception:
+            base_meta.update({"status": "blocked", "fallback_reason": "safety_unavailable"})
+            return None, base_meta
+        try:
+            run = safety.start(
+                organization_id, person_id, "reasoning", workspace_id=workspace_id,
+                provider=str(getattr(provider, "name", "configured")),
+                model=str(getattr(provider, "model", "configured")),
+            )
+            safety_id = run.get("id")
+        except Exception:
+            base_meta.update({"status": "blocked", "fallback_reason": "safety_telemetry_unavailable"})
+            base_meta["evaluation_safety"] = {"status": "blocked", "reason": "safety_telemetry_unavailable"}
+            return None, base_meta
         try:
             raw, identity = invoke_reasoning_provider(provider, provider_context)
             base_meta.update(identity)
             normalized = self._validate_model_reasoning(dict(raw))
+            self._validate_evidence_references(normalized, evidence)
+            output_tokens = self._estimated_tokens(normalized)
+            completed = safety.complete(
+                organization_id, person_id, safety_id,
+                workspace_id=workspace_id, input_tokens=input_tokens,
+                output_tokens=output_tokens, metadata={"provider_call": "native_reasoning"},
+            )
+            safety_completed = True
+            base_meta["evaluation_safety"] = {
+                "status": completed.get("status"),
+                "cap_reason": completed.get("cap_reason"),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+            if completed.get("cap_reason"):
+                raise ValidationError("reasoning token cap exceeded")
             output_hash = hashlib.sha256(
                 json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")
             ).hexdigest()
@@ -135,11 +231,28 @@ class IntelligenceReasoningMixin:
         except Exception as exc:
             # Provider errors and malformed responses never replace the
             # deterministic projection.  Record only a stable error class.
+            if safety_id and not safety_completed:
+                try:
+                    completed = safety.complete(
+                        organization_id, person_id, safety_id,
+                        workspace_id=workspace_id, input_tokens=input_tokens,
+                        output_tokens=self._estimated_tokens(locals().get("raw")),
+                        metadata={"provider_call": "native_reasoning", "failed": True},
+                    )
+                    base_meta["evaluation_safety"] = {
+                        "status": completed.get("status"),
+                        "cap_reason": completed.get("cap_reason"),
+                        "input_tokens": input_tokens,
+                    }
+                except Exception:
+                    base_meta["evaluation_safety"] = {"status": "telemetry_error"}
             base_meta["status"] = "fallback"
-            base_meta["fallback_reason"] = (
-                "invalid_output" if isinstance(exc, ValidationError)
-                else str(exc).split(":", 1)[0][:100]
-            )
+            if isinstance(exc, ValidationError) and "evidence reference" in str(exc):
+                base_meta["fallback_reason"] = "invalid_evidence_reference"
+            elif isinstance(exc, ValidationError) and "token cap" in str(exc):
+                base_meta["fallback_reason"] = "token_cap"
+            else:
+                base_meta["fallback_reason"] = "invalid_output" if isinstance(exc, ValidationError) else str(exc).split(":", 1)[0][:100]
             self._record_reasoning_audit(workspace_id, actor_id, "fallback", base_meta)
             return None, base_meta
     

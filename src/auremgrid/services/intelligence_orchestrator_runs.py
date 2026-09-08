@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Callable, Mapping, Sequence
@@ -62,19 +63,29 @@ class IntelligenceOrchestratorRunsMixin:
         safety_id: str | None = None
         safety = getattr(self.os, "intelligence_evaluation_safety", None)
         safety_decision: dict[str, Any] | None = None
+        safety_blocked_reason: str | None = None
+        budget: dict[str, Any] = {
+            "tokens": 0, "cost": 0.0,
+            "max_tokens": int(self.limits.max_tokens),
+            "max_cost": float(self.limits.max_cost_amount),
+            "policy_max_tokens": int(self.limits.max_tokens),
+            "policy_max_cost": float(self.limits.max_cost_amount),
+            "policy_max_runtime_ms": None,
+            "cap_reason": None,
+            "closed": False,
+        }
         if safety is not None:
             try:
                 safety_decision = safety.can_start(organization_id, person_id, self.limits.task_class)
                 policy = safety_decision.get("policy") or {}
                 # Durable policy values are authoritative when available.
-                self._run_budget = {
-                    "tokens": 0, "cost": 0.0,
+                budget.update({
                     "max_tokens": min(int(self.limits.max_tokens), int(policy.get("max_tokens", self.limits.max_tokens))),
                     "max_cost": min(float(self.limits.max_cost_amount), float(policy.get("max_cost_amount", self.limits.max_cost_amount))),
                     "policy_max_tokens": int(policy.get("max_tokens", self.limits.max_tokens)),
                     "policy_max_cost": float(policy.get("max_cost_amount", self.limits.max_cost_amount)),
-                    "cap_reason": None,
-                }
+                    "policy_max_runtime_ms": int(policy["max_runtime_ms"]) if policy.get("max_runtime_ms") is not None else None,
+                })
                 if safety_decision.get("allowed"):
                     try:
                         evaluation = safety.start(
@@ -83,13 +94,15 @@ class IntelligenceOrchestratorRunsMixin:
                         )
                         safety_id = evaluation.get("id")
                     except Exception:
-                        # Safety telemetry must never make read-only intelligence unavailable.
+                        # Without a registered evaluation the durable caps and the
+                        # rolling breaker are blind; refuse provider execution.
+                        safety_blocked_reason = "safety_telemetry_unavailable"
                         safety_id = None
             except Exception:
-                self._run_budget = {"tokens": 0, "cost": 0.0, "max_tokens": int(self.limits.max_tokens), "max_cost": float(self.limits.max_cost_amount), "policy_max_tokens": int(self.limits.max_tokens), "policy_max_cost": float(self.limits.max_cost_amount), "cap_reason": None}
-        else:
-            self._run_budget = {"tokens": 0, "cost": 0.0, "max_tokens": int(self.limits.max_tokens), "max_cost": float(self.limits.max_cost_amount), "policy_max_tokens": int(self.limits.max_tokens), "policy_max_cost": float(self.limits.max_cost_amount), "cap_reason": None}
-        evaluation_circuit_open = bool(safety_decision is not None and not safety_decision.get("allowed", True))
+                # Authorization could not be determined: fail closed.
+                safety_decision = None
+                safety_blocked_reason = "safety_unavailable"
+        evaluation_circuit_open = bool(safety_blocked_reason or (safety_decision is not None and not safety_decision.get("allowed", True)))
         # Keep the situation/read model available, but do not invoke any
         # specialist/provider while the breaker is open.
         trace.append({"stage": "situation_builder", "status": "started", "at": started})
@@ -114,6 +127,14 @@ class IntelligenceOrchestratorRunsMixin:
         iteration_budget = min(self.limits.max_iterations, requested_iterations, runbook_iterations)
         if evaluation_circuit_open:
             iteration_budget = 0
+        if safety_blocked_reason:
+            trace.append({"stage": "evaluation_safety", "status": "blocked", "reason": safety_blocked_reason})
+        effective_timeout = max(0.01, float(self.limits.timeout_seconds))
+        if budget.get("policy_max_runtime_ms") is not None:
+            # Enforce the durable runtime cap before/during fanout, not only
+            # retrospectively at completion.
+            effective_timeout = min(effective_timeout, max(0.01, float(budget["policy_max_runtime_ms"]) / 1000.0))
+        run_deadline = time.monotonic() + effective_timeout
         route_reason = "matched" if runbook else "no_match"
         trace.append({"stage": "runbook_router", "status": "completed" if runbook else "degraded", "reason": route_reason, "runbook": self._contract_ref(runbook)})
 
@@ -133,7 +154,7 @@ class IntelligenceOrchestratorRunsMixin:
             ]
             if not active_profiles:
                 break
-            batch, batch_errors = self._run_specialists(active_profiles, context, allowed_refs)
+            batch, batch_errors = self._run_specialists(active_profiles, context, allowed_refs, budget, run_deadline)
             specialists.extend(batch)
             errors.extend(batch_errors)
             trace.append({"stage": "specialist_fanout", "iteration": iteration + 1, "status": "completed" if batch else "degraded", "count": len(batch), "errors": batch_errors[:8]})
@@ -142,6 +163,9 @@ class IntelligenceOrchestratorRunsMixin:
                 # requested explicitly for bounded refinement.
                 if iterations <= 1:
                     break
+        # The run owns its budget for exactly this fanout window. Closing it
+        # here means a late surviving worker can never charge this run again.
+        budget["closed"] = True
         # A profile may be evaluated in multiple bounded passes, but synthesis
         # consumes one latest result per profile to keep item budgets strict.
         latest: dict[str, dict[str, Any]] = {}
@@ -218,18 +242,16 @@ class IntelligenceOrchestratorRunsMixin:
             "runbook": self._contract_ref(runbook),
             "profiles": [self._contract_ref(p) for p in profiles[: self.limits.max_specialists]],
             "trace": trace,
-            "limits": {"max_items": self.limits.max_items, "max_specialists": self.limits.max_specialists, "max_iterations": iteration_budget, "runbook_max_iterations": runbook_iterations, "max_tokens": self._run_budget.get("max_tokens") if self._run_budget else self.limits.max_tokens, "max_cost_amount": self._run_budget.get("max_cost") if self._run_budget else self.limits.max_cost_amount},
-            "evaluation_safety": {"status": "capped" if self._run_budget and self._run_budget.get("cap_reason") else ("circuit_open" if safety_decision is not None and not safety_decision.get("allowed", True) else "shadow_only"), "cap_reason": self._run_budget.get("cap_reason") if self._run_budget else None, "estimated_tokens": self._run_budget.get("tokens", 0) if self._run_budget else 0, "cost_amount": self._run_budget.get("cost", 0.0) if self._run_budget else 0.0},
+            "limits": {"max_items": self.limits.max_items, "max_specialists": self.limits.max_specialists, "max_iterations": iteration_budget, "runbook_max_iterations": runbook_iterations, "max_tokens": budget["max_tokens"], "max_cost_amount": budget["max_cost"]},
+            "evaluation_safety": {"status": "capped" if budget.get("cap_reason") else ("blocked" if safety_blocked_reason else ("circuit_open" if safety_decision is not None and not safety_decision.get("allowed", True) else "shadow_only")), "cap_reason": budget.get("cap_reason") or safety_blocked_reason, "estimated_tokens": budget.get("tokens", 0), "cost_amount": budget.get("cost", 0.0)},
             "scope": {"organization_id": organization_id, "workspace_id": workspace_id, "person_id": person_id},
             "generated_at": _now(),
         }
         # Every emitted stage event is correlated to the persisted run.
         for event in trace:
             event.setdefault("trace_id", trace_id)
-        self._persist_run(result)
         if safety is not None and safety_id:
             try:
-                budget = self._run_budget or {}
                 reported_tokens = int(budget.get("tokens", 0))
                 reported_cost = float(budget.get("cost", 0.0))
                 # Ensure the durable evaluator records the same cap that
@@ -246,9 +268,12 @@ class IntelligenceOrchestratorRunsMixin:
                     cost_amount=reported_cost,
                     metadata={"cap_reason": budget.get("cap_reason")},
                 )
-            except Exception:
-                pass
-        self._run_budget = None
+            except Exception as exc:
+                # Telemetry failures are recorded in the persisted trace, not swallowed.
+                trace.append({"stage": "evaluation_safety", "status": "telemetry_error", "reason": type(exc).__name__})
+                for event in trace:
+                    event.setdefault("trace_id", trace_id)
+        self._persist_run(result)
         return _json(result)
 
     def _persist_run(self, result: Mapping[str, Any]) -> None:

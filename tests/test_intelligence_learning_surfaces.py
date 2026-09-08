@@ -21,10 +21,17 @@ class IntelligenceLearningSurfaceTests(unittest.TestCase):
         self.os.create_person(
             "org_learning_surface", "Owner", "owner@learning.test", role="owner", person_id="person_learning_owner"
         )
+        self.evaluator = self.os.create_person(
+            "org_learning_surface", "Evaluator", "evaluator@learning.test", role="owner", person_id="person_learning_evaluator"
+        )
         self.os.add_person_to_workspace("org_learning_surface", "ws_learning_allowed", "person_learning_owner", "admin")
+        self.os.add_person_to_workspace("org_learning_surface", "ws_learning_allowed", self.evaluator.id, "admin")
         self.os.create_actor("ws_learning_allowed", "Bound actor", "admin", "actor_learning_allowed")
         self.token, self.identity = issue_identity(
             self.os, "org_learning_surface", "person_learning_owner", "ws_learning_allowed", "actor_learning_allowed"
+        )
+        self.evaluator_token, _ = issue_identity(
+            self.os, "org_learning_surface", self.evaluator.id, "ws_learning_allowed"
         )
         ingested = self.os.ingest_text(
             "ws_learning_allowed",
@@ -141,14 +148,14 @@ class IntelligenceLearningSurfaceTests(unittest.TestCase):
             {
                 "organization_id": "org_learning_surface",
                 "workspace_id": "ws_learning_allowed",
-                "person_id": "person_learning_owner",
+                "person_id": self.evaluator.id,
                 "recommendation_id": recommendation_id,
                 "event_type": "evaluated",
                 "measured_outcomes": [
                     {
                         "type": "work_item",
                         "id": work.id,
-                        "occurred_at": (self.now + timedelta(days=1)).isoformat(),
+                        "occurred_at": work.created_at.isoformat(),
                         "metric": "completed_review",
                         "value": 1,
                     }
@@ -156,7 +163,7 @@ class IntelligenceLearningSurfaceTests(unittest.TestCase):
                 "evidence_refs": [{"type": "work_item", "id": work.id}],
                 "score": 0.8,
                 "lessons": "The visible outcome matched the chosen option.",
-            },
+            }, token=self.evaluator_token,
         )
         self.assertEqual(status, 201)
         self.assertEqual(evaluated["event"]["score"], 0.8)

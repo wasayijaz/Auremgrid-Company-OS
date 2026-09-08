@@ -60,6 +60,18 @@ class Dashboard407ContractTests(unittest.TestCase):
             self.assertIn(marker, self.bundle)
         self.assertIn("what_if_${key}", self.bundle)
 
+    def test_natural_language_what_if_does_not_inject_fabricated_scenario_values(self) -> None:
+        for marker in (
+            "what_if_capacity_hours_delta=-8",
+            "what_if_work_hours_delta=16",
+            "what_if_scope_usage_delta=10",
+            "what_if_finance_amount_delta=0",
+            "what_if_client_health_delta=-0.04",
+            "what_if_deadline_days_delta=7",
+        ):
+            self.assertNotIn(marker, self.bundle)
+        self.assertIn("const suffix=query?`&query=${encodeURIComponent(query)}`:''", self.bundle)
+
     def test_second_parity_controls_are_backend_wired(self) -> None:
         for marker in ("/work/comments", "/work/items/update", "/work/items/transition", "data-work-comment", "data-work-update", "data-work-transition", "Only server-granted transitions", "expected_version", "idempotency_key", "/reports/generate", "data-report-generate", "data-action-descriptor", "No report action granted", "/automations/activate", "/automations/trigger", "data-automation-activate", "data-automation-trigger", "training_state", "/integrations/verify", "/integrations/sync", "Not connected — add and verify credentials", "/dashboard/intelligence/attention", "/dashboard/intelligence/refresh", "Persisted attention", "worker is processing", "Agency performance KPIs", "Attributed revenue", "ROAS", "CTR"):
             self.assertIn(marker, self.bundle)

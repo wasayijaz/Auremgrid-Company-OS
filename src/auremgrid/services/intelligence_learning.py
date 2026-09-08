@@ -214,23 +214,52 @@ class IntelligenceLearningService:
         if cached is not None:
             return cached
         now = _now()
+        result = self._insert_recommendation(
+            organization_id, workspace_id, person_id,
+            payload["summary"], runbook_id, int(runbook_version), contributors,
+            payload["confidence"], option_list, recommended_option_id, evidence,
+            start.isoformat(), end.isoformat(), generated, now,
+        )
+        self._save_idempotency(organization_id, workspace_id, idempotency_key, "intelligence.recommendation.record", payload, result, now)
+        self.conn.commit()
+        return result
+
+    def _insert_recommendation(
+        self,
+        organization_id: str,
+        workspace_id: str,
+        person_id: str,
+        summary: str,
+        runbook_id: str,
+        runbook_version: int,
+        contributors: list[dict[str, Any]],
+        confidence: float,
+        options: list[dict[str, Any]],
+        recommended_option_id: str | None,
+        evidence: list[dict[str, Any]],
+        evaluation_window_start: str,
+        evaluation_window_end: str,
+        generated: dict[str, str],
+        now: str,
+    ) -> dict[str, Any]:
+        """Insert a recommendation without committing the surrounding transaction."""
         item = {
             "id": self.new_id("irec"),
             "organization_id": organization_id,
             "workspace_id": workspace_id,
-            "summary": payload["summary"],
+            "summary": summary,
             "runbook_id": runbook_id,
-            "runbook_version": int(runbook_version),
+            "runbook_version": runbook_version,
             "profile_contributors_json": _json(contributors),
-            "confidence": payload["confidence"],
-            "options_json": _json(option_list),
+            "confidence": confidence,
+            "options_json": _json(options),
             "recommended_option_id": recommended_option_id,
             "evidence_refs_json": _json(evidence),
             "generated_by_type": generated["type"],
             "generated_by_id": generated["id"],
             "recorded_by_person_id": person_id,
-            "evaluation_window_start": start.isoformat(),
-            "evaluation_window_end": end.isoformat(),
+            "evaluation_window_start": evaluation_window_start,
+            "evaluation_window_end": evaluation_window_end,
             "created_at": now,
         }
         self.conn.execute(
@@ -241,10 +270,7 @@ class IntelligenceLearningService:
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             tuple(item.values()),
         )
-        result = _row_dict(item)
-        self._save_idempotency(organization_id, workspace_id, idempotency_key, "intelligence.recommendation.record", payload, result, now)
-        self.conn.commit()
-        return result
+        return _row_dict(item)
 
     def append_recommendation_event(
         self,
@@ -268,6 +294,19 @@ class IntelligenceLearningService:
         event_type = _text(event_type, "event_type")
         if event_type not in LIFECYCLE_EVENTS:
             raise ValidationError("invalid recommendation lifecycle event")
+        if event_type == "evaluated":
+            # The lifecycle recorder is the evaluator/attributor.  A
+            # recommendation author cannot grade their own recommendation;
+            # generated person identities are also authors when present.
+            author_ids = {str(recommendation.get("recorded_by_person_id") or "")}
+            if recommendation.get("generated_by_type") == "person":
+                author_ids.add(str(recommendation.get("generated_by_id") or ""))
+            if person_id in author_ids:
+                raise ValidationError("evaluated events require an evaluator distinct from the recommendation author")
+            # Ensure the evaluator is a real principal in this workspace.  A
+            # viewer may evaluate, but an unrelated/cross-workspace person may
+            # not create attribution telemetry.
+            self.os._require_person_access(organization_id, workspace_id, person_id)
         if event_type == "chosen":
             self._validate_option_choice(recommendation, chosen_option_id)
         elif chosen_option_id is not None:
@@ -275,6 +314,15 @@ class IntelligenceLearningService:
         evidence = self._validate_evidence_refs(organization_id, workspace_id, _list(evidence_refs, "evidence_refs"))
         outcomes = _list(measured_outcomes, "measured_outcomes")
         if event_type == "evaluated":
+            prior = self.conn.execute(
+                """SELECT 1 FROM intelligence_recommendation_lifecycle
+                   WHERE organization_id=? AND workspace_id=? AND recommendation_id=?
+                     AND event_type IN ('accepted','chosen')
+                   LIMIT 1""",
+                (organization_id, workspace_id, recommendation_id),
+            ).fetchone()
+            if prior is None:
+                raise ValidationError("evaluated events require an accepted or chosen lifecycle event first")
             evaluation_window_start, evaluation_window_end = self._validate_recommendation_outcomes(
                 recommendation, outcomes, evidence, evaluation_window_start, evaluation_window_end
             )
@@ -283,6 +331,20 @@ class IntelligenceLearningService:
         normalized_score = None if score is None else _confidence(score)
         if normalized_score is not None and event_type != "evaluated":
             raise ValidationError("score is only valid for evaluated events")
+        if event_type == "evaluated" and normalized_score is not None:
+            canonical_scores = []
+            for outcome in outcomes:
+                value = outcome.get("canonical_value") if isinstance(outcome, dict) else None
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if 0.0 <= numeric <= 1.0:
+                    canonical_scores.append(numeric)
+            if canonical_scores and len(canonical_scores) == len(outcomes):
+                canonical_score = sum(canonical_scores) / len(canonical_scores)
+                if abs(normalized_score - canonical_score) > 1e-9:
+                    raise ValidationError("evaluation score must match the canonical measured outcome score")
         payload = {
             "recommendation_id": recommendation_id,
             "event_type": event_type,
@@ -365,7 +427,7 @@ class IntelligenceLearningService:
         """
         self.os._require_person_access(organization_id, workspace_id, person_id, write=True)
         trace_id = _text(trace_id, "trace_id")
-        trace = self._trace_result(organization_id, workspace_id, trace_id)
+        trace = self._trace_result(organization_id, workspace_id, person_id, trace_id)
         if review_status not in {"recorded", "reviewed", "accepted", "rejected", "deferred"}:
             raise ValidationError("invalid recommendation handoff review_status")
         if action_descriptor is not None and not isinstance(action_descriptor, dict):
@@ -390,6 +452,7 @@ class IntelligenceLearningService:
         )
 
         existing = self._recommendation(organization_id, workspace_id, recommendation_id) if recommendation_id else None
+        payload: dict[str, Any]
         if existing is None:
             trace_recommendation = trace.get("recommendation") if isinstance(trace.get("recommendation"), dict) else {}
             runbook_ref = trace.get("runbook") if isinstance(trace.get("runbook"), dict) else {}
@@ -406,28 +469,34 @@ class IntelligenceLearningService:
             selected_evidence = evidence_refs or []
             if not selected_profiles or not selected_options or not selected_evidence:
                 raise ValidationError("new trace handoffs require profiles, options, and evidence_refs")
-            payload = {
-                "trace_id": trace_id, "summary": summary, "runbook_id": selected_runbook,
-                "runbook_version": int(selected_version), "profile_contributors": selected_profiles,
-                "confidence": confidence, "options": selected_options,
-                "recommended_option_id": recommended_option_id, "evidence_refs": selected_evidence,
-                "evaluation_window_start": evaluation_window_start,
-                "evaluation_window_end": evaluation_window_end,
-                "generated_by": generated_by,
-            }
             if not evaluation_window_start or not evaluation_window_end:
                 raise ValidationError("new trace handoffs require an evaluation window")
-            cached = self._idempotent(organization_id, workspace_id, idempotency_key, "intelligence.recommendation.handoff", payload)
-            if cached is not None:
-                return cached
-            existing = self.record_recommendation(
-                organization_id, workspace_id, person_id, summary,
-                runbook_id=selected_runbook, runbook_version=int(selected_version),
-                profile_contributors=selected_profiles, confidence=confidence,
-                options=selected_options, recommended_option_id=recommended_option_id,
-                evidence_refs=selected_evidence, evaluation_window_start=evaluation_window_start,
-                evaluation_window_end=evaluation_window_end, generated_by=generated_by,
+            selected_runbook = _text(selected_runbook, "runbook_id")
+            selected_version = int(selected_version)
+            self._runbook(selected_runbook, selected_version)
+            selected_profiles = self._profile_contributors(_list(selected_profiles, "profile_contributors"))
+            selected_options = self._options(_list(selected_options, "options"), recommended_option_id)
+            selected_evidence = self._validate_evidence_refs(
+                organization_id, workspace_id, _list(selected_evidence, "evidence_refs")
             )
+            start = _parse_time(evaluation_window_start, "evaluation_window_start")
+            end = _parse_time(evaluation_window_end, "evaluation_window_end")
+            if end <= start:
+                raise ValidationError("evaluation window end must be after start")
+            generated = self._generated_by(generated_by, person_id)
+            payload = {
+                "trace_id": trace_id, "recommendation_id": None,
+                "summary": _text(summary, "summary"), "runbook_id": selected_runbook,
+                "runbook_version": selected_version, "profile_contributors": selected_profiles,
+                "confidence": _confidence(confidence), "options": selected_options,
+                "recommended_option_id": recommended_option_id, "evidence_refs": selected_evidence,
+                "evaluation_window_start": start.isoformat(), "evaluation_window_end": end.isoformat(),
+                "generated_by": generated,
+                "review_status": review_status, "decision_id": decision_id,
+                "approval_request_id": approval_request_id, "work_item_id": work_item_id,
+                "action_descriptor": action_descriptor, "outcome_refs": normalized_outcomes,
+                "notes": notes.strip(),
+            }
         else:
             payload = {
                 "trace_id": trace_id, "recommendation_id": existing["id"],
@@ -436,32 +505,56 @@ class IntelligenceLearningService:
                 "action_descriptor": action_descriptor, "outcome_refs": normalized_outcomes,
                 "notes": notes.strip(),
             }
-            cached = self._idempotent(organization_id, workspace_id, idempotency_key, "intelligence.recommendation.handoff", payload)
-            if cached is not None:
-                return cached
+
+        cached = self._idempotent(
+            organization_id, workspace_id, idempotency_key,
+            "intelligence.recommendation.handoff", payload,
+        )
+        if cached is not None:
+            return cached
 
         now = _now()
-        item = {
-            "id": self.new_id("irh"), "organization_id": organization_id, "workspace_id": workspace_id,
-            "recommendation_id": existing["id"], "trace_id": trace_id,
-            "reviewed_by_person_id": person_id, "review_status": review_status,
-            "decision_id": decision_id, "approval_request_id": approval_request_id,
-            "work_item_id": work_item_id,
-            "action_descriptor_json": _json(action_descriptor) if action_descriptor is not None else None,
-            "outcome_refs_json": _json(normalized_outcomes), "notes": notes.strip(), "created_at": now,
-        }
-        self.conn.execute(
-            """INSERT INTO intelligence_recommendation_handoffs(
-                id,organization_id,workspace_id,recommendation_id,trace_id,reviewed_by_person_id,
-                review_status,decision_id,approval_request_id,work_item_id,action_descriptor_json,
-                outcome_refs_json,notes,created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            tuple(item.values()),
-        )
-        result = {"handoff": _row_dict(item), "recommendation": existing}
-        self._save_idempotency(organization_id, workspace_id, idempotency_key, "intelligence.recommendation.handoff", payload, result, now)
-        self.conn.commit()
-        return result
+        savepoint = "intelligence_recommendation_handoff"
+        self.conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            if existing is None:
+                existing = self._insert_recommendation(
+                    organization_id, workspace_id, person_id,
+                    payload["summary"], payload["runbook_id"], payload["runbook_version"],
+                    payload["profile_contributors"], payload["confidence"], payload["options"],
+                    payload["recommended_option_id"], payload["evidence_refs"],
+                    payload["evaluation_window_start"], payload["evaluation_window_end"],
+                    payload["generated_by"], now,
+                )
+            item = {
+                "id": self.new_id("irh"), "organization_id": organization_id, "workspace_id": workspace_id,
+                "recommendation_id": existing["id"], "trace_id": trace_id,
+                "reviewed_by_person_id": person_id, "review_status": review_status,
+                "decision_id": decision_id, "approval_request_id": approval_request_id,
+                "work_item_id": work_item_id,
+                "action_descriptor_json": _json(action_descriptor) if action_descriptor is not None else None,
+                "outcome_refs_json": _json(normalized_outcomes), "notes": notes.strip(), "created_at": now,
+            }
+            self.conn.execute(
+                """INSERT INTO intelligence_recommendation_handoffs(
+                    id,organization_id,workspace_id,recommendation_id,trace_id,reviewed_by_person_id,
+                    review_status,decision_id,approval_request_id,work_item_id,action_descriptor_json,
+                    outcome_refs_json,notes,created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                tuple(item.values()),
+            )
+            result = {"handoff": _row_dict(item), "recommendation": existing}
+            self._save_idempotency(
+                organization_id, workspace_id, idempotency_key,
+                "intelligence.recommendation.handoff", payload, result, now,
+            )
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            self.conn.commit()
+            return result
+        except Exception:
+            self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
 
     def workspace_learning(self, organization_id: str, workspace_id: str, person_id: str) -> dict[str, Any]:
         self.os._require_person_access(organization_id, workspace_id, person_id)
@@ -776,11 +869,11 @@ class IntelligenceLearningService:
             raise NotFoundError("recommendation not found")
         return dict(row)
 
-    def _trace_result(self, organization_id: str, workspace_id: str, trace_id: str) -> dict[str, Any]:
+    def _trace_result(self, organization_id: str, workspace_id: str, person_id: str, trace_id: str) -> dict[str, Any]:
         row = self.conn.execute(
             """SELECT result_json FROM intelligence_orchestrator_runs
-               WHERE trace_id=? AND organization_id=? AND workspace_id=?""",
-            (trace_id, organization_id, workspace_id),
+               WHERE trace_id=? AND organization_id=? AND workspace_id=? AND person_id=?""",
+            (trace_id, organization_id, workspace_id, person_id),
         ).fetchone()
         if row is None:
             raise NotFoundError("orchestration trace not found in workspace scope")
@@ -824,7 +917,101 @@ class IntelligenceLearningService:
                 raise NotFoundError("measured outcome not found in recommendation scope")
             if not any(ref["type"] == outcome_type and ref["id"] == outcome_id for ref in evidence_refs):
                 raise ValidationError("measured outcome requires matching evidence ref")
+            canonical = self._canonical_outcome(
+                recommendation["organization_id"], recommendation["workspace_id"], outcome,
+            )
+            if canonical is not None:
+                canonical_at = _parse_time(canonical["occurred_at"], "canonical measured outcome timestamp")
+                if occurred_at != canonical_at:
+                    raise ValidationError(
+                        "measured outcome occurred_at must match the persisted evidence timestamp"
+                    )
+                if canonical.get("has_value") and "value" in outcome:
+                    if not self._same_measurement(outcome.get("value"), canonical.get("value")):
+                        raise ValidationError(
+                            "measured outcome value must match the persisted evidence value"
+                        )
+                # Keep the canonical values in the append-only evidence so
+                # later quality reads never need to trust a caller's claims.
+                outcome["occurred_at"] = canonical_at.isoformat()
+                outcome["canonical_occurred_at"] = canonical_at.isoformat()
+                if canonical.get("has_value"):
+                    outcome["canonical_value"] = canonical.get("value")
         return start.isoformat(), end.isoformat()
+
+    def _canonical_outcome(
+        self, organization_id: str, workspace_id: str, outcome: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Return persisted measurement fields for an evidence object.
+
+        The lifecycle payload may describe which metric was measured, but it
+        cannot invent the observation time or value.  Tables without a
+        structured metric value still provide a canonical timestamp; callers
+        may record an explanatory metric while the quality aggregate treats
+        its value as unverified.
+        """
+        tables = {
+            "source": ("sources", "workspace_id"),
+            "document": ("documents", "workspace_id"),
+            "fact": ("facts", "workspace_id"),
+            "work_item": ("work_items", "workspace_id"),
+            "work_event": ("work_events", "workspace_id"),
+            "workflow_evidence": ("workflow_evidence", "workspace_id"),
+            "workflow_run": ("workflow_runs", "workspace_id"),
+            "decision": ("decisions", "organization_id"),
+            "risk": ("risks", "organization_id"),
+            "signal": ("signals", "organization_id"),
+            "feedback_event": ("feedback_events", "organization_id"),
+            "performance_insight": ("performance_insights", "organization_id"),
+        }
+        spec = tables.get(str(outcome.get("type")))
+        if spec is None:
+            return None
+        table, scope_key = spec
+        if scope_key == "workspace_id":
+            row = self.conn.execute(
+                f"SELECT * FROM {table} WHERE workspace_id=? AND id=?",
+                (workspace_id, str(outcome.get("id"))),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                f"SELECT * FROM {table} WHERE organization_id=? AND workspace_id=? AND id=?",
+                (organization_id, workspace_id, str(outcome.get("id"))),
+            ).fetchone()
+        if row is None:
+            return None
+        values = dict(row)
+        timestamp = next(
+            (values[name] for name in ("occurred_at", "observed_at", "recorded_at", "created_at", "updated_at") if values.get(name)),
+            None,
+        )
+        if timestamp is None:
+            return None
+        metric = str(outcome.get("metric") or "").strip().lower()
+        candidates: tuple[str, ...]
+        if metric in {"value", "object", "amount", "financial_value", "actual_effort_hours", "score"}:
+            candidates = (metric,)
+        elif metric in {"status", "to_status"}:
+            candidates = ("to_status", "status")
+        elif metric in {"action", "kind", "outcome"}:
+            candidates = (metric,)
+        else:
+            candidates = ()
+        value_name = next((name for name in candidates if name in values and values[name] is not None), None)
+        return {
+            "occurred_at": str(timestamp),
+            "has_value": value_name is not None,
+            "value": values.get(value_name) if value_name else None,
+        }
+
+    @staticmethod
+    def _same_measurement(left: Any, right: Any) -> bool:
+        if left is None or right is None:
+            return left is right
+        try:
+            return float(left) == float(right)
+        except (TypeError, ValueError):
+            return str(left).strip() == str(right).strip()
 
     def _idempotent(
         self,

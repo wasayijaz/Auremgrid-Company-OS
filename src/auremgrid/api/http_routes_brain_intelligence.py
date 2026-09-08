@@ -145,6 +145,7 @@ class HttpRoutesBrainIntelligenceMixin:
                 person_id,
                 str(params.get("snapshot_type") or ("workspace" if workspace_id else "executive")),
                 workspace_id,
+                identity=identity,
             )
             self._json(200, {"snapshot": snapshot}); return True
         if parsed.path == "/dashboard/intelligence/attention":
@@ -153,7 +154,7 @@ class HttpRoutesBrainIntelligenceMixin:
             workspace_id = _optional_str(params.get("workspace_id"))
             self.os.proactive_intelligence.authorize_read(identity, organization_id, person_id, workspace_id)
             self._json(200, {"attention": self.os.proactive_intelligence.attention_queue(
-                organization_id, person_id, workspace_id, _int(params.get("limit", "20"), "limit")
+                organization_id, person_id, workspace_id, _int(params.get("limit", "20"), "limit"), identity=identity,
             )}); return True
         if parsed.path == "/dashboard/intelligence/refresh-status":
             assert identity is not None
