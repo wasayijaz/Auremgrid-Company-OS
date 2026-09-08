@@ -498,6 +498,28 @@ class PilotReportTests(unittest.TestCase):
         evidence = report["metrics"]["evidence"]
         self.assertEqual(evidence["evidence_correctness"]["status"], "unknown")
         self.assertIn("correctness verdict", evidence["evidence_correctness"]["reason"])
+        self.assertEqual(report["metrics"]["operator_verdicts"]["status"], "none_recorded")
+        self.assertIn("No operator verdicts", report["metrics"]["operator_verdicts"]["message"])
+
+    def test_captured_verdicts_replace_unknown_report_fields(self) -> None:
+        conn = self.make_conn()
+        conn.executescript(
+            """
+            INSERT INTO pilot_operator_verdicts(
+                id,organization_id,workspace_id,scenario_id,verdict,notes,recorded_by_person_id,created_at
+            ) VALUES
+                ('verdict_1','org_1','ws_1','evidence.correctness','positive','citations checked','person_1','2026-09-03T08:00:00'),
+                ('verdict_2','org_1','ws_1','attention.false_alert_rate','negative','too noisy','person_1','2026-09-03T09:00:00'),
+                ('verdict_3','org_1','ws_2','evidence.correctness','mixed','other workspace','person_1','2026-09-03T10:00:00');
+            """
+        )
+        report = build_report(conn, "ws_1")
+
+        verdicts = report["metrics"]["operator_verdicts"]
+        self.assertEqual(verdicts["total"], 2)
+        self.assertEqual(verdicts["verdict_counts"]["positive"], 1)
+        self.assertEqual(report["metrics"]["evidence"]["evidence_correctness"]["verdict"], "positive")
+        self.assertEqual(report["metrics"]["attention"]["false_alert_rate"]["notes"], "too noisy")
 
     def test_workspace_scoping(self) -> None:
         conn = self.make_conn()

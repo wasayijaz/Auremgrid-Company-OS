@@ -114,6 +114,17 @@ class HttpRoutesInsightsRemainderMixin:
         return False
 
     def _post_insights_remainder(self, parsed: Any, payload: dict[str, Any], identity: Any) -> bool:
+        if parsed.path == "/pilot/verdicts":
+            assert identity is not None
+            workspace_id = _optional_str(payload.get("workspace_id"))
+            scoped = self.os.auth.scope_identity(identity, workspace_id) if workspace_id else identity
+            self._json(201, self.os.pilot_feedback.record_verdict(
+                scoped,
+                workspace_id=workspace_id,
+                scenario_id=_need(payload, "scenario_id"),
+                verdict=_need(payload, "verdict"),
+                notes=_optional_str(payload.get("notes")),
+            )); return True
         if parsed.path == "/jobs":
             job_type=_need(payload,"type")
             if job_type not in PUBLIC_JOB_TYPES: raise ValidationError("unsupported job type")

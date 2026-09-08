@@ -23,6 +23,7 @@ UNKNOWN_RECOMMENDATION_VALUE_REASON = (
     "Recommendation decisions and outcome attribution are countable, but no single stored value "
     "score is present across all recommendations."
 )
+NO_OPERATOR_VERDICTS_REASON = "No operator verdicts have been recorded for this pilot scope."
 
 
 def unknown(reason: str) -> dict[str, str]:
@@ -104,6 +105,48 @@ def group_counts(
         sql += " WHERE " + " AND ".join(clauses)
     sql += f" GROUP BY {group_field} ORDER BY {group_field}"
     return {str(row["key"]): int(row["count"]) for row in conn.execute(sql, tuple(query_params))}
+
+
+def operator_verdict_report(conn: sqlite3.Connection, workspace_id: str | None) -> dict[str, Any]:
+    table = "pilot_operator_verdicts"
+    if not table_exists(conn, table):
+        return {
+            "total": 0,
+            "status": "none_recorded",
+            "message": NO_OPERATOR_VERDICTS_REASON,
+            "scenario_counts": {},
+            "verdict_counts": {},
+            "latest_by_scenario": {},
+        }
+    clauses: list[str] = []
+    params: list[Any] = []
+    if workspace_id is not None:
+        clauses.append("workspace_id = ?")
+        params.append(workspace_id)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = list(
+        conn.execute(
+            "SELECT scenario_id, verdict, notes, recorded_by_person_id, created_at "
+            f"FROM {table}{where} ORDER BY created_at, id",
+            tuple(params),
+        )
+    )
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        latest[str(row["scenario_id"])] = {
+            "verdict": row["verdict"],
+            "notes": row["notes"],
+            "recorded_by_person_id": row["recorded_by_person_id"],
+            "created_at": row["created_at"],
+        }
+    return {
+        "total": len(rows),
+        "status": "recorded" if rows else "none_recorded",
+        "message": None if rows else NO_OPERATOR_VERDICTS_REASON,
+        "scenario_counts": group_counts(conn, table, "scenario_id", workspace_id=workspace_id),
+        "verdict_counts": group_counts(conn, table, "verdict", workspace_id=workspace_id),
+        "latest_by_scenario": latest,
+    }
 
 
 def parse_time(value: str | None) -> datetime | None:
@@ -364,14 +407,28 @@ def evidence_report(conn: sqlite3.Connection, workspace_id: str | None) -> dict[
 
 
 def build_report(conn: sqlite3.Connection, workspace_id: str | None = None) -> dict[str, Any]:
+    operator_verdicts = operator_verdict_report(conn, workspace_id)
+    attention = attention_report(conn, workspace_id)
+    recommendations = recommendation_report(conn, workspace_id)
+    evidence = evidence_report(conn, workspace_id)
+    latest = operator_verdicts["latest_by_scenario"]
+    if "attention.usefulness" in latest:
+        attention["attention_usefulness"] = latest["attention.usefulness"]
+    if "attention.false_alert_rate" in latest:
+        attention["false_alert_rate"] = latest["attention.false_alert_rate"]
+    if "evidence.correctness" in latest:
+        evidence["evidence_correctness"] = latest["evidence.correctness"]
+    if "recommendation.value" in latest:
+        recommendations["recommendation_value"] = latest["recommendation.value"]
     return {
         "scope": {"workspace_id": workspace_id},
         "metrics": {
-            "attention": attention_report(conn, workspace_id),
-            "recommendations": recommendation_report(conn, workspace_id),
+            "attention": attention,
+            "recommendations": recommendations,
             "connectors": connector_report(conn, workspace_id),
             "reviews": review_report(conn, workspace_id),
-            "evidence": evidence_report(conn, workspace_id),
+            "evidence": evidence,
+            "operator_verdicts": operator_verdicts,
         },
     }
 
@@ -409,9 +466,14 @@ def format_text(report: dict[str, Any]) -> str:
         "Evidence",
         f"- Evidence-bearing rows: {metrics['evidence']['total_evidence_bearing_rows']}",
         f"- Proposals: {metrics['evidence']['total_proposals']}",
-        f"- Evidence correctness: unknown ({metrics['evidence']['evidence_correctness']['reason']})",
-        f"- False alert rate: unknown ({metrics['attention']['false_alert_rate']['reason']})",
+        f"- Evidence correctness: {metrics['evidence']['evidence_correctness'].get('verdict', 'unknown')}",
+        f"- False alert rate: {metrics['attention']['false_alert_rate'].get('verdict', 'unknown')}",
+        "",
+        "Operator verdicts",
+        f"- Total recorded: {metrics['operator_verdicts']['total']}",
     ]
+    if metrics["operator_verdicts"]["message"]:
+        lines.append(f"- {metrics['operator_verdicts']['message']}")
     return "\n".join(lines)
 
 

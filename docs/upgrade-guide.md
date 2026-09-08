@@ -2,7 +2,7 @@
 
 Opening a database runs ordered, append-only schema migrations recorded in
 `schema_migrations`. The current documented release-line schema version is
-**66** (`agent_thinking_trace_citations`); `/health` or `/health/detailed` is the
+**68** (`onboarding_receipt_simulation_marker`); `/health` or `/health/detailed` is the
 authoritative runtime evidence for the exact artifact being upgraded.
 
 Before upgrading:
@@ -12,7 +12,7 @@ Before upgrading:
 3. Run the full test suite against a copy.
 4. Start Auremgrid; migrations apply in order.
 5. Check `/health` (or `/health/detailed`) for the schema version; a healthy
-   schema-66 release-line installation reports `66`, and later artifacts must
+   schema-68 release-line installation reports `68`, and later artifacts must
    report their shipped schema version.
 6. Rebuild local projections with CompanyOS.rebuild_projections when required.
 

@@ -82,6 +82,7 @@ from auremgrid.services.onboarding import OnboardingService
 from auremgrid.services.report_delivery import ReportDeliveryService
 from auremgrid.services.asset_recovery import AssetRecoveryService
 from auremgrid.services.operator_readiness import OperatorReadinessService
+from auremgrid.services.pilot_feedback import PilotFeedbackService
 from auremgrid.adapters.semantic import (
     DeterministicFallbackEmbeddingProvider,
     EmbeddingProvider,
@@ -208,6 +209,7 @@ class CompanyOS(
         self.asset_recovery = AssetRecoveryService(self.store.conn, new_id)
         self.outbound = OutboundSendService(self.store.conn, new_id, self.jobs)
         self.operator_readiness = OperatorReadinessService(self)
+        self.pilot_feedback = PilotFeedbackService(self.store.conn, new_id)
         self.rebuild_projections(rebuild_graph=graph_projection is None)
         if graph_projection is not None:
             self._restore_durable_graph_generations()
