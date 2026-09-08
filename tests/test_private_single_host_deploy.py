@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
+
+from auremgrid.api.http import serve
+from auremgrid.services.brain import CompanyOS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -86,6 +90,20 @@ class PrivateSingleHostDeployTests(unittest.TestCase):
         self.assertTrue(result["checks"]["restore_recovery_mode"])
         self.assertTrue(result["checks"]["restore_outbound_disabled"])
         self.assertTrue(result["checks"]["restore_projection_healthy"])
+
+    def test_serve_rejects_dashboard_url_port_mismatch_before_binding(self) -> None:
+        previous = os.environ.get("AUREMGRID_DASHBOARD_URL")
+        os.environ["AUREMGRID_DASHBOARD_URL"] = "http://127.0.0.1:8787/"
+        app = CompanyOS()
+        try:
+            with self.assertRaisesRegex(ValueError, "does not match serve port 8791"):
+                serve(app, "127.0.0.1", 8791)
+        finally:
+            app.close()
+            if previous is None:
+                os.environ.pop("AUREMGRID_DASHBOARD_URL", None)
+            else:
+                os.environ["AUREMGRID_DASHBOARD_URL"] = previous
 
     def test_ci_builds_container_and_validates_private_host_compose(self) -> None:
         workflow = ROOT.joinpath(".github", "workflows", "ci.yml").read_text(encoding="utf-8")

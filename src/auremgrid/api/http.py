@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
+import os as environment
 import mimetypes
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
@@ -152,7 +152,7 @@ class CompanyOSRequestHandler(
         from auremgrid.observability import get_metrics
         from auremgrid.services.integration_security import WebhookIntakeService
 
-        if os.environ.get("AUREMGRID_WEBHOOK_RECEIPTS_ENABLED") != "1":
+        if environment.environ.get("AUREMGRID_WEBHOOK_RECEIPTS_ENABLED") != "1":
             get_metrics().inc("webhook.receipt.disabled")
             self._json(404, {"error": "webhook_receipts_disabled"})
             return
@@ -372,7 +372,7 @@ class CompanyOSRequestHandler(
         self._json(500, {"error": "internal_error", "message": str(exc)})
 
 
-def serve(os: CompanyOS, host: str = "127.0.0.1", port: int = 8787) -> HTTPServer:
+def serve(os: CompanyOS, host: str = "127.0.0.1", port: int = 8791) -> HTTPServer:
     handler = type(
         "BoundHandler",
         (CompanyOSRequestHandler,),
@@ -380,6 +380,11 @@ def serve(os: CompanyOS, host: str = "127.0.0.1", port: int = 8787) -> HTTPServe
     )
     # A single request loop deliberately serializes the shared SQLite connection.
     # Durable workers use their own connections and leases rather than HTTP threads.
+    dashboard_url = environment.environ.get("AUREMGRID_DASHBOARD_URL")
+    if dashboard_url:
+        configured_port = urlparse(dashboard_url).port
+        if configured_port is not None and configured_port != port and port != 0:
+            raise ValueError(f"AUREMGRID_DASHBOARD_URL port {configured_port} does not match serve port {port}")
     return HTTPServer((host, port), handler)
 
 

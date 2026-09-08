@@ -26,7 +26,7 @@ To provision a new agency, initial owner account, default workspace, and issue t
   --admin-name "Jane Doe" `
   --admin-email "jane@acmemedia.example" `
   --db "data\auremgrid.sqlite" `
-  --dashboard-url "http://127.0.0.1:8787/"
+  --dashboard-url "http://127.0.0.1:8791/"
 ```
 
 The command outputs a JSON receipt containing:
@@ -90,11 +90,11 @@ Start the local HTTP API and embedded operator dashboard:
 .venv\Scripts\python.exe scripts\auremgrid.py serve `
   --db "data\auremgrid.sqlite" `
   --host "127.0.0.1" `
-  --port 8787
+  --port 8791
 ```
 
 - `--seed`: Automatically seed the synthetic demo fixtures before starting.
-- `--storage`: Defaults to `sqlite`. (`postgres` requires `--postgres-url`).
+- `--storage`: Defaults to `sqlite`. PostgreSQL storage is out of scope for this pilot and fails closed if requested.
 
 ### 3.2 Background Durable Workers
 
@@ -372,6 +372,5 @@ If an operator encounters unexpected errors, deadlocks, or anomalies, **capture 
 
 5. **Capture Detailed Health Output**:
    ```powershell
-   Invoke-RestMethod -Uri "http://127.0.0.1:8787/health/detailed" | ConvertTo-Json -Depth 5
+   Invoke-RestMethod -Uri "http://127.0.0.1:8791/health/detailed" | ConvertTo-Json -Depth 5
    ```
-

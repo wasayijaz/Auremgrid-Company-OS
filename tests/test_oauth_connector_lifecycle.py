@@ -16,6 +16,7 @@ from tests.auth_support import issue_identity
 
 class OAuthConnectorLifecycleTests(unittest.TestCase):
     def setUp(self) -> None:
+        environment.environ.pop("AUREMGRID_OAUTH_REDIRECT_URIS", None)
         self.os = CompanyOS(":memory:")
         self.org = self.os.create_organization("OAuth")
         self.identity = AuthenticatedIdentity(
@@ -25,6 +26,7 @@ class OAuthConnectorLifecycleTests(unittest.TestCase):
         self.vault = EncryptedSecretVault(self.os.store.conn, new_id, "deployment-key-123456")
 
     def tearDown(self) -> None:
+        environment.environ.pop("AUREMGRID_OAUTH_REDIRECT_URIS", None)
         self.os.close()
 
     def test_google_install_exchange_health_and_revoke(self) -> None:
@@ -58,6 +60,32 @@ class OAuthConnectorLifecycleTests(unittest.TestCase):
         with self.assertRaises(Exception):
             service.complete(started["state"], "auth-code", started["code_verifier"], "https://app.test/callback", "google")
         self.assertEqual(self.os.store.conn.execute("SELECT COUNT(*) FROM provider_installations").fetchone()[0], 0)
+
+    def test_company_os_oauth_allowlist_requires_environment_configuration(self) -> None:
+        with self.assertRaisesRegex(Exception, "AUREMGRID_OAUTH_REDIRECT_URIS"):
+            self.os.oauth_service().begin(
+                self.identity,
+                self.org.id,
+                None,
+                "google",
+                "client",
+                "https://app.test/callback",
+                "openid",
+            )
+
+    def test_company_os_oauth_allowlist_reads_environment_configuration(self) -> None:
+        environment.environ["AUREMGRID_OAUTH_REDIRECT_URIS"] = "https://app.test/callback"
+        self.os._oauth_service = None
+        started = self.os.oauth_service().begin(
+            self.identity,
+            self.org.id,
+            None,
+            "google",
+            "client",
+            "https://app.test/callback",
+            "openid",
+        )
+        self.assertIn("state", started)
 
 
 class OAuthHttpCallbackSecurityTests(unittest.TestCase):

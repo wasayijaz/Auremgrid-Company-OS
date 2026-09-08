@@ -145,6 +145,8 @@ class OAuthPKCEService:
 
     def begin(self, identity: AuthenticatedIdentity, organization_id: str, workspace_id: str | None, provider: str, client_id: str, redirect_uri: str, scope: str, installation_id: str | None = None) -> dict[str, str]:
         _scope(identity, organization_id, workspace_id, "integration_configure")
+        if provider in PROVIDERS and not self.allowlist:
+            raise ValidationError("OAuth redirect allowlist is not configured; set AUREMGRID_OAUTH_REDIRECT_URIS")
         if provider not in PROVIDERS or redirect_uri not in self.allowlist.get(provider, set()):
             raise ValidationError("redirect URI is not allowlisted")
         if installation_id is not None:

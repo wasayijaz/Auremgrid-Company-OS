@@ -76,9 +76,8 @@ def main(argv: list[str] | None = None) -> int:
     serve_cmd = sub.add_parser("serve", help="start the local read-mostly HTTP API")
     serve_cmd.add_argument("--db", default="auremgrid.sqlite")
     serve_cmd.add_argument("--host", default="127.0.0.1")
-    serve_cmd.add_argument("--port", type=int, default=8787)
-    serve_cmd.add_argument("--storage", choices=["sqlite", "postgres"], default="sqlite")
-    serve_cmd.add_argument("--postgres-url", help="PostgreSQL connection URL (required when --storage postgres)")
+    serve_cmd.add_argument("--port", type=int, default=8791)
+    serve_cmd.add_argument("--storage", default="sqlite")
     serve_cmd.add_argument("--seed", action="store_true")
 
     sync = sub.add_parser("sync", help="pull connector events into the evidence layer")
@@ -124,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     setup_agency.add_argument("--person", help="optional owner person id")
     setup_agency.add_argument("--operator", help="optional operator display name")
     setup_agency.add_argument(
-        "--dashboard-url", default="http://127.0.0.1:8787/", help="dashboard address shown in next steps"
+        "--dashboard-url", default="http://127.0.0.1:8791/", help="dashboard address shown in next steps"
     )
 
     backup = sub.add_parser("backup", help="create and verify an online SQLite backup")
@@ -215,6 +214,8 @@ def main(argv: list[str] | None = None) -> int:
         os.close()
         return 0
     if args.command == "serve":
+        if args.storage != "sqlite":
+            parser.error("Postgres storage is out of scope for this pilot; use --storage sqlite")
         os = _company_os(args)
         if args.seed:
             os.seed_demo()

@@ -12,6 +12,28 @@ from auremgrid.services.brain import CompanyOS
 
 
 class SetupAgencyCliTests(unittest.TestCase):
+    def test_setup_agency_uses_canonical_dashboard_url_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "agency.sqlite"
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main([
+                    "setup-agency",
+                    "--agency", "Canonical Studio",
+                    "--admin-name", "Casey Owner",
+                    "--admin-email", "casey@canonical.test",
+                    "--db", str(database),
+                ]), 0)
+            receipt = json.loads(output.getvalue())
+            self.assertEqual(receipt["dashboard_url"], "http://127.0.0.1:8791/")
+
+    def test_serve_rejects_postgres_storage(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit):
+                main(["serve", "--storage", "postgres"])
+        self.assertIn("Postgres storage is out of scope for this pilot", stderr.getvalue())
+
     def test_setup_agency_creates_owner_workspace_binding_and_one_time_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             database = Path(tmp) / "agency.sqlite"

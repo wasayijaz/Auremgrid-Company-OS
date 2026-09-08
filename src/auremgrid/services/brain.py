@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -114,6 +115,8 @@ from auremgrid.services.brain_operations import BrainOperationsMixin
 from auremgrid.services.brain_projection import BrainProjectionMixin
 from auremgrid.services.brain_work import BrainWorkMixin
 
+AUREMGRID_OAUTH_REDIRECT_URIS = "AUREMGRID_OAUTH_REDIRECT_URIS"
+
 # Extraction can establish a strong but still non-human claim.  Promotion and
 # conflict resolution remain the only paths to ``verified``.
 
@@ -211,7 +214,15 @@ class CompanyOS(
 
     def oauth_service(self) -> OAuthConnectorService:
         if self._oauth_service is None:
-            allowlist = {"google": {"https://app.test/callback", "http://localhost:8000/oauth/callback"}}
+            redirect_uris = {
+                item.strip()
+                for item in os.environ.get(AUREMGRID_OAUTH_REDIRECT_URIS, "").split(",")
+                if item.strip()
+            }
+            allowlist = {
+                provider: set(redirect_uris)
+                for provider in ("google", "slack", "figma", "github")
+            } if redirect_uris else {}
             self._oauth_service = OAuthConnectorService(self.store.conn, new_id, None, allowlist)
         return self._oauth_service
 

@@ -71,9 +71,9 @@ after the first run, verify the generated backup file again with
 `auremgrid verify-backup --backup <backup-file>`.
 
 The generic OAuth routes need an operator-owned provider app registration,
-allowlisted redirect, deployment key, and injected token-exchange transport.
-No Google client credentials are bundled, and the default completion path fails
-closed rather than pretending to connect.
+redirect URL in `AUREMGRID_OAUTH_REDIRECT_URIS`, deployment key, and injected
+token-exchange transport. No Google client credentials are bundled, and the
+default completion path fails closed rather than pretending to connect.
 
 ## Optional local semantic model
 
