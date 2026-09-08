@@ -28,6 +28,7 @@ class OnboardingCsvImportTests(unittest.TestCase):
         self.assertEqual(preview["batch"]["invalid_rows"], 1)
         self.assertTrue(preview["batch"]["simulated"])
         self.assertEqual(preview["batch"]["simulation_label"], "SIMULATED")
+        self.assertTrue(preview["receipts"][0]["simulated"])
         self.assertEqual(preview["receipts"][0]["simulation_label"], "SIMULATED")
         self.assertEqual(preview["rows"][1]["status"], "quarantined")
         self.assertEqual(
@@ -41,6 +42,7 @@ class OnboardingCsvImportTests(unittest.TestCase):
         self.assertEqual(committed["batch"]["status"], "committed")
         self.assertFalse(committed["batch"]["simulated"])
         self.assertEqual(committed["batch"]["simulation_label"], "REAL")
+        self.assertFalse(committed["receipts"][-1]["simulated"])
         self.assertEqual(committed["receipts"][-1]["simulation_label"], "REAL")
         self.assertEqual(
             self.os.store.conn.execute("SELECT name FROM workspaces WHERE id='ws_acme'").fetchone()[0],

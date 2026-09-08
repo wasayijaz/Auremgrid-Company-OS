@@ -437,7 +437,7 @@ class OnboardingService:
             "SELECT * FROM onboarding_import_errors WHERE batch_id=? ORDER BY row_number,created_at,id", (batch_id,)
         ).fetchall()]
         receipts = [self._receipt_dict(dict(row)) for row in self.conn.execute(
-            "SELECT * FROM onboarding_import_receipts WHERE batch_id=? ORDER BY created_at,id", (batch_id,)
+            "SELECT * FROM onboarding_import_receipts WHERE batch_id=? ORDER BY rowid", (batch_id,)
         ).fetchall()]
         return {
             "batch": self._batch_summary(dict(batch)),
@@ -449,12 +449,12 @@ class OnboardingService:
 
     def _batch_summary(self, batch: dict[str, Any]) -> dict[str, Any]:
         commit = self.conn.execute(
-            "SELECT * FROM onboarding_import_receipts WHERE batch_id=? AND phase='commit' ORDER BY created_at DESC,id DESC LIMIT 1",
+            "SELECT * FROM onboarding_import_receipts WHERE batch_id=? AND phase='commit' ORDER BY rowid DESC LIMIT 1",
             (batch["id"],),
         ).fetchone()
         status = commit["status"] if commit else "commit_required" if int(batch["valid_rows"]) else "quarantined"
         latest_receipt = commit or self.conn.execute(
-            "SELECT simulated FROM onboarding_import_receipts WHERE batch_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
+            "SELECT simulated FROM onboarding_import_receipts WHERE batch_id=? ORDER BY rowid DESC LIMIT 1",
             (batch["id"],),
         ).fetchone()
         raw_simulated = None if latest_receipt is None else latest_receipt["simulated"]
