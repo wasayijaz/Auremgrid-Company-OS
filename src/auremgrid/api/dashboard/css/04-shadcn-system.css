@@ -183,3 +183,14 @@ dialog{padding:var(--space-5);border-radius:var(--radius-xl)}
 @media(max-width:620px){html{scrollbar-gutter:auto}.spaces{display:none}.nav{min-height:0}.content{padding:18px 14px 40px}.top{height:58px;padding:0 var(--space-3)}.grid,.module-grid{gap:10px}.card{padding:var(--space-3)}.metric{min-height:92px}.page#page-command>#metrics+#dashboard-completion-overview{margin-top:10px;margin-bottom:10px}.page#page-command>#dashboard-completion-overview>.card{min-height:132px}.head{margin-bottom:var(--space-4)}.overview-toolbar{align-items:stretch}.overview-toolbar label,.overview-toolbar select{width:100%}.overview-toolbar .ghost{margin-left:0}.overview-toolbar button{flex:1}.brain-toolbar{padding:var(--space-4)}.detail-head,.detail-body{padding:var(--space-4)}}
 
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
+
+/* The intelligence rail is an opt-in drawer. Keeping it out of the grid while
+   closed lets the command surface use the full available width at every size. */
+.shell{grid-template-columns:244px minmax(0,1fr)}
+.intelligence-rail{position:fixed;inset:0 0 0 auto;width:min(368px,calc(100vw - 24px));transform:translateX(102%);opacity:0;pointer-events:none;box-shadow:var(--shadow-2);transition:transform .2s ease,opacity .2s ease}
+.shell.intelligence-open .intelligence-rail{transform:translateX(0);opacity:1;pointer-events:auto}
+.top-intelligence-toggle.intelligence-toggle{display:inline-flex;position:static;align-items:center;justify-content:center;flex:none;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text-2);padding:8px 11px;box-shadow:none;font-size:11px;font-weight:650}
+.top-intelligence-toggle.intelligence-toggle:hover{border-color:var(--violet);color:var(--violet);background:var(--violet-soft)}
+@media(max-width:1380px){.shell{grid-template-columns:236px minmax(0,1fr)}}
+@media(max-width:1000px){.shell{grid-template-columns:72px minmax(0,1fr)}}
+@media(max-width:620px){.shell{display:block}.top-intelligence-toggle.intelligence-toggle{padding:7px 9px}.top{gap:8px}}
