@@ -6,17 +6,8 @@ from typing import Any
 from auremgrid.services.brain import CompanyOS
 from auremgrid.connectors.http import ConnectorTransportError
 from auremgrid.domain.errors import AuthorizationError
+from auremgrid.services.job_types import job_capability
 from auremgrid.services.reversible_actions import ReversibleActionExecutor
-
-
-JOB_CAPABILITIES = {
-    "report.generate": "workspace_write",
-    "projection.rebuild": "brain_promote",
-    "connector.sync": "integration_sync",
-    "proactive_intelligence.refresh": "brain_read",
-    "agent.run": "workspace_write",
-    "automation.execute": "automation_execute",
-}
 
 
 def run_one_job(
@@ -32,7 +23,7 @@ def run_one_job(
         return {"status": "idle"}
     try:
         identity = os.auth.identity_for_principal(job["principal_id"], workspace_id)
-        capability = JOB_CAPABILITIES.get(job["type"])
+        capability = job_capability(job["type"])
         if capability is None:
             raise ValueError(f"no registered handler for job type: {job['type']}")
         identity.require(capability)

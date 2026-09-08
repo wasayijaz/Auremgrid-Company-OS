@@ -52,7 +52,6 @@ LEGACY_ACTOR_PATHS = {
     "/work/ship", "/work/ship_work",
 }
 RETIRED_ROUTE_EVIDENCE = {"/memory-proposals/review"}
-JOB_TYPES = {"report.generate", "projection.rebuild", "agent.run", "automation.execute", "outbox.dispatch", "backup.create", "proactive_intelligence.refresh"}
 
 
 class CompanyOSRequestHandler(

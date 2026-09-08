@@ -13,8 +13,7 @@ from auremgrid.api.http_shared import (
     _optional_str,
 )
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
-
-JOB_TYPES = {"report.generate", "projection.rebuild", "agent.run", "automation.execute", "outbox.dispatch", "backup.create", "proactive_intelligence.refresh"}
+from auremgrid.services.job_types import PUBLIC_JOB_TYPES
 
 
 class HttpRoutesInsightsRemainderMixin:
@@ -117,7 +116,7 @@ class HttpRoutesInsightsRemainderMixin:
     def _post_insights_remainder(self, parsed: Any, payload: dict[str, Any], identity: Any) -> bool:
         if parsed.path == "/jobs":
             job_type=_need(payload,"type")
-            if job_type not in JOB_TYPES: raise ValidationError("unsupported job type")
+            if job_type not in PUBLIC_JOB_TYPES: raise ValidationError("unsupported job type")
             item=self.os.jobs.enqueue_job(identity.organization_id,_optional_str(payload.get("workspace_id")),identity.principal_id,job_type,
                 payload.get("payload") or {},int(payload.get("priority",0)),int(payload.get("max_attempts",3)),
                 _optional_str(payload.get("available_at")),_optional_str(payload.get("idempotency_key")))
