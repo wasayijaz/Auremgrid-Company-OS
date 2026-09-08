@@ -217,10 +217,10 @@ class CompanyOSRequestHandler(
             raise
         if result.get("duplicate"):
             get_metrics().inc("webhook.receipt.duplicate")
-            self._json(200, {"status": "duplicate", "event_digest": result["event_digest"]})
+            self._json(200, {"status": "duplicate", "event_digest": result["event_digest"], "simulated": False, "simulation_label": "REAL"})
             return
         get_metrics().inc("webhook.receipt.accepted")
-        self._json(202, {"status": "accepted", "event_digest": result["event_digest"]})
+        self._json(202, {"status": "accepted", "event_digest": result["event_digest"], "simulated": False, "simulation_label": "REAL"})
 
     def _call_work_action(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         workspace_id = _need(payload, "workspace_id")

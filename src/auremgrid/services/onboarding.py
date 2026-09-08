@@ -22,6 +22,14 @@ def _compact_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _simulation_label(simulated: bool | None) -> str:
+    if simulated is True:
+        return "SIMULATED"
+    if simulated is False:
+        return "REAL"
+    return "UNKNOWN"
+
+
 def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -170,6 +178,7 @@ class OnboardingService:
             self._insert_receipt(
                 batch_id, organization_id, workspace_id, person_id, "preview", "previewed",
                 idempotency_key, payload_hash, {"total_rows": len(rows), "valid_rows": valid, "invalid_rows": invalid}, now,
+                simulated=True,
             )
         return self._batch_response(batch_id)
 
@@ -221,6 +230,7 @@ class OnboardingService:
             self._insert_receipt(
                 batch_id, organization_id, batch["workspace_id"], person_id, "commit", status,
                 idempotency_key, payload_hash, {"created": created, "failed_rows": failed}, now,
+                simulated=False,
             )
         return self._batch_response(batch_id)
 
@@ -404,13 +414,17 @@ class OnboardingService:
     def _insert_receipt(
         self, batch_id: str, organization_id: str, workspace_id: str | None, person_id: str,
         phase: str, status: str, idempotency_key: str, payload_hash: str, summary: dict[str, Any],
-        created_at: str,
+        created_at: str, *, simulated: bool,
     ) -> None:
         self.conn.execute(
-            """INSERT INTO onboarding_import_receipts VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO onboarding_import_receipts(
+                id,batch_id,organization_id,workspace_id,person_id,phase,status,
+                idempotency_key,payload_hash,summary_json,created_at,simulated
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 self.new_id("import_receipt"), batch_id, organization_id, workspace_id,
                 person_id, phase, status, idempotency_key, payload_hash, _compact_json(summary), created_at,
+                int(simulated),
             ),
         )
 
@@ -439,6 +453,12 @@ class OnboardingService:
             (batch["id"],),
         ).fetchone()
         status = commit["status"] if commit else "commit_required" if int(batch["valid_rows"]) else "quarantined"
+        latest_receipt = commit or self.conn.execute(
+            "SELECT simulated FROM onboarding_import_receipts WHERE batch_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
+            (batch["id"],),
+        ).fetchone()
+        raw_simulated = None if latest_receipt is None else latest_receipt["simulated"]
+        simulated = None if raw_simulated is None else bool(raw_simulated)
         return {
             "id": batch["id"],
             "organization_id": batch["organization_id"],
@@ -449,6 +469,8 @@ class OnboardingService:
             "valid_rows": int(batch["valid_rows"]),
             "invalid_rows": int(batch["invalid_rows"]),
             "created_at": batch["created_at"],
+            "simulated": simulated,
+            "simulation_label": _simulation_label(simulated),
         }
 
     def _row_dict(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -463,6 +485,9 @@ class OnboardingService:
 
     def _receipt_dict(self, row: dict[str, Any]) -> dict[str, Any]:
         row["summary"] = json.loads(row.pop("summary_json"))
+        raw_simulated = row.get("simulated")
+        row["simulated"] = None if raw_simulated is None else bool(raw_simulated)
+        row["simulation_label"] = _simulation_label(row["simulated"])
         return row
 
     def _batch(self, batch_id: str) -> dict[str, Any]:

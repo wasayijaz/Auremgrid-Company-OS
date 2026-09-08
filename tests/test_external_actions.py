@@ -257,6 +257,8 @@ class ExternalActionsTestCase(unittest.TestCase):
         self.assertEqual(receipt.status, "published")
         self.assertEqual(receipt.provider, "gmail")
         self.assertEqual(receipt.outbox_event_id, outbox_id)
+        self.assertTrue(receipt.simulated)
+        self.assertEqual(receipt.to_dict()["simulation_label"], "SIMULATED")
         self.assertTrue(receipt.details["is_draft"])
         self.assertFalse(receipt.details["sent"])
         self.assertIsNotNone(receipt.external_reference_id)
@@ -271,6 +273,19 @@ class ExternalActionsTestCase(unittest.TestCase):
         self.assertIsNotNone(fetched_receipt)
         self.assertEqual(fetched_receipt.receipt_id, receipt.receipt_id)
         self.assertEqual(fetched_receipt.external_reference_id, receipt.external_reference_id)
+        self.assertTrue(fetched_receipt.simulated)
+        self.assertEqual(fetched_receipt.to_dict()["simulation_label"], "SIMULATED")
+
+        # Receipts written before the marker existed are explicitly unknown.
+        self.conn.execute(
+            "UPDATE outbox_events SET last_error=? WHERE id=?",
+            ('{"receipt_id":"legacy","outbox_event_id":"%s","organization_id":"%s","workspace_id":null,"action_type":"portal.publish","provider":"client_portal","external_reference_id":"legacy-ref","status":"published","dispatched_at":"2025-01-01T00:00:00+00:00","payload_hash":"legacy-hash","details":{}}' % (outbox_id, self.org_id), outbox_id),
+        )
+        self.conn.commit()
+        legacy_receipt = self.service.get_action_receipt(self.org_id, outbox_id)
+        self.assertIsNotNone(legacy_receipt)
+        self.assertIsNone(legacy_receipt.simulated)
+        self.assertEqual(legacy_receipt.to_dict()["simulation_label"], "UNKNOWN")
 
     def test_all_five_action_types_execute_with_simulated_receipts(self) -> None:
         actions = [
@@ -325,6 +340,31 @@ class ExternalActionsTestCase(unittest.TestCase):
             self.assertEqual(receipt.status, "published", f"Failed for {action_type}")
             self.assertEqual(receipt.provider, provider)
             self.assertTrue(validator(receipt.details), f"Validator failed for {action_type}: {receipt.details}")
+
+    def test_real_receipt_marker_is_persisted_and_fetched(self) -> None:
+        service = ExternalActionService(
+            self.conn,
+            dispatcher=SimulatedProviderDispatcher(simulated=False),
+        )
+        intent = ExternalActionIntent(
+            organization_id=self.org_id,
+            workspace_id=self.workspace_id,
+            action_type="slack.reply",
+            provider="slack",
+            payload={"channel_id": "C_REAL", "message_text": "Recorded as real"},
+            requested_by_id=self.person_id,
+        )
+        queued = service.queue_action(intent)
+        service.decide_approval(self.org_id, self.approver_id, queued["approval_request"]["id"], approved=True)
+        receipt = service.dispatch_action(self.org_id, queued["outbox_event"]["id"])
+        self.assertFalse(receipt.simulated)
+        self.assertEqual(receipt.to_dict()["simulation_label"], "REAL")
+        stored = self.conn.execute("SELECT last_error FROM outbox_events WHERE id=?", (queued["outbox_event"]["id"],)).fetchone()
+        self.assertIn('"simulated":false', stored["last_error"])
+        fetched = service.get_action_receipt(self.org_id, queued["outbox_event"]["id"])
+        self.assertIsNotNone(fetched)
+        self.assertFalse(fetched.simulated)
+        self.assertEqual(fetched.to_dict()["simulation_label"], "REAL")
 
     def test_custom_gmail_handler_cannot_bypass_draft_only_payload_validation(self) -> None:
         dispatcher = SimulatedProviderDispatcher()

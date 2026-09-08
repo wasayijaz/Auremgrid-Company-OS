@@ -466,9 +466,12 @@ class WebhookIntakeService:
         return {
             "boundary_status": "WEBHOOK RECEIPT ONLY",
             "enabled": os.environ.get("AUREMGRID_WEBHOOK_RECEIPTS_ENABLED") == "1",
-            "events": [dict(row) for row in events],
+            "simulated": False,
+            "simulation_label": "REAL",
+            "events": [{**dict(row), "simulated": False, "simulation_label": "REAL"} for row in events],
             "quarantines": [
                 {**{key: value for key, value in dict(row).items() if key not in {"detail_json", "signature_digest"}},
+                 "simulated": False, "simulation_label": "REAL",
                  "detail": json.loads(row["detail_json"] or "{}")}
                 for row in quarantines
             ],

@@ -152,9 +152,20 @@ class ExternalActionReceipt:
     dispatched_at: str
     payload_hash: str
     details: dict[str, Any] = field(default_factory=dict)
+    simulated: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["simulation_label"] = _simulation_label(self.simulated)
+        return data
+
+
+def _simulation_label(simulated: bool | None) -> str:
+    if simulated is True:
+        return "SIMULATED"
+    if simulated is False:
+        return "REAL"
+    return "UNKNOWN"
 
 
 class SimulatedProviderDispatcher:
@@ -164,8 +175,9 @@ class SimulatedProviderDispatcher:
     within strict organization scoping and allowlists.
     """
 
-    def __init__(self, new_id: Callable[[str], str] | None = None) -> None:
+    def __init__(self, new_id: Callable[[str], str] | None = None, *, simulated: bool = True) -> None:
         self._new_id = new_id or _default_id
+        self.simulated = bool(simulated)
         self._custom_handlers: dict[str, Callable[[str, Mapping[str, Any]], dict[str, Any]]] = {}
 
     def register_handler(
@@ -517,6 +529,10 @@ class ExternalActionService:
 
         # 4. Record outcome in outbox_events
         receipt_id = self.new_id("rcpt")
+        simulated = getattr(self.dispatcher, "simulated", True)
+        details = dict(details)
+        details["simulated"] = bool(simulated)
+        details["simulation_label"] = _simulation_label(bool(simulated))
         receipt = ExternalActionReceipt(
             receipt_id=receipt_id,
             outbox_event_id=outbox_event_id,
@@ -529,6 +545,7 @@ class ExternalActionService:
             dispatched_at=now,
             payload_hash=row["payload_hash"],
             details=details,
+            simulated=bool(simulated),
         )
 
         receipt_json = _json(receipt.to_dict())
@@ -542,7 +559,7 @@ class ExternalActionService:
             (
                 receipt_status,
                 now if receipt_status == "published" else None,
-                receipt_json if receipt_status == "published" else error_msg,
+                receipt_json,
                 now,
                 outbox_event_id,
             ),
@@ -565,6 +582,9 @@ class ExternalActionService:
 
         try:
             data = json.loads(row["last_error"])
+            if isinstance(data, dict):
+                data.setdefault("simulated", None)
+                data.pop("simulation_label", None)
             return ExternalActionReceipt(**data)
         except Exception:
             return None
