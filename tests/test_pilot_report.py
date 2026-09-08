@@ -14,7 +14,6 @@ from scripts.pilot_report import build_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 
 
 def insert_fixture(conn: sqlite3.Connection) -> None:
@@ -528,7 +527,7 @@ class PilotReportTests(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    str(PYTHON),
+                    sys.executable,
                     str(ROOT / "scripts" / "pilot_report.py"),
                     "--db",
                     str(db_path),
