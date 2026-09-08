@@ -166,6 +166,7 @@ class IntelligenceContractService:
         domain: str | None = None,
         profile_id: str | None = None,
         capabilities: Iterable[str] | None = None,
+        execution_approved: bool = False,
     ) -> tuple[dict[str, Any], ...]:
         scope = self._scope(organization_id, workspace_id, person_id, capabilities)
         runbooks = [self._runbook_from_row(row) for row in self._active_rows("intelligence_runbooks")]
@@ -173,7 +174,48 @@ class IntelligenceContractService:
             runbooks = [runbook for runbook in runbooks if domain in runbook.domains]
         if profile_id:
             runbooks = [runbook for runbook in runbooks if profile_id in runbook.profile_ids]
+        if execution_approved:
+            runbooks = [
+                runbook for runbook in runbooks
+                if self.runbook_approval_state(
+                    organization_id, workspace_id, runbook.id, runbook.version
+                )["status"] == "approved"
+            ]
         return tuple(self._filter_payload(runbook.to_dict(), scope["capabilities"]) for runbook in runbooks)
+
+    def runbook_approval_state(
+        self, organization_id: str, workspace_id: str | None, runbook_id: str, version: int
+    ) -> dict[str, Any]:
+        row = self.conn.execute(
+            """SELECT * FROM intelligence_runbook_approvals
+               WHERE organization_id=? AND workspace_id IS ? AND runbook_id=? AND runbook_version=?
+               ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+            (organization_id, workspace_id, runbook_id, str(version)),
+        ).fetchone()
+        if row is None:
+            return {
+                "runbook_id": runbook_id,
+                "runbook_version": str(version),
+                "status": "draft",
+                "approved_by": None,
+                "approved_at": None,
+                "updated_at": None,
+            }
+        return {
+            "runbook_id": row["runbook_id"],
+            "runbook_version": row["runbook_version"],
+            "status": row["status"],
+            "approved_by": row["approved_by"],
+            "approved_at": row["approved_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def require_runbook_approved(
+        self, organization_id: str, workspace_id: str | None, runbook_id: str, version: int
+    ) -> None:
+        state = self.runbook_approval_state(organization_id, workspace_id, runbook_id, version)
+        if state["status"] != "approved":
+            raise AuthorizationError(f"runbook {runbook_id} v{version} is not approved for execution")
 
     def get_runbook(
         self,
@@ -557,6 +599,17 @@ _RUNBOOK_SPECS = (
     ("quarterly_account_review", "Quarterly Account Review", ("client_success", "portfolio", "strategy"), ("account_strategist", "relationship_analyst", "executive_synthesizer")),
 )
 
+# Role-scoped review runbooks.  Every profile_id must exist in _PROFILE_SPECS;
+# the default protocol satisfies the >= 8-step depth contract.
+_ROLE_RUNBOOK_SPECS = (
+    ("client_success_lead_review", "Client Success Lead Review", ("client_success", "relationships", "retention"), ("account_strategist", "relationship_analyst", "executive_synthesizer")),
+    ("ads_lead_review", "Ads Lead Review", ("performance", "campaigns", "analytics"), ("performance_analyst", "scenario_analyst", "executive_synthesizer")),
+    ("design_lead_review", "Design Lead Review", ("creative", "brand", "performance"), ("brand_creative_analyst", "performance_analyst", "executive_synthesizer")),
+    ("marketing_lead_review", "Marketing Lead Review", ("marketing", "channels", "research"), ("research_analyst", "performance_analyst", "executive_synthesizer")),
+    ("executive_review", "Executive Review", ("executive", "strategy", "portfolio"), ("executive_synthesizer", "finance_scope_analyst", "reality_checker")),
+    ("cadence_owner_review", "Cadence Owner Review", ("client_success", "cadence", "operations"), ("delivery_analyst", "relationship_analyst", "executive_synthesizer")),
+    ("meeting_owner_review", "Meeting Owner Review", ("meetings", "client_success", "workflow"), ("delivery_analyst", "capacity_planner", "executive_synthesizer")),
+)
 
 def _native_runbook(runbook_id: str, name: str, domains: tuple[str, ...], profile_ids: tuple[str, ...]) -> dict[str, Any]:
     protocols = {
@@ -633,5 +686,5 @@ def _native_runbook(runbook_id: str, name: str, domains: tuple[str, ...], profil
 
 
 DEFAULT_INTELLIGENCE_RUNBOOKS: tuple[dict[str, Any], ...] = tuple(
-    _native_runbook(*spec) for spec in _RUNBOOK_SPECS
+    _native_runbook(*spec) for spec in _RUNBOOK_SPECS + _ROLE_RUNBOOK_SPECS
 )

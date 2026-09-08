@@ -2,7 +2,7 @@
 
 Opening a database runs ordered, append-only schema migrations recorded in
 `schema_migrations`. The current documented release-line schema version is
-**68** (`onboarding_receipt_simulation_marker`); `/health` or `/health/detailed` is the
+**69** (`intelligence_runbook_approvals`); `/health` or `/health/detailed` is the
 authoritative runtime evidence for the exact artifact being upgraded.
 
 Before upgrading:
@@ -12,7 +12,7 @@ Before upgrading:
 3. Run the full test suite against a copy.
 4. Start Auremgrid; migrations apply in order.
 5. Check `/health` (or `/health/detailed`) for the schema version; a healthy
-   schema-68 release-line installation reports `68`, and later artifacts must
+   schema-69 release-line installation reports `69`, and later artifacts must
    report their shipped schema version.
 6. Rebuild local projections with CompanyOS.rebuild_projections when required.
 
@@ -54,6 +54,8 @@ Schema 64 adds the agency asset layer: scoped agency assets with approval-state
 transitions, immutable version history, and region/timestamp/page/general review
 threads with anchored feedback.
 Schema 65 adds append-only immutability guards for agency asset versions.
+Schema 69 adds owner-gated intelligence runbook approval records and
+success-definition intake answers.
 
 Schema 11-era databases also need the authenticated identity bootstrap. After
 migration, use the local `bootstrap-auth` command for an existing organization

@@ -36,6 +36,8 @@ from auremgrid.api.http_shared import (
 from auremgrid.api.http_routes_public import HttpRoutesPublicMixin
 from auremgrid.api.http_routes_auth_org import HttpRoutesAuthOrgMixin
 from auremgrid.api.http_routes_brain_intelligence import HttpRoutesBrainIntelligenceMixin
+from auremgrid.api.http_routes_intelligence_governance import HttpRoutesIntelligenceGovernanceMixin
+from auremgrid.api.http_routes_intelligence_intake import HttpRoutesIntelligenceIntakeMixin
 from auremgrid.api.http_routes_work_delivery import HttpRoutesWorkDeliveryMixin
 from auremgrid.api.http_routes_agency_ops import HttpRoutesAgencyOpsMixin
 from auremgrid.api.http_routes_agents_workflows import HttpRoutesAgentsWorkflowsMixin
@@ -58,6 +60,8 @@ class CompanyOSRequestHandler(
     HttpRoutesPublicMixin,
     HttpRoutesAuthOrgMixin,
     HttpRoutesBrainIntelligenceMixin,
+    HttpRoutesIntelligenceGovernanceMixin,
+    HttpRoutesIntelligenceIntakeMixin,
     HttpRoutesWorkDeliveryMixin,
     HttpRoutesAgencyOpsMixin,
     HttpRoutesAgentsWorkflowsMixin,
@@ -81,6 +85,8 @@ class CompanyOSRequestHandler(
             if self._get_public(parsed, params, identity): return
             if self._get_auth_org(parsed, params, identity): return
             if self._get_brain_intelligence(parsed, params, identity): return
+            if self._get_intelligence_governance(parsed, params, identity): return
+            if self._get_intelligence_intake(parsed, params, identity): return
             if self._get_work_delivery(parsed, params, identity): return
             if self._get_agency_ops(parsed, params, identity): return
             if self._get_agents_workflows(parsed, params, identity): return
@@ -116,6 +122,8 @@ class CompanyOSRequestHandler(
             identity = self._authenticate_request(parsed.path, "POST", payload)
             if self._post_auth_org(parsed, payload, identity): return
             if self._post_brain_intelligence(parsed, payload, identity): return
+            if self._post_intelligence_governance(parsed, payload, identity): return
+            if self._post_intelligence_intake(parsed, payload, identity): return
             if self._post_work_delivery(parsed, payload, identity): return
             if self._post_agency_ops(parsed, payload, identity): return
             if self._post_agents_workflows(parsed, payload, identity): return

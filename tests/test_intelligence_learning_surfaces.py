@@ -170,7 +170,9 @@ class IntelligenceLearningSurfaceTests(unittest.TestCase):
 
         status, learning = self.request("GET", self.scoped_path("/dashboard/intelligence/learning"))
         self.assertEqual(status, 200)
-        self.assertEqual(len(learning["hypotheses"]), 1)
+        # The manual hypothesis plus the proposed lesson captured from the
+        # evaluated event (human-review gate for evaluated-outcome lessons).
+        self.assertEqual(len(learning["hypotheses"]), 2)
         self.assertEqual(len(learning["recommendations"]), 1)
         self.assertEqual({event["event_type"] for event in learning["recommendation_lifecycle"]}, {"accepted", "evaluated"})
 

@@ -111,6 +111,19 @@ The dashboard is a tri-pane workbench for the scoped operating surfaces:
 
 The API handler is composed from [`src/auremgrid/api/http.py`](src/auremgrid/api/http.py), shared helpers in [`src/auremgrid/api/http_shared.py`](src/auremgrid/api/http_shared.py), and route-family mixins such as [`src/auremgrid/api/http_routes_public.py`](src/auremgrid/api/http_routes_public.py) and [`src/auremgrid/api/http_routes_auth_org.py`](src/auremgrid/api/http_routes_auth_org.py). The tool router lives in [`src/auremgrid/api/mcp.py`](src/auremgrid/api/mcp.py), and the dashboard lives in [`src/auremgrid/api/dashboard`](src/auremgrid/api/dashboard). JSON/data routes require a bearer session or API token except `/health`, `/metrics`, and `/health/detailed`.
 
+### Intelligence governance
+
+The supervision around the intelligence layer is implemented in code, not left as policy text:
+
+| Mechanism | In the code |
+|---|---|
+| Pre-filled runbooks, human-nod activation | 19 expert runbooks ship seeded, including seven agency-role reviews (client success, ads, design, and marketing leads, executive, cadence owners, and meeting owners). Orchestrator execution only selects runbooks approved for the workspace; runbooks start as drafts and a customization writes a new draft version for the next review ([`intelligence_contracts.py`](src/auremgrid/services/intelligence_contracts.py), [`intelligence_governance.py`](src/auremgrid/services/intelligence_governance.py), [`intelligence_orchestrator_contracts.py`](src/auremgrid/services/intelligence_orchestrator_contracts.py)). |
+| Learning with a human gate | Evaluated outcomes insert their lesson in a `proposed` state in the same transaction; workspace owners approve or reject proposed lessons before they can feed later context ([`intelligence_learning.py`](src/auremgrid/services/intelligence_learning.py), [`intelligence_governance.py`](src/auremgrid/services/intelligence_governance.py)). |
+| Ask-before-execute intake | A fixed success-definition catalog asks the operator what "good" means per client; owner answers persist once per question and surface as success criteria inside the scoped context contract every specialist run reads ([`intelligence_intake.py`](src/auremgrid/services/intelligence_intake.py), [`intelligence_context.py`](src/auremgrid/services/intelligence_context.py)). |
+| Honest executive brief | The brief is a fixed payload contract (attention items, top three with sourced narrative, constraints); unmeasured areas stay absent or `Unknown` instead of invented ([`intelligence_service.py`](src/auremgrid/services/intelligence_service.py)). |
+
+Governance writes are owner-scoped REST endpoints: `GET/POST /dashboard/intelligence/governance/runbooks`, `POST /dashboard/intelligence/governance/runbooks/approve`, `POST /dashboard/intelligence/governance/runbooks/customize`, `GET /dashboard/intelligence/governance/lessons`, `POST /dashboard/intelligence/governance/lessons/decide`, and `GET/POST /dashboard/intelligence/success-definition` ([`http_routes_intelligence_governance.py`](src/auremgrid/api/http_routes_intelligence_governance.py), [`http_routes_intelligence_intake.py`](src/auremgrid/api/http_routes_intelligence_intake.py)).
+
 ## Service architecture
 
 ```text
@@ -156,7 +169,7 @@ deploy/            private single-host Docker Compose and Caddy templates
 scripts/           launcher, release checks, smoke tests, and local utilities
 ```
 
-The Python package is `auremgrid-company-os`; the import surface exports `CompanyOS` from `auremgrid.services.brain`. Schema 68 is the current migration line; `/health/detailed` reports the version of the opened database.
+The Python package is `auremgrid-company-os`; the import surface exports `CompanyOS` from `auremgrid.services.brain`. Schema 69 is the current migration line; `/health/detailed` reports the version of the opened database.
 
 ## Verify a checkout
 

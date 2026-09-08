@@ -38,7 +38,7 @@ class IntelligenceOrchestratorContractsMixin:
         if not contracts:
             return None
         try:
-            runbooks = self._list_contracts(contracts, "list_runbooks", org, ws, person)
+            runbooks = self._list_contracts(contracts, "list_runbooks", org, ws, person, execution_approved=True)
             if runbook_id:
                 for runbook in runbooks:
                     if self._contract_key(runbook) == runbook_id:
@@ -67,13 +67,16 @@ class IntelligenceOrchestratorContractsMixin:
         except (AuthorizationError, TypeError, AttributeError):
             return None
 
-    def _list_contracts(self, contracts: Any, method_name: str, org: str, ws: str, person: str) -> list[Any]:
+    def _list_contracts(self, contracts: Any, method_name: str, org: str, ws: str, person: str, *, execution_approved: bool | None = None) -> list[Any]:
         method = getattr(contracts, method_name)
+        kwargs: dict[str, Any] = {"organization_id": org, "workspace_id": ws, "person_id": person}
+        if execution_approved is not None:
+            kwargs["execution_approved"] = execution_approved
         # Facades in deployments accept either identity-first or explicit
         # organization/workspace/person scope. Try only those fixed signatures;
         # never pass arbitrary context to a definition provider.
         for args, kwargs in (
-            ((), {"organization_id": org, "workspace_id": ws, "person_id": person}),
+            ((), kwargs),
             ((org, person, ws), {}),
             ((org, ws, person), {}),
         ):

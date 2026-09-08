@@ -73,7 +73,7 @@ class IntelligenceContractSurfaceTests(unittest.TestCase):
 
         status, runbooks = self.request("GET", self.scoped_path("/dashboard/intelligence/runbooks"))
         self.assertEqual(status, 200)
-        self.assertEqual(len(runbooks["runbooks"]), 12)
+        self.assertEqual(len(runbooks["runbooks"]), 19)
         first_runbook = runbooks["runbooks"][0]
         self.assertTrue({"id", "version", "name", "profile_ids", "output_contract"} <= first_runbook.keys())
 
@@ -161,7 +161,7 @@ class IntelligenceContractSurfaceTests(unittest.TestCase):
         profiles = router.call("intelligence.profiles.list", {"workspace_id": "ws_intel_allowed"})
         self.assertEqual(len(profiles["profiles"]), 13)
         runbooks = router.call("intelligence.runbooks.list", {"workspace_id": "ws_intel_allowed"})
-        self.assertEqual(len(runbooks["runbooks"]), 12)
+        self.assertEqual(len(runbooks["runbooks"]), 19)
         run = router.call(
             "intelligence.orchestrator.run",
             {"workspace_id": "ws_intel_allowed", "runbook_id": runbooks["runbooks"][0]["id"], "iterations": 1},

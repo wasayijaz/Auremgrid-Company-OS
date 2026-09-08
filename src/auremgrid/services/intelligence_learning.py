@@ -386,6 +386,47 @@ class IntelligenceLearningService:
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             tuple(item.values()),
         )
+        if event_type == "evaluated" and lessons.strip():
+            # Evaluated-outcome lessons land in a durable proposed review state
+            # (intelligence_hypotheses is the append-only lesson store).  They
+            # only flow like accepted lessons after an owner records a
+            # superseding supported/refuted hypothesis.
+            lesson_item = {
+                "id": self.new_id("ihyp"),
+                "organization_id": organization_id,
+                "workspace_id": workspace_id,
+                "text": lessons.strip(),
+                "evidence_for_refs_json": _json(evidence),
+                "evidence_against_refs_json": _json([]),
+                "subject": "Evaluated outcome lesson",
+                "status": "proposed",
+                "confidence": normalized_score if normalized_score is not None else 0.5,
+                "assumptions_json": _json([]),
+                "generated_by_type": "runbook",
+                "generated_by_id": str(recommendation.get("runbook_id") or ""),
+                "recorded_by_person_id": person_id,
+                "supersedes_hypothesis_id": None,
+                "resolution": None,
+                "outcome_json": _json({
+                    "origin": "evaluated_outcome_lesson",
+                    "recommendation_id": recommendation_id,
+                    "lifecycle_event_id": item["id"],
+                    "score": normalized_score,
+                    "runbook_id": recommendation.get("runbook_id"),
+                    "runbook_version": recommendation.get("runbook_version"),
+                }),
+                "created_at": now,
+                "updated_at": now,
+                "resolved_at": None,
+            }
+            self.conn.execute(
+                """INSERT INTO intelligence_hypotheses(
+                    id,organization_id,workspace_id,text,evidence_for_refs_json,evidence_against_refs_json,
+                    subject,status,confidence,assumptions_json,generated_by_type,generated_by_id,recorded_by_person_id,
+                    supersedes_hypothesis_id,resolution,outcome_json,created_at,updated_at,resolved_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                tuple(lesson_item.values()),
+            )
         result = _row_dict(item)
         self._save_idempotency(organization_id, workspace_id, idempotency_key, "intelligence.recommendation.lifecycle", payload, result, now)
         self.conn.commit()

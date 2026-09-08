@@ -29,7 +29,7 @@ class IntelligenceContractTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     first.store.conn.execute("SELECT COUNT(*) FROM intelligence_runbooks").fetchone()[0],
-                    12,
+                    19,
                 )
                 profile_hashes = {
                     row["id"]: row["content_hash"]
@@ -46,7 +46,7 @@ class IntelligenceContractTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     second.store.conn.execute("SELECT COUNT(*) FROM intelligence_runbooks").fetchone()[0],
-                    12,
+                    19,
                 )
                 profile_columns = {
                     row["name"] for row in second.store.conn.execute("PRAGMA table_info(expert_profiles)").fetchall()
@@ -93,6 +93,8 @@ class IntelligenceContractTests(unittest.TestCase):
                 "client_health_drop", "client_churn_risk", "renewal_review", "scope_overrun", "margin_pressure",
                 "project_delay", "campaign_performance_drop", "creative_fatigue", "client_relationship_problem",
                 "team_overload", "account_expansion_opportunity", "quarterly_account_review",
+                "client_success_lead_review", "ads_lead_review", "design_lead_review", "marketing_lead_review",
+                "executive_review", "cadence_owner_review", "meeting_owner_review",
             })
             audit = {
                 row["entity_type"]: row["count"]
@@ -104,7 +106,7 @@ class IntelligenceContractTests(unittest.TestCase):
                        GROUP BY entity_type"""
                 )
             }
-            self.assertEqual(audit, {"expert_profile": 13, "intelligence_runbook": 12})
+            self.assertEqual(audit, {"expert_profile": 13, "intelligence_runbook": 19})
             self.assertNotIn("cosmo_", json.dumps({"profiles": sorted(profile_names), "runbooks": sorted(runbook_ids)}).lower())
         finally:
             os.close()

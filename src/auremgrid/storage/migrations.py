@@ -4567,6 +4567,41 @@ MIGRATIONS = (
         ALTER TABLE onboarding_import_receipts ADD COLUMN simulated INTEGER;
         """,
     ),
+    Migration(
+        69,
+        "runbook_approvals_and_success_definitions",
+        """
+        CREATE TABLE IF NOT EXISTS intelligence_runbook_approvals (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            runbook_id TEXT NOT NULL,
+            runbook_version TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('draft','approved','retired')),
+            approved_by TEXT,
+            approved_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_runbook_approvals_scope
+            ON intelligence_runbook_approvals(organization_id, COALESCE(workspace_id,''), runbook_id, runbook_version);
+        CREATE TABLE IF NOT EXISTS intelligence_success_definitions (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT NOT NULL,
+            workspace_id TEXT,
+            question_key TEXT NOT NULL,
+            question TEXT NOT NULL,
+            answer TEXT NOT NULL,
+            answered_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(organization_id) REFERENCES organizations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_success_definitions_scope
+            ON intelligence_success_definitions(organization_id, COALESCE(workspace_id,''), question_key);
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from auremgrid.services.brain import CompanyOS
+from auremgrid.services.intelligence_governance import IntelligenceGovernanceService
 from auremgrid.services.intelligence_orchestrator import IntelligenceOrchestrator
 
 
@@ -354,6 +355,14 @@ def run_intelligence_evaluations() -> dict[str, Any]:
         # orchestrator boundary. One profile receives an intentionally
         # unauthorized citation so each case proves fail-closed citation
         # handling, bounded specialist fan-out, and a usable degraded brief.
+        governance = IntelligenceGovernanceService(owner_os, owner_os.jobs.new_id)
+        for seeded in owner_os.intelligence_contracts.list_runbooks(
+            "org_demo", "ws_alpha", "person_demo_owner"
+        ):
+            governance.decide_runbook(
+                "org_demo", "ws_alpha", "person_demo_owner",
+                str(seeded["id"]), int(seeded["version"]), "approve",
+            )
         runbooks = owner_os.intelligence_contracts.list_runbooks(
             "org_demo", "ws_alpha", "person_demo_owner"
         )

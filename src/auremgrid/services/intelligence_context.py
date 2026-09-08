@@ -218,6 +218,13 @@ class IntelligenceContextMixin:
                 if str(row.get("id")) in campaign_ids
             ],
             "people": people,
+            "success_criteria": self._optional_rows(
+                """SELECT question_key, question, answer, answered_by, updated_at
+                   FROM intelligence_success_definitions
+                   WHERE organization_id=? AND workspace_id IS NULL
+                   ORDER BY question_key""",
+                (organization_id,),
+            ),
             "visibility": {
                 "source": "membership_and_actor_acl",
                 "bounded_to_workspace": True,

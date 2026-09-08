@@ -480,26 +480,14 @@ class IntelligenceService(IntelligenceContextMixin, IntelligenceHistoryMixin, In
         return {
             **result,
             "type": "executive_brief",
-            "headline": "Portfolio operating brief",
             "what_happens_if_do_nothing": inaction,
             "sections": {
                 "attention": result["portfolio"]["attention"],
                 "top_three": narrative_items,
-                "conclusions": narrative_items,
-                "what_happens_if_do_nothing": inaction,
                 "narrative": {
                     "headline": "Three things need attention" if narrative_items else "No evidence-backed attention items",
                     "items": narrative_items,
                 },
-                "client_health": [
-                    {
-                        "workspace_id": item["scope"]["workspace_id"],
-                        "workspace_name": item["scope"]["workspace_name"],
-                        "health": item.get("domains", {}).get("client_health"),
-                    }
-                    for item in result["workspaces"]
-                    if item.get("domains", {}).get("client_health") is not None
-                ],
                 "constraints": [
                     {"workspace_id": item["scope"]["workspace_id"], "scenario": scenario}
                     for item in result["workspaces"]
@@ -508,7 +496,6 @@ class IntelligenceService(IntelligenceContextMixin, IntelligenceHistoryMixin, In
                     if scenario.get("name") == "defer"
                 ][:20],
             },
-            "conclusions": narrative_items,
         }
     
     @staticmethod
