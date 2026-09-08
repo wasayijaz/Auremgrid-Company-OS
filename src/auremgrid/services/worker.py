@@ -6,6 +6,11 @@ from typing import Any
 from auremgrid.services.brain import CompanyOS
 from auremgrid.connectors.http import ConnectorTransportError
 from auremgrid.domain.errors import AuthorizationError
+from auremgrid.services.agent_execution import (
+    AGENT_THINK_JOB_TYPE,
+    SQLiteAgentExecutionStore,
+    execute_agent_think_job,
+)
 from auremgrid.services.job_types import job_capability
 from auremgrid.services.reversible_actions import ReversibleActionExecutor
 
@@ -72,6 +77,17 @@ def run_one_job(
             )
         elif job["type"] == "automation.execute":
             result = os.agent_ops.execute_automation_job(organization_id, identity, payload)
+        elif job["type"] == AGENT_THINK_JOB_TYPE:
+            providers = getattr(os, "agent_think_providers", None) or getattr(os.jobs, "agent_think_providers", None)
+            models = getattr(os, "agent_think_models", None) or getattr(os.jobs, "agent_think_models", None)
+            if providers is None or models is None:
+                raise ValueError("agent.think provider registry is not configured")
+            result = execute_agent_think_job(
+                job,
+                store=SQLiteAgentExecutionStore(os.store.conn),
+                providers=providers,
+                models=models,
+            )
         elif job["type"] == "connector.sync":
             stream_lock=os.integrations.resume_job_stream(job["id"],worker_id,str(payload["mapping_hash"]))
             def connector_progress(value: float) -> None:

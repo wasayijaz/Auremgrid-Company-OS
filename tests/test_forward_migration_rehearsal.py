@@ -14,6 +14,7 @@ LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 
 class ForwardMigrationRehearsalTests(unittest.TestCase):
     def test_prior_schema_fixture_migrates_to_current_schema(self) -> None:
+        self.assertEqual([migration.version for migration in MIGRATIONS[-7:]], [60, 61, 62, 63, 64, 65, 66])
         script = ROOT / "scripts" / "forward_migration_rehearsal.py"
         spec = importlib.util.spec_from_file_location("forward_migration_rehearsal", script)
         self.assertIsNotNone(spec)

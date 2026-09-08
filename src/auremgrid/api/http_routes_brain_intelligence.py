@@ -7,6 +7,7 @@ from auremgrid.api.http_shared import (
     _optional_string_sequence, _required_list, _require_evaluation_scope, _what_if_params,
 )
 from auremgrid.domain.errors import AuthorizationError, NotFoundError
+from auremgrid.services.agent_execution import AGENT_THINK_JOB_TYPE, SQLiteAgentExecutionStore, thinking_surface_enabled
 
 
 class HttpRoutesBrainIntelligenceMixin:
@@ -83,6 +84,19 @@ class HttpRoutesBrainIntelligenceMixin:
             assert identity is not None
             organization_id, workspace_id, person_id = _need(params,"organization_id"), _need(params,"workspace_id"), _need(params,"person_id")
             self._json(200, self.os.dashboard.brain(identity, organization_id, workspace_id, person_id, _optional_dt(params.get("as_of")))); return True
+        if parsed.path == "/dashboard/brain/thinking":
+            assert identity is not None
+            workspace_id = _need(params, "workspace_id")
+            scoped = self.os.auth.scope_identity(identity, workspace_id)
+            job = self.os.jobs.get_job(scoped.organization_id, workspace_id, _need(params, "job_id"))
+            if job.get("type") != AGENT_THINK_JOB_TYPE:
+                raise NotFoundError("thinking job not found")
+            store = SQLiteAgentExecutionStore(self.os.store.conn)
+            read = store.thinking_read_model(
+                scoped.organization_id, workspace_id, str((job.get("payload") or {}).get("run_id") or "")
+            ) if thinking_surface_enabled(self.os) and store.available() else None
+            self._json(200, {"available": bool(read), "thinking": read, "attempts": (read or {}).get("attempts", [])})
+            return True
         if parsed.path == "/brain/customizations/active":
             assert identity is not None
             scoped_workspace = _optional_str(params.get("workspace_id"))

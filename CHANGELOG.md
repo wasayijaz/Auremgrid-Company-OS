@@ -11,3 +11,4 @@
 - Outcome attribution with schema version 62.
 - GA4 and Search Console connector substance, including reconcile totals and
   replay quarantine, with schema version 63.
+- Agent thinking trace and citation persistence, with schema version 66.

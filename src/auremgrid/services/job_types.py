@@ -15,6 +15,7 @@ DURABLE_JOB_TYPES: dict[str, DurableJobType] = {
     "connector.sync": DurableJobType("integration_sync", public_api=False),
     "proactive_intelligence.refresh": DurableJobType("brain_read"),
     "agent.run": DurableJobType("workspace_write"),
+    "agent.think": DurableJobType("brain_read"),
     "automation.execute": DurableJobType("automation_execute"),
 }
 

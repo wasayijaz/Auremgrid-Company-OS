@@ -4518,6 +4518,16 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        66,
+        "agent_thinking_trace_citations",
+        """
+        ALTER TABLE agent_thinking_results ADD COLUMN trace_json TEXT;
+        ALTER TABLE agent_thinking_results ADD COLUMN citations_json TEXT;
+        ALTER TABLE agent_thinking_attempts ADD COLUMN trace_json TEXT;
+        ALTER TABLE agent_thinking_attempts ADD COLUMN citations_json TEXT;
+        """,
+    ),
 )
 
 _AGENT_LEVEL_CAPABILITIES: dict[str, tuple[str, ...]] = {

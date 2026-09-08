@@ -12,6 +12,7 @@ from auremgrid.api.http_shared import (
     _optional_string_sequence,
 )
 from auremgrid.domain.errors import AuthorizationError, NotFoundError, ValidationError
+from auremgrid.services.agent_execution import AGENT_THINK_JOB_TYPE, SQLiteAgentExecutionStore, thinking_surface_enabled
 
 
 class HttpRoutesAgentsWorkflowsMixin:
@@ -36,6 +37,21 @@ class HttpRoutesAgentsWorkflowsMixin:
             self._json(200, self.os.agent_ops.run_detail(
                 _need(params, "organization_id"), _need(params, "person_id"), _need(params, "run_id")
             ))
+            return True
+        if parsed.path in {"/agents/runs/thinking", "/agents/jobs/thinking"}:
+            assert identity is not None
+            organization_id = identity.organization_id
+            workspace_id = _optional_str(params.get("workspace_id"))
+            if workspace_id:
+                self.os.auth.scope_identity(identity, workspace_id)
+            job = self.os.jobs.get_job(organization_id, workspace_id, _need(params, "job_id"))
+            if job.get("type") != AGENT_THINK_JOB_TYPE:
+                raise NotFoundError("thinking job not found")
+            store = SQLiteAgentExecutionStore(self.os.store.conn)
+            read = store.thinking_read_model(
+                organization_id, workspace_id, str((job.get("payload") or {}).get("run_id") or "")
+            ) if thinking_surface_enabled(self.os) and store.available() else None
+            self._json(200, {"available": bool(read), "thinking": read, "attempts": (read or {}).get("attempts", [])})
             return True
         if parsed.path == "/workflows/templates":
             organization_id, person_id = _need(params, "organization_id"), _need(params, "person_id")
