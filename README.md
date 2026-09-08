@@ -17,6 +17,27 @@ external-action service, or system that fabricates missing metrics.
 
 **SAMPLE DATA:** This is a real capture of the checked-in dashboard running the `demo-agency` fixture. It shows three synthetic client workspaces; finance is intentionally disconnected and no customer data is included.
 
+## Founder quickstart (no coding needed)
+
+Auremgrid runs on your own computer, and nothing you enter leaves it. If you can install a program and paste a line of text, you can see it working with realistic sample data in about five minutes.
+
+1. **Install Python.** Get it from [python.org](https://www.python.org/downloads/). During installation, tick "Add Python to PATH".
+2. **Download this project.** On GitHub, use the green **Code** button, choose **Download ZIP**, and unzip it somewhere easy to find (for example, Documents).
+3. **Open a terminal in that folder.** Click the File Explorer address bar, type `cmd`, and press Enter. (On a Mac, open Terminal and drag the folder onto the window.)
+4. **Paste these three lines, one at a time**, pressing Enter after each:
+
+```text
+python scripts/auremgrid.py demo-agency --db "C:\data\auremgrid-agency.sqlite"
+python scripts/auremgrid.py bootstrap-auth --db "C:\data\auremgrid-agency.sqlite" --organization org_realistic_agency_demo --person person_realistic_owner --email person_realistic_owner@demo.invalid --workspace ws_prime_clinics --actor act_ws_prime_clinics
+python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\auremgrid-agency.sqlite"
+```
+
+5. **Sign in.** The second line prints a one-time sign-in token. Open `http://127.0.0.1:8791/` in your browser, paste the token, and you are in.
+
+What you will see: a dashboard populated with a synthetic agency: clients, projects, work, campaigns, capacity, and intelligence surfaces. The data is fake by design; the finance connection stays disconnected on purpose. To stop, press Ctrl+C in the terminal window.
+
+When you are ready to set up a real (empty) agency with your own data, follow [Path B](#path-b-clean-agency-provisioning) below.
+
 ## What it does
 
 ```mermaid
