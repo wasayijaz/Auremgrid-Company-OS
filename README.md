@@ -1,8 +1,17 @@
 # Auremgrid Company OS
 
-Auremgrid is a local-first operating system for an agency. It puts the records that run client work — evidence, projects, reviews, risks, campaigns, finance inputs, people, agents, automations, and reports — in one organization-scoped SQLite ledger.
+Auremgrid is an offline, local-first operating system and intelligence runtime for agencies,
+backed by an organization-scoped SQLite ledger.
 
-It is designed for a private operator-run deployment, not a hosted SaaS or an autonomous external-action service.
+Current release:
+[v1.0.1-rc1 supervised private pilot](https://github.com/wasayijaz/Auremgrid-Company-OS/releases/tag/v1.0.1-rc1).
+
+- Local-first canonical records for client work, evidence, delivery, finance, and operations.
+- Bounded specialist intelligence grounded in the permitted organization and workspace scope.
+- Strict human-approval gating before external writes, promotions, or one-way actions.
+
+It is designed for a private operator-run deployment, not a hosted SaaS, autonomous
+external-action service, or system that fabricates missing metrics.
 
 ![Populated Auremgrid dashboard with synthetic agency data](docs/assets/dashboard-realistic-agency.jpg)
 
@@ -32,30 +41,45 @@ flowchart LR
 
 ## First 30 minutes
 
-Requirements: Python 3.12+ and a normal SQLite build with FTS5. The default local path does not need Node, Docker, a network service, or an API key.
+Requirements: Python 3.12+ and a normal SQLite build with FTS5. The default local path
+does not need Node, Docker, a network service, or an API key.
 
-1. Create a private agency and its first dashboard session.
+CLI default port is 8787; production examples use `--port 8791` to avoid conflicts with
+common local development servers.
 
-   ```text
-   python scripts/auremgrid.py setup-agency --db "C:\data\agency.sqlite" --agency "Northwind Studio" --admin-name "Nora Owner" --admin-email "nora@northwind.example"
-   ```
+### Path A: Instant Demo Walkthrough
 
-2. Start the local dashboard and API.
-
-   ```text
-   python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\agency.sqlite"
-   ```
-
-3. Open `http://127.0.0.1:8791/` and enter the one-time session token printed by setup. Tokens are stored only in that browser profile; do not put them in chat, URLs, screenshots, tickets, or source control.
-
-For a populated walkthrough instead of a blank agency:
+Recommended for evaluation. This creates a populated synthetic agency, issues an owner
+dashboard token, and serves immediately with populated workspaces.
 
 ```text
 python scripts/auremgrid.py demo-agency --db "C:\data\auremgrid-agency.sqlite"
 python scripts/auremgrid.py bootstrap-auth --db "C:\data\auremgrid-agency.sqlite" --organization org_realistic_agency_demo --person person_realistic_owner --email person_realistic_owner@demo.invalid --workspace ws_prime_clinics --actor act_ws_prime_clinics
+python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\auremgrid-agency.sqlite"
 ```
 
-`demo-agency` creates synthetic clients, projects, work, reviews, campaigns, creatives, capacity records, risks, decisions, signals, agent runs, a training-mode automation, a report, and Intelligence evidence. The finance connection stays deliberately disconnected.
+Open `http://127.0.0.1:8791/` and enter the one-time session token printed by
+`bootstrap-auth`. Tokens are stored only in that browser profile; do not put them in chat,
+URLs, screenshots, tickets, or source control.
+
+`demo-agency` creates synthetic clients, projects, work, reviews, campaigns, creatives,
+capacity records, risks, decisions, signals, agent runs, a training-mode automation, a
+report, and Intelligence evidence. The finance connection stays deliberately disconnected.
+
+### Path B: Clean Agency Provisioning
+
+Use this for a blank private agency. Create the agency, serve it, then generate CSV
+onboarding templates for first imports.
+
+```text
+python scripts/auremgrid.py setup-agency --db "C:\data\agency.sqlite" --agency "Northwind Studio" --admin-name "Nora Owner" --admin-email "nora@northwind.example"
+python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791 --db "C:\data\agency.sqlite"
+python scripts/auremgrid.py import-templates --output "C:\data\auremgrid-imports"
+```
+
+Open `http://127.0.0.1:8791/` and enter the one-time session token printed by
+`setup-agency`. Continue with `import-preview` and `import-commit` after filling the
+templates.
 
 Use `demo` for the small offline search fixture:
 
@@ -78,7 +102,14 @@ The API handler is composed from [`src/auremgrid/api/http.py`](src/auremgrid/api
 
 ## Service architecture
 
-Auremgrid keeps the public import surface small while splitting large service coordinators into focused modules:
+```text
+[Presentation]   Dashboard UI (Vanilla JS/CSS) · REST API (http.py) · MCP Tool Router
+[Domain Ops]     Client Ops · Agency Ops · Workflow Ops · Cognitive Executor
+[Truth & Store]  Bitemporal Facts · FTS5 Search · Append-Only Traces · SQLite (WAL)
+```
+
+Auremgrid keeps the public import surface small while splitting large service coordinators
+into focused modules:
 
 | Service area | Layout |
 |---|---|
@@ -118,13 +149,22 @@ The Python package is `auremgrid-company-os`; the import surface exports `Compan
 
 ## Verify a checkout
 
+Fast Check:
+
 ```text
 .\tools\test.ps1
 python -m unittest discover -s tests
 python -m compileall -q src tests
+git diff --check
+```
+
+Release Gate:
+
+```text
 python -m auremgrid.cli evaluate-intelligence
 python scripts/dashboard_showcase_image.py
-git diff --check
+python scripts/release.py validate
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restore_drill.ps1
 ```
 
 Optional browser verification:
