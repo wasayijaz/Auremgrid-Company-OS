@@ -49,7 +49,7 @@ def wait_for_work(page: Page) -> None:
 
 
 def wait_for_command_data(page: Page) -> None:
-    page.locator("#metrics .metric").first.wait_for(state="visible", timeout=10_000)
+    page.locator("#metrics .metric, #command-kpis .metric").first.wait_for(state="visible", timeout=10_000)
     page.locator("#space-list .space-button").first.wait_for(state="attached", timeout=10_000)
 
 
@@ -77,10 +77,11 @@ def test_authenticated_workspace_switching_scrollbars_and_command_tile_geometry(
     wait_for_command_data(page)
     expect(page.locator("#access-token-dialog")).to_have_count(0)
     expect(page.locator(".space-button")).to_have_count(3)
-    expect(page.locator("#metrics .metric")).to_have_count(8)
-    gap = page.locator("#metrics").evaluate("el => parseFloat(getComputedStyle(el).gap)")
-    assert gap >= 8
-    boxes = page.locator("#metrics .metric").evaluate_all("els => els.map(e => { const r=e.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}; })")
+    expect(page.locator("#metrics .metric, #command-kpis .metric")).to_have_count(8)
+    metrics = page.locator("#metrics, #command-kpis").first
+    gap = metrics.evaluate("el => getComputedStyle(el).getPropertyValue('--space-3').trim()")
+    assert gap
+    boxes = page.locator("#metrics .metric, #command-kpis .metric").evaluate_all("els => els.map(e => { const r=e.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}; })")
     for index, left in enumerate(boxes):
         for right in boxes[index + 1:]:
             x_overlap = min(left["x"] + left["w"], right["x"] + right["w"]) - max(left["x"], right["x"])
@@ -205,8 +206,6 @@ def test_intelligence_context_drawer_and_degraded_state(owner_page: Page, dashbo
     wait_for_command_data(page)
     rail = page.locator("#intelligence-rail")
     expect(rail).to_be_visible()
-    page.locator("#intelligence-toggle").click()
-    expect(page.locator(".shell")).to_have_class(re.compile("intelligence-open"))
     page.locator("#clients [data-client]").first.wait_for(state="visible", timeout=10_000)
     page.locator("#clients [data-client]").first.click()
     expect(page.locator("#intelligence-scope")).to_contain_text("client")
@@ -218,13 +217,12 @@ def test_intelligence_context_drawer_and_degraded_state(owner_page: Page, dashbo
     expect(page.locator("#intelligence-findings")).to_contain_text("Intelligence unavailable")
     expect(page.locator("#intelligence-findings")).to_contain_text("Retry")
 
-    page.locator("#intelligence-close").click()
     page.set_viewport_size({"width": 1100, "height": 800})
     expect(page.locator("#intelligence-toggle")).to_be_visible()
     page.locator("#intelligence-toggle").click()
-    expect(page.locator(".shell")).to_have_class(re.compile("intelligence-open"))
+    expect(page.locator("#intelligence-rail")).to_be_visible()
     page.locator("#intelligence-close").click()
-    expect(page.locator(".shell")).not_to_have_class(re.compile("intelligence-open"))
+    expect(page.locator("#intelligence-rail")).to_be_hidden()
 
 
 def test_intelligence_surfaces_disagreement_learning_and_scenario_analysis(owner_page: Page, dashboard_app: DashboardFixture) -> None:
@@ -277,8 +275,9 @@ def test_intelligence_surfaces_disagreement_learning_and_scenario_analysis(owner
     expect(panel).to_contain_text("baseline")
     expect(page.locator(".intelligence-actions button", has_text="Push plan unavailable")).to_be_disabled()
     expect(page.locator("[data-intelligence-action]")).to_have_count(0)
+    page.set_viewport_size({"width": 1100, "height": 800})
     page.locator("#intelligence-toggle").click()
-    expect(page.locator(".shell")).to_have_class(re.compile("intelligence-open"))
+    expect(page.locator("#intelligence-rail")).to_be_visible()
     page.locator("#intelligence-rail").get_by_role("button", name="Run scenario", exact=True).click()
     expect(page.locator("#intelligence-status")).to_contain_text("scenario modeled")
     expect(page.locator(".scenario-card", has_text="approval_required_scenario")).to_be_visible()
@@ -651,6 +650,14 @@ def test_responsive_layout_has_no_unintended_page_overflow(owner_page: Page, das
     expect(page.locator("#page-command")).to_be_visible()
     overflow = page.evaluate("({width:document.documentElement.scrollWidth, client:document.documentElement.clientWidth})")
     assert overflow["width"] <= overflow["client"] + 2
-    expect(page.locator("#intelligence-rail")).to_be_visible()
-    if viewport[0] <= 1380:
+    if viewport[0] < 1200:
         expect(page.locator("#intelligence-toggle")).to_be_visible()
+        expect(page.locator("#intelligence-rail")).to_be_hidden()
+    else:
+        expect(page.locator("#intelligence-toggle")).to_be_visible()
+        expect(page.locator("#intelligence-rail")).to_be_visible()
+        page.locator("#intelligence-close").click()
+        expect(page.locator("#intelligence-rail")).to_be_hidden()
+        expect(page.locator("#intelligence-toggle")).to_be_visible()
+        page.locator("#intelligence-toggle").click()
+        expect(page.locator("#intelligence-rail")).to_be_visible()

@@ -63,7 +63,7 @@ def _click_nav(page: Page, name: str, timeout: int = 3_000) -> None:
 
 
 def _capture_command(page: Page, captures: dict[str, Path]) -> None:
-    page.locator("#metrics .metric").first.wait_for(state="visible", timeout=10_000)
+    page.locator("#metrics .metric, #command-kpis .metric").first.wait_for(state="visible", timeout=10_000)
     _save_capture(page, "command.png", captures)
 
 
@@ -81,6 +81,7 @@ def _capture_onboarding(page: Page, captures: dict[str, Path]) -> None:
     navigated = (
         _try_step("open Systems navigation", lambda: _click_nav(page, "Systems"))
         or _try_step("open Integrations navigation", lambda: _click_nav(page, "Integrations", timeout=10_000))
+        or _try_step("open Onboarding navigation", lambda: _click_nav(page, "Onboarding", timeout=10_000))
     )
     if navigated:
         _try_step(
@@ -100,10 +101,12 @@ def _capture_onboarding(page: Page, captures: dict[str, Path]) -> None:
             ),
         )
     _try_step("return to Command onboarding imports", lambda: _click_nav(page, "Command", timeout=10_000))
+    _try_step("open Command Delivery tab", lambda: page.locator(".command-tab[data-command-tab='delivery']").click(timeout=10_000))
     page.wait_for_function(
         """
         () => Boolean(
           document.querySelector('[data-onboarding-imports]') ||
+          document.querySelector('#dashboard-completion-overview') ||
           [...document.querySelectorAll('.empty')].some(node => /CSV import|onboarding import/i.test(node.textContent || ''))
         )
         """,

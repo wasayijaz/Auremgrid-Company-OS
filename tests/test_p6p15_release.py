@@ -18,7 +18,7 @@ class P6P15ReleaseEvidenceTests(unittest.TestCase):
         )
         self.dashboard = read_dashboard_bundle(ROOT)
         self.readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
-        self.preview = ROOT.joinpath("docs", "assets", "dashboard-realistic-agency.jpg")
+        self.preview = ROOT.joinpath("docs", "assets", "dashboard-workbench-command.png")
 
     def test_release_matrix_contains_rows_6_through_15(self) -> None:
         for requirement in range(6, 16):
@@ -117,7 +117,7 @@ class P6P15ReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(0, self.dashboard.count('name==="Settings"){target.innerHTML=['), "static Settings branch")
 
     def test_github_dashboard_showcase_is_sample_labeled_and_reproducible(self) -> None:
-        self.assertIn("docs/assets/dashboard-realistic-agency.jpg", self.readme)
+        self.assertIn("docs/assets/dashboard-workbench-command.png", self.readme)
         self.assertIn("python scripts/auremgrid.py serve --host 127.0.0.1 --port 8791", self.readme)
         self.assertIn("SAMPLE DATA", self.readme)
         self.assertTrue(self.preview.is_file())

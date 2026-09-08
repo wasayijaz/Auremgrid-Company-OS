@@ -13,7 +13,7 @@ Current release:
 It is designed for a private operator-run deployment, not a hosted SaaS, autonomous
 external-action service, or system that fabricates missing metrics.
 
-![Populated Auremgrid dashboard with synthetic agency data](docs/assets/dashboard-realistic-agency.jpg)
+![Auremgrid tri-pane workbench dashboard with synthetic agency data](docs/assets/dashboard-workbench-command.png)
 
 **SAMPLE DATA:** This is a real capture of the checked-in dashboard running the `demo-agency` fixture. It shows three synthetic client workspaces; finance is intentionally disconnected and no customer data is included.
 
@@ -96,7 +96,18 @@ python scripts/auremgrid.py demo --db "C:\data\auremgrid-demo.sqlite"
 | Protect the ledger | `python scripts/auremgrid.py backup --db "C:\data\agency.sqlite" --output "C:\data\backups\agency.sqlite"` then `python scripts/auremgrid.py verify-backup --backup "C:\data\backups\agency.sqlite"` |
 | Recover intentionally | `restore` verifies the source, creates a safety backup before replacement, revokes sessions, recovers in-flight jobs, and keeps outbound dispatch disabled. |
 | Rehearse recovery | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restore_drill.ps1` runs backup, verification, restore, integrity, and recovery-mode checks against a scratch copy; no live database is touched. |
-| Inspect the system | The dashboard includes Command, Clients, Client Portal, Work, Projects, Review, Workflows, Campaigns, Content, Creative, Brain, Meetings, People, Finance, Agents, Automations, Reports, Integrations, Settings, Onboarding, Retention, and Operator health. |
+| Inspect the system | The dashboard includes Command, Signals, Intelligence, Clients, Client Portal, Work, Projects, Review, Workflows, Campaigns, Content, Creative, Performance, Forecasts, Brain, Meetings, Feedback, People, Finance, Agents, Automations, Reports, Integrations, Settings, Onboarding, Retention, and Operator health; the tri-pane workbench shell wraps these surfaces. |
+
+### Dashboard workbench
+
+The dashboard is a tri-pane workbench for the scoped operating surfaces:
+
+- **Left navigation:** a collapsible primary navigation grouped as Essentials, Operations, Growth, Knowledge, Company, and System. It also shows the organization and permitted-workspace scope selector and the navigation collapse button ([`js/04-agency-dashboard-contract.js`](src/auremgrid/api/dashboard/js/04-agency-dashboard-contract.js), [`index.html`](src/auremgrid/api/dashboard/index.html)).
+- **Queue & Feed:** the Attention & Action queue uses Surface, Reason, Evidence, and Next action columns, while Agency pulse renders recent audit-ledger activity ([`index.html`](src/auremgrid/api/dashboard/index.html), [`js/04-agency-dashboard-contract.js`](src/auremgrid/api/dashboard/js/04-agency-dashboard-contract.js)).
+- **Center canvas:** the Command page has eight KPI tiles in a responsive container-query grid. Its Delivery tab contains the client portfolio, agency map, trends, onboarding imports, and quick links; its Intelligence tab contains the executive briefing ([`index.html`](src/auremgrid/api/dashboard/index.html), [`dashboard.js`](src/auremgrid/api/dashboard/dashboard.js), [`js/04-agency-dashboard-contract.js`](src/auremgrid/api/dashboard/js/04-agency-dashboard-contract.js), [`css/05-workbench-shell.css`](src/auremgrid/api/dashboard/css/05-workbench-shell.css)).
+- **Right rail:** Cosmo Intelligence exposes expert contracts, a read-only learning loop, and a bounded-change simulator whose response states that nothing is executed ([`dashboard.js`](src/auremgrid/api/dashboard/dashboard.js), [`services/intelligence_contracts.py`](src/auremgrid/services/intelligence_contracts.py)).
+- **Workbench behavior:** drag handles resize the navigation, queue, and intelligence rail widths; sizes persist under `auremgrid_workbench_layout_v1`. Each zone scrolls independently, the persistent topbar toggle reopens the intelligence rail, and responsive rules enable overlay behavior below 1200px (with the queue overlay below 960px); the KPI grid also collapses through container queries ([`js/05-workbench-shell.js`](src/auremgrid/api/dashboard/js/05-workbench-shell.js), [`css/05-workbench-shell.css`](src/auremgrid/api/dashboard/css/05-workbench-shell.css)).
+- **Truthful data states:** counts, statuses, and names are read from scoped `/dashboard` API responses; missing metrics render as `Unknown`, and the dashboard does not fabricate them ([`dashboard.js`](src/auremgrid/api/dashboard/dashboard.js), [`js/04-agency-dashboard-contract.js`](src/auremgrid/api/dashboard/js/04-agency-dashboard-contract.js)).
 
 The API handler is composed from [`src/auremgrid/api/http.py`](src/auremgrid/api/http.py), shared helpers in [`src/auremgrid/api/http_shared.py`](src/auremgrid/api/http_shared.py), and route-family mixins such as [`src/auremgrid/api/http_routes_public.py`](src/auremgrid/api/http_routes_public.py) and [`src/auremgrid/api/http_routes_auth_org.py`](src/auremgrid/api/http_routes_auth_org.py). The tool router lives in [`src/auremgrid/api/mcp.py`](src/auremgrid/api/mcp.py), and the dashboard lives in [`src/auremgrid/api/dashboard`](src/auremgrid/api/dashboard). JSON/data routes require a bearer session or API token except `/health`, `/metrics`, and `/health/detailed`.
 

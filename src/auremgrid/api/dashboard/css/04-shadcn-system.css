@@ -73,7 +73,6 @@ button,input,select,textarea{font-family:inherit}
 :where(button,input,select,textarea){transition:border-color .14s ease,background-color .14s ease,box-shadow .14s ease,color .14s ease,transform .14s ease}
 
 /* Shell and page rhythm. */
-.shell{grid-template-columns:244px minmax(0,1fr) 368px}
 .side{padding:var(--space-4) var(--space-3) var(--space-3)}
 .brand{padding:var(--space-1) var(--space-2) var(--space-4)}
 .scope{margin:0 var(--space-1) var(--space-4);padding:var(--space-3);border-radius:var(--radius-lg)}
@@ -178,22 +177,11 @@ dialog{padding:var(--space-5);border-radius:var(--radius-xl)}
 .form input,.form select{min-height:var(--control-h)}
 .empty,.data-state,.honest-state{padding:var(--space-5) var(--space-4);border-radius:var(--radius-lg)}
 
-@media(max-width:1380px){.shell{grid-template-columns:232px minmax(0,1fr)}.content{padding:26px 28px 52px}}
-@media(max-width:1000px){.shell{grid-template-columns:72px minmax(0,1fr)}.content{padding:24px 22px 48px}.metric{min-height:98px}}
+@media(max-width:1380px){.content{padding:26px 28px 52px}}
+@media(max-width:1000px){.content{padding:24px 22px 48px}.metric{min-height:98px}}
 @media(max-width:620px){html{scrollbar-gutter:auto}.spaces{display:none}.nav{min-height:0}.content{padding:18px 14px 40px}.top{height:58px;padding:0 var(--space-3)}.grid,.module-grid{gap:10px}.card{padding:var(--space-3)}.metric{min-height:92px}.page#page-command>#metrics+#dashboard-completion-overview{margin-top:10px;margin-bottom:10px}.page#page-command>#dashboard-completion-overview>.card{min-height:132px}.head{margin-bottom:var(--space-4)}.overview-toolbar{align-items:stretch}.overview-toolbar label,.overview-toolbar select{width:100%}.overview-toolbar .ghost{margin-left:0}.overview-toolbar button{flex:1}.brain-toolbar{padding:var(--space-4)}.detail-head,.detail-body{padding:var(--space-4)}}
 
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
-
-/* The intelligence rail is an opt-in drawer. Keeping it out of the grid while
-   closed lets the command surface use the full available width at every size. */
-.shell{grid-template-columns:244px minmax(0,1fr)}
-.intelligence-rail{position:fixed;inset:0 0 0 auto;width:min(368px,calc(100vw - 24px));transform:translateX(102%);opacity:0;pointer-events:none;box-shadow:var(--shadow-2);transition:transform .2s ease,opacity .2s ease}
-.shell.intelligence-open .intelligence-rail{transform:translateX(0);opacity:1;pointer-events:auto}
-.top-intelligence-toggle.intelligence-toggle{display:inline-flex;position:static;align-items:center;justify-content:center;flex:none;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text-2);padding:8px 11px;box-shadow:none;font-size:11px;font-weight:650}
-.top-intelligence-toggle.intelligence-toggle:hover{border-color:var(--violet);color:var(--violet);background:var(--violet-soft)}
-@media(max-width:1380px){.shell{grid-template-columns:236px minmax(0,1fr)}}
-@media(max-width:1000px){.shell{grid-template-columns:72px minmax(0,1fr)}}
-@media(max-width:620px){.shell{display:block}.top-intelligence-toggle.intelligence-toggle{padding:7px 9px}.top{gap:8px}}
 
 .command-tabs{display:flex;gap:4px;margin:0 0 var(--space-4);border-bottom:1px solid var(--line);overflow:auto}
 .command-tab{border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);padding:9px 14px;margin-bottom:-1px;font-size:12px;font-weight:650;white-space:nowrap}
