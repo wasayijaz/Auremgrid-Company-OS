@@ -41,6 +41,97 @@ class ProviderSyncFence:
     credential_binding_id: str
     credential_generation: int
 
+
+class _ThreadSafeCursor:
+    __slots__ = ("_cursor", "_lock")
+
+    def __init__(self, cursor: sqlite3.Cursor, lock: threading.RLock) -> None:
+        self._cursor = cursor
+        self._lock = lock
+
+    def fetchone(self) -> Any:
+        with self._lock:
+            return self._cursor.fetchone()
+
+    def fetchall(self) -> list[Any]:
+        with self._lock:
+            return self._cursor.fetchall()
+
+    def __iter__(self) -> Any:
+        with self._lock:
+            rows = self._cursor.fetchall()
+        return iter(rows)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
+class _ThreadSafeConnection:
+    __slots__ = ("_conn", "_lock")
+
+    def __init__(self, conn: sqlite3.Connection, lock: threading.RLock) -> None:
+        self._conn = conn
+        self._lock = lock
+
+    def __enter__(self) -> "_ThreadSafeConnection":
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            self._lock.release()
+        return False
+
+    @property
+    def row_factory(self) -> Any:
+        return self._conn.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value: Any) -> None:
+        with self._lock:
+            self._conn.row_factory = value
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._conn.in_transaction
+
+    def execute(self, sql: str, parameters: Any = ()) -> sqlite3.Cursor:
+        with self._lock:
+            return _ThreadSafeCursor(self._conn.execute(sql, parameters), self._lock)
+
+    def executemany(self, sql: str, seq_of_parameters: Any) -> sqlite3.Cursor:
+        with self._lock:
+            return _ThreadSafeCursor(self._conn.executemany(sql, seq_of_parameters), self._lock)
+
+    def executescript(self, sql_script: str) -> None:
+        with self._lock:
+            self._conn.executescript(sql_script)
+
+    def commit(self) -> None:
+        with self._lock:
+            self._conn.commit()
+
+    def rollback(self) -> None:
+        with self._lock:
+            self._conn.rollback()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    def backup(self, target: Any, **kwargs: Any) -> None:
+        with self._lock:
+            self._conn.backup(target, **kwargs)
+
+    def iterdump(self) -> Any:
+        with self._lock:
+            return iter(self._conn.iterdump())
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -261,18 +352,24 @@ def parse_dt(value: str | None) -> datetime | None:
 class SqliteStore:
     def __init__(self, path: str | Path = ":memory:") -> None:
         self.path = str(path)
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self.conn.execute("PRAGMA busy_timeout = 5000")
-        if self.path != ":memory:":
-            self.conn.execute("PRAGMA journal_mode = WAL")
-            self.conn.execute("PRAGMA synchronous = NORMAL")
-            self.conn.execute("PRAGMA wal_autocheckpoint = 1000")
-        self.conn.executescript(SCHEMA)
-        migrate(self.conn)
         self._lock = threading.RLock()
         self._transaction_depth = 0
+        conn = sqlite3.connect(self.path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        if self.path != ":memory:":
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA wal_autocheckpoint = 1000")
+        conn.executescript(SCHEMA)
+        migrate(conn)
+        # Serialize every statement through the store lock: sqlite3 reports
+        # threadsafety=3, but concurrent Python-level statements on one shared
+        # connection still interleave driver state (misuse errors under the
+        # concurrent orchestrator run tests). Transactional sequences hold the
+        # same lock for their full duration via atomic().
+        self.conn = _ThreadSafeConnection(conn, self._lock)
 
     @property
     def schema_version(self) -> int:
